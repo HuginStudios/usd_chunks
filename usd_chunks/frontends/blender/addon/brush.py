@@ -86,7 +86,9 @@ def brush_desc(stage, view):
     """
     if stage is None:
         return None
-    for path in sorted(getattr(view, "selected_nodes", ()) or ()):
+    # The tree's own selection: view.selected_nodes lags a click in the editor until an
+    # add-on operator runs, so selecting the brush node and pressing B found no brush.
+    for path in sorted(bg.tree_selection(view)):
         descs = _brush_descs(stage.GetPrimAtPath(path))
         if descs:
             return descs[0]
@@ -246,7 +248,10 @@ def _draw_ring():
     if not _ring or _ring.get("point") is None:
         return
     try:
-        points = ring_points(_ring["point"], _ring["normal"], _ring["radius"])
+        # Built on the surface in the stage's space, drawn in Blender's.
+        to_blender = viewport.stage_to_blender(viewport.active_stage())
+        points = [tuple(to_blender @ Vector(p))
+                  for p in ring_points(_ring["point"], _ring["normal"], _ring["radius"])]
         shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
         batch = batch_for_shader(shader, "LINE_STRIP", {"pos": points})
         gpu.state.blend_set("ALPHA")

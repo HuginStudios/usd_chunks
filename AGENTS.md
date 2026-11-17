@@ -101,8 +101,12 @@ f-string), modern syntax for the target version, 120-character lines. Run `ruff 
 ## Rules for chunks
 
 - **A chunk writes only to its own layer.** `execute()` already runs inside the chunk's
-  edit context, and the framework clears that layer before each cook, so write the whole
-  result every time and don't call `Clear()`. Anywhere else, author through
+  edit context, and every cook starts from an empty layer, so write the whole result every
+  time and don't call `Clear()`. The framework applies the result to the chunk's layer,
+  changing only what differs (diff cook). Inside `execute()`, read and write through
+  `node.get_stage()` and `node.get_edit_context()`, never the scene's stage
+  (`get_scene_stage()`), which doesn't hold the layer the cook writes into; key anything
+  kept between cooks on `node.get_layer_identifier()`. Anywhere else, author through
   `chunk.get_edit_context()`, never the stage's ambient edit target. `interactive=True` in
   `config()` is the exception: the chunk makes a kept edit into a file layer.
 - **A chunk stays small and does one job.** Most chunks in `chunks/` are under 500 lines.

@@ -81,6 +81,8 @@ from usd_chunks.chunk_attributes import (  # noqa: F401  (re-exported)
 from usd_chunks.chunk_widget_api import ChunkParamWidgetBase, ChunkWidgetFactoryBase
 from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
     GIZMO_AXES,
+    GIZMO_BOX_ARITY,
+    GIZMO_BOX_TYPE,
     GIZMO_BRUSH_TYPE,
     GIZMO_DEFAULT_EDIT_MODE,
     GIZMO_EDIT_MODES,
@@ -92,6 +94,12 @@ from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
     GizmoBase,
     check_gizmo_sugar,
 )
+
+#: Run with the chunk when a host opens a drag (start_gizmo), before GIZMO_START goes out,
+#: and when it closes one (stop_gizmo), before GIZMO_STOP. gizmo.runtime keeps its drag
+#: throttle in these: the write it held back cooks before anyone hears the drag ended.
+GIZMO_START_HOOKS: list[Callable[[ChunkBase], None]] = []
+GIZMO_STOP_HOOKS: list[Callable[[ChunkBase], None]] = []
 
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
 _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
@@ -1549,6 +1557,10 @@ class ChunkCommon(AttributesBase):
 
         if c := self.get_chunk():
             layer = chunk_registry.ChunkLayerManager().get_or_create_layer(c)
+            # A diff cook running: its scratch layer, which stands in for the chunk's own.
+            # Asked for all the same: asking is what places the layer under its Edit Target.
+            if (scratch := chunk_cook.cooking_into(c)) is not None:
+                return scratch
             if layer and layer.IsMuted():
                 return None
             return layer
@@ -2363,6 +2375,10 @@ class ChunkUsdAttributeSupport(AttributesBase):
         if not self._param_attr_path:
             return
         stage = chunk_registry.ChunkRegistry().scene.get_stage()
+        # Inside a diff cook the chunk's layer is a scratch layer, which only the cook stage
+        # has in its layer stack: author there, as the module does.
+        if chunk_cook.cooking_into(self.get_chunk()) is not None and (cooking := skip_cook.active_stage()):
+            stage = cooking
         if not stage:
             return
         storage_attr = stage.GetAttributeAtPath(Sdf.Path(self._param_attr_path))
@@ -3641,10 +3657,18 @@ class ChunkBase(ChunkGroupBase):
 
     def start_gizmo(self, notice=None, sender=None):
         """Send GIZMO_START; a callback for when a host starts a drag."""
+        for hook in GIZMO_START_HOOKS:
+            hook(self)
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_START)
 
     def stop_gizmo(self, notice=None, sender=None):
-        """Send GIZMO_STOP; a callback for when a host ends a drag."""
+        """Send GIZMO_STOP; a callback for when a host ends a drag.
+
+        The drag's last write cooks first (GIZMO_STOP_HOOKS), so the chunk holds where the
+        handle was let go by the time STOP goes out.
+        """
+        for hook in GIZMO_STOP_HOOKS:
+            hook(self)
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_STOP)
 
     def disable(self, notice=None, sender=None):
@@ -4312,6 +4336,10 @@ class ChunkConfig(AttributesBase):
     # only reproducible where it was made -- Blender Import's, from a .blend that may be
     # gone -- so the cache entry is the result, not a shortcut to it. Implies cache_cook.
     cache_always: bool = attrs.field(default=False)
+    # Cook this chunk every time a network opens, instead of reading back the result kept
+    # when it was saved (open_cache). For a module whose result depends on something no key
+    # can see: the clock, an unseeded random, a web request.
+    cook_on_open: bool = attrs.field(default=False)
     # Param values a chunk of this module gets when it is made new -- from a menu or a script
     # (MenuEntry.create) -- and not when a saved one is loaded. For a better default that must
     # not change saved networks: a saved chunk stores only the values that differ from main()'s

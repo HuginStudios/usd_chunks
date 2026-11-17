@@ -16,13 +16,16 @@ usd-core wheels ship neither, so rendering is unavailable there.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 
 from pxr import Sdf, Usd, UsdGeom, UsdRender, UsdUtils
 
@@ -586,11 +589,13 @@ def _build_argv(node, prefix, scene_path, output_image):
     return argv
 
 
-def _render_command(node, output_image):
-    """Render by shelling out, for renderers with their own entry point -- husk, a
-    V-Ray standalone -- and when delegate crashes need to stay out of this process.
+def _command_argv(node, output_image):
+    """Write the flattened scene and build the render command line.
+
+    Returns:
+        tuple[list[str], str] | None: The argv and the scene file it reads, or None when
+        Render Command is not found.
     """
-    stage = node.get_stage()
     command = node.get_param("render_command").value or "usdrecord"
     prefix = _resolve_command(command)
     if prefix is None:
@@ -599,11 +604,29 @@ def _render_command(node, output_image):
             "usdrecord, at husk, or at another renderer entry point.",
             command,
         )
-        return
+        return None
+    scene_path = _export_for_render(node.get_stage())
+    return _build_argv(node, prefix, scene_path, output_image), scene_path
 
-    scene_path = _export_for_render(stage)
-    argv = _build_argv(node, prefix, scene_path, output_image)
-    keep = node.get_param("keep_scene_file").value
+
+def _discard_scene_file(scene_path, keep):
+    if keep:
+        logger.info("Render: kept scene file %s", scene_path)
+        return
+    try:
+        os.remove(scene_path)
+    except OSError:
+        pass
+
+
+def _render_command(node, output_image):
+    """Render by shelling out, for renderers with their own entry point -- husk, a
+    V-Ray standalone -- and when delegate crashes need to stay out of this process.
+    """
+    prepared = _command_argv(node, output_image)
+    if prepared is None:
+        return
+    argv, scene_path = prepared
 
     logger.info("Render: %s", " ".join(argv))
     try:
@@ -616,13 +639,131 @@ def _render_command(node, output_image):
     except OSError as exc:
         logger.error("Render: could not run %s (%s)", " ".join(argv), exc)
     finally:
-        if keep:
-            logger.info("Render: kept scene file %s", scene_path)
+        _discard_scene_file(scene_path, node.get_param("keep_scene_file").value)
+
+
+class _Job:
+    """A background render: its process and the flattened scene file it reads."""
+
+    def __init__(self, process, scene_path, output_image, keep):
+        self.process = process
+        self.scene_path = scene_path
+        self.output_image = output_image
+        self.keep = keep
+        self.stopped = False
+
+
+#: Background renders that have not finished, by Render chunk. One at a time per chunk.
+_jobs: dict[int, _Job] = {}
+
+
+def _set_status(node, text):
+    node.get_param("render_status").value = text
+
+
+def _popen_options():
+    """Start the render in its own process group, so Stop Render can end all of it."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+    return {"start_new_session": True}
+
+
+def _kill_tree(process):
+    """End a render process and every process it started (husk and others spawn more)."""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        result = subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode != 0:
+            process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            process.kill()
+
+
+def _render_in_background(node):
+    """Start the render as its own process and return at once; Stop Render ends it.
+
+    Always goes through Render Command, whatever Mode says. The flattened scene file is a
+    snapshot, so edits made while it renders do not reach the frames.
+    """
+    running = _jobs.get(id(node))
+    if running is not None and running.process.poll() is None:
+        logger.warning("Render: already rendering in the background. Press Stop Render first.")
+        return
+    output_image = _output_image(node)
+    if not output_image:
+        logger.error("Render: Run in Background needs an Output Image path.")
+        return
+    prepared = _command_argv(node, output_image)
+    if prepared is None:
+        _set_status(node, "Failed: Render Command not found")
+        return
+    argv, scene_path = prepared
+    keep = node.get_param("keep_scene_file").value
+
+    logger.info("Render (background): %s", " ".join(argv))
+    try:
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                   errors="replace", **_popen_options())
+    except OSError as exc:
+        logger.error("Render: could not run %s (%s)", " ".join(argv), exc)
+        _discard_scene_file(scene_path, keep)
+        _set_status(node, "Failed: could not start the render")
+        return
+    job = _Job(process, scene_path, output_image, keep)
+    _jobs[id(node)] = job
+    _set_status(node, f"Rendering {os.path.basename(output_image)}")
+
+    scene = node.get_scene()
+
+    def wait():
+        _, stderr = process.communicate()
+        scene.call_later(lambda: _finish_background(node, job, stderr))
+
+    threading.Thread(target=wait, name="usdchunks-render", daemon=True).start()
+
+
+def _finish_background(node, job, stderr):
+    """On the main thread, once the render process has exited."""
+    if _jobs.get(id(node)) is job:
+        del _jobs[id(node)]
+    _discard_scene_file(job.scene_path, job.keep)
+    code = job.process.returncode
+    try:
+        if job.stopped:
+            logger.info("Render: stopped %s", job.output_image)
+            _set_status(node, "Stopped")
+        elif code != 0:
+            logger.error("Render failed (exit %s): %s", code, (stderr or "").strip())
+            _set_status(node, f"Failed (exit {code}), see the log")
         else:
-            try:
-                os.remove(scene_path)
-            except OSError:
-                pass
+            node.get_param("output").value = job.output_image
+            logger.info("Render wrote %s", job.output_image)
+            _set_status(node, "Done")
+    except Exception as exc:  # noqa: BLE001 - the chunk may have been deleted meanwhile
+        logger.debug("Render: could not report the finished render (%s)", exc)
+
+
+def _stop_background(node):
+    job = _jobs.get(id(node))
+    if job is None or job.process.poll() is not None:
+        logger.info("Render: nothing is rendering in the background.")
+        return
+    job.stopped = True
+    _kill_tree(job.process)
+    _set_status(node, "Stopping")
+
+
+@atexit.register
+def _stop_all_background():
+    """Closing the app stops its background renders, rather than leaving them running unseen."""
+    for job in list(_jobs.values()):
+        job.stopped = True
+        _kill_tree(job.process)
 
 
 def _hydra_available():
@@ -684,16 +825,20 @@ def _make_gl_context(QtGui):
     return context.makeCurrent(surface)
 
 
+def _output_image(node):
+    # Same substitution the Render Product does, for the same reason -- see
+    # chunk_utils.resolve_output_path. An output path is the one string in a shot graph that
+    # has to differ per shot.
+    output_image = node.get_param("output_image").value or ""
+    return chunk_utils.resolve_output_path(output_image, node.get_stage(), logger)
+
+
 def _render(node):
     # Empty is meaningful in Hydra mode: it hands the choice of outputs to the render
     # products, which is the only way FrameRecorder writes more than one AOV. Naming an
     # image here is what turns that off, so the check belongs where the path is used
     # rather than up front.
-    output_image = node.get_param("output_image").value or ""
-    # Same substitution the Render Product does, for the same reason -- see
-    # chunk_utils.resolve_output_path. An output path is the one string in a shot graph that
-    # has to differ per shot.
-    output_image = chunk_utils.resolve_output_path(output_image, node.get_stage(), logger)
+    output_image = _output_image(node)
 
     mode = node.get_param("mode").value
     if mode == "Hydra" and not _hydra_available():
@@ -837,7 +982,15 @@ def is_blank(path: str) -> bool:
 
 
 def _render_clicked(owner, notice, sender):
-    _render(owner.get_chunk())
+    node = owner.get_chunk()
+    if node.get_param("background").value:
+        _render_in_background(node)
+    else:
+        _render(node)
+
+
+def _stop_clicked(owner, notice, sender):
+    _stop_background(owner.get_chunk())
 
 
 def main():
@@ -887,9 +1040,19 @@ def main():
         ),
     ])
 
+    chunk_api.add_param(chunk.Checkbox(
+        "background", "Run in Background", default_value=False,
+        tooltip="Render Now starts the render as its own process, through Render Command,\n"
+                "and you keep working. Edits made meanwhile do not reach the frames.\n"
+                "Render on Commit (usdchunks run) still waits for the render to finish."))
     render_btn = chunk.Button("render_now", "Render Now")
     render_btn.add_callback(_render_clicked)
     chunk_api.add_param(render_btn)
+    stop_btn = chunk.Button("stop_render", "Stop Render")
+    stop_btn.add_callback(_stop_clicked)
+    chunk_api.add_param(stop_btn)
+    chunk_api.add_param(chunk.Label("render_status", default_value="Idle",
+                                    tooltip="The background render's state."))
 
     return chunk_api
 
@@ -1008,7 +1171,14 @@ def config():
           - Keep Scene File: Command mode only — keep the flattened .usda handed to
             the renderer instead of deleting it, for when a render fails and the
             question is what the renderer was actually given.
+          - Run in Background: Render Now starts the render as its own process,
+            through Render Command whatever the Mode, and returns at once so you
+            keep working. The scene is saved to a file first, so edits made while
+            it renders do not reach the frames. One render at a time per chunk;
+            closing the app stops it. Render on Commit always waits.
           - Render Now: render immediately, ignoring Render on Commit.
+          - Stop Render: end the background render and every process it started.
+          - Status (render_status): Rendering, Stopping, Stopped, Done or Failed.
           - Output (output): the last image path written.
 
         Command mode stages the stage with UsdUtils.FlattenLayerStack, which

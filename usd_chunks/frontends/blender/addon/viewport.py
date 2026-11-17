@@ -1,4 +1,7 @@
-"""A live Hydra Storm view of the chunk stage, in Blender's own 3D viewport.
+"""A live Hydra view of the chunk stage, in Blender's own 3D viewport.
+
+Storm by default; any other delegate built against Blender's USD from the Renderer menu
+(see USDCHUNKS_OT_set_renderer and delegates.py).
 
 It lives in the add-on rather than in an external launcher: the add-on always has a real
 usd_chunks import available to it, and chunk_blender_addon.BlenderScene.get_selected_prims()
@@ -29,19 +32,24 @@ import bpy
 import gpu
 from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
-from mathutils import Vector
+from mathutils import Matrix, Vector
 from pxr import Gf, Glf, Kind, Sdf, Tf, Usd, UsdGeom, UsdImagingGL, UsdLux
 
+from usd_chunks.frontends.blender import delegates
 from usd_chunks.frontends.blender import nodegraph as bg
 
 logger = logging.getLogger(__name__)
+
+#: The renderer the camera light (Lighting On) is for; see _draw.
+STORM = "HdStormRendererPlugin"
 
 #: Handler + engine live here rather than on an operator: Blender constructs operators per
 #: click, and the UsdImagingGL engine must outlive a frame (rebuilding it per draw throws
 #: away Hydra's whole cache and makes navigation crawl).
 _state = {"handle": None, "lights_handle": None, "engine": None, "stage_id": None, "error": "",
           "lighting": True, "draw_mode": "smooth", "renderer": None, "picking": True,
-          "renderParams": None, "gl_pick_failed": False}
+          "renderParams": None, "gl_pick_failed": False, "render_settings": None,
+          "renderer_settings": None}
 
 #: The draw mode names the panel offers, and what each maps to on UsdImagingGL.RenderParams.
 #: Resolved lazily (inside _draw, not at import time) because UsdImagingGL.DrawMode needs
@@ -67,6 +75,51 @@ def active_stage():
     return None if view is None else view.stage
 
 
+def stage_to_blender(stage) -> Matrix:
+    """The stage's world space into Blender's: `M @ p` for a point, column vectors.
+
+    Blender is Z-up in metres times its Unit Scale. A Y-up stage (usdview's default, and
+    what most networks are saved in) is turned +90 degrees about X, as Blender's own USD
+    importer does, so its up stands up; metersPerUnit is scaled to Blender's units. Without
+    this a Y-up network drew lying on its side, the house below the ground plane.
+
+    Everything this add-on reads off the stage stays in stage space -- bounds, anchors,
+    the values handed to chunks -- and only drawing and mouse rays cross over, through this
+    matrix and its inverse.
+    """
+    if stage is None:
+        return Matrix.Identity(4)
+    up = UsdGeom.GetStageUpAxis(stage)
+    scene = getattr(bpy.context, "scene", None)
+    blender_mpu = getattr(getattr(scene, "unit_settings", None), "scale_length", 1.0) or 1.0
+    scale = UsdGeom.GetStageMetersPerUnit(stage) / blender_mpu
+    turn = (Matrix.Rotation(math.radians(90.0), 4, "X") if up == UsdGeom.Tokens.y
+            else Matrix.Identity(4))
+    return turn @ Matrix.Scale(scale, 4)
+
+
+def to_blender(stage, point) -> Vector:
+    """A stage-world point in Blender's world."""
+    return stage_to_blender(stage) @ Vector(tuple(point)[:3])
+
+
+def to_stage(stage, point) -> Vector:
+    """A Blender-world point in the stage's world."""
+    return stage_to_blender(stage).inverted_safe() @ Vector(tuple(point)[:3])
+
+
+def direction_to_stage(stage, direction) -> Vector:
+    """A Blender-world direction in the stage's world, unit length."""
+    out = stage_to_blender(stage).inverted_safe().to_3x3() @ Vector(tuple(direction)[:3])
+    return out.normalized() if out.length > 0.0 else out
+
+
+def stage_view_matrix(stage, rv3d) -> Gf.Matrix4d:
+    """Blender's view matrix as Hydra needs it: stage world to camera, in Gf (row vectors)."""
+    m = rv3d.view_matrix @ stage_to_blender(stage)
+    return Gf.Matrix4d(*[v for row in m.transposed() for v in row])
+
+
 def current_time() -> Usd.TimeCode:
     """Blender's timeline frame, subframe included, as the time the stage is drawn at.
 
@@ -80,14 +133,14 @@ def current_time() -> Usd.TimeCode:
     return Usd.TimeCode(scene.frame_current + scene.frame_subframe)
 
 
-def _headlight(engine, rv3d) -> None:
+def _headlight(engine, rv3d, stage=None) -> None:
     """A camera-relative light, the same "Camera Light" usdview defaults to -- with
     enableLighting on and no light authored anywhere on the stage, Storm has nothing to
     shade with at all and draws flat black. Recomputed every draw so it tracks navigation,
-    same as the camera state below it.
+    same as the camera state below it. At the eye in the stage's space, where Hydra lights.
     """
 
-    eye = rv3d.view_matrix.inverted().translation
+    eye = to_stage(stage, rv3d.view_matrix.inverted().translation)
     light = Glf.SimpleLight()
     light.position = Gf.Vec4f(eye.x, eye.y, eye.z, 1.0)
     light.ambient = Gf.Vec4f(0.2, 0.2, 0.2, 1.0)
@@ -138,16 +191,20 @@ def hit_path(result) -> str | None:
     return None
 
 
-def ray_from_region(region, rv3d, mouse_x, mouse_y):
-    """The world-space ray under the cursor, as (origin, direction).
+def ray_from_region(region, rv3d, mouse_x, mouse_y, stage=None):
+    """The ray under the cursor in the stage's world space, as (origin, direction).
 
     Blender's own view maths, no GL: this is what the bounds pick below rides on, and the
-    reason that pick keeps working on a driver where Hydra's does not.
+    reason that pick keeps working on a driver where Hydra's does not. Brought into the
+    stage's space (see stage_to_blender), since everything it is tested against is there.
+    `stage` defaults to the open network's.
     """
+    if stage is None:
+        stage = active_stage()
     coord = (mouse_x, mouse_y)
     origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
     direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
-    return tuple(origin), tuple(direction)
+    return tuple(to_stage(stage, origin)), tuple(direction_to_stage(stage, direction))
 
 
 def _ancestors(stage, path: str):
@@ -168,7 +225,10 @@ def component_of(stage, path: str) -> str:
     there is. A prim inside neither stays what was clicked.
     """
     for prim in _ancestors(stage, path):
-        if Usd.ModelAPI(prim).IsKind(Kind.Tokens.component):
+        # The kind itself, not IsKind(): that also checks the model hierarchy, so a
+        # component under a parent with no group/assembly kind -- most real files -- did
+        # not count, and a click on a wheel picked the wheel rather than the car.
+        if Kind.Registry.IsA(Usd.ModelAPI(prim).GetKind(), Kind.Tokens.component):
             return str(prim.GetPath())
     for prim in _ancestors(stage, path):
         if prim.HasAuthoredReferences() or prim.HasAuthoredPayloads():
@@ -291,7 +351,7 @@ def _light_markers(region, rv3d, stage) -> list:
     """(path, region pixels) of every light in front of the view."""
     markers = []
     for path, position in light_positions(stage, current_time()):
-        xy = view3d_utils.location_3d_to_region_2d(region, rv3d, Vector(position))
+        xy = view3d_utils.location_3d_to_region_2d(region, rv3d, to_blender(stage, position))
         if xy is not None:
             markers.append((path, (xy[0], xy[1])))
     return markers
@@ -359,7 +419,7 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
     dx = 4.0 / region.width
     dy = 4.0 / region.height
 
-    view = Gf.Matrix4d(*[v for row in rv3d.view_matrix.transposed() for v in row])
+    view = stage_view_matrix(stage, rv3d)
     proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
     narrowed_proj = proj * pick_matrix(ndc_x, ndc_y, dx, dy)
 
@@ -384,7 +444,7 @@ def _pick_prim_path(engine, stage, rv3d, region, mouse_x, mouse_y):
 
     if path is not None:
         return path
-    origin, direction = ray_from_region(region, rv3d, mouse_x, mouse_y)
+    origin, direction = ray_from_region(region, rv3d, mouse_x, mouse_y, stage)
     return pick_by_bounds(stage, origin, direction, current_time())
 
 
@@ -403,6 +463,8 @@ def _draw():
             _state["engine"] = UsdImagingGL.Engine()
             _state["renderParams"] = UsdImagingGL.RenderParams()
             _state["stage_id"] = id(stage)
+            _state["render_settings"] = None
+            _state["renderer_settings"] = None
             if _state["renderer"]:
                 try:
                     _state["engine"].SetRendererPlugin(_state["renderer"])
@@ -410,13 +472,37 @@ def _draw():
                     pass
 
         engine = _state["engine"]
-        # Blender's viewport camera drives Hydra, so navigation just works. Transposed
+        # The stage's RenderSettings, as usdview uses them: a delegate's own settings on it
+        # (Aurora's samples, denoising, ...) apply to the live view too. Checked every draw,
+        # so a network that adds, renames or edits its RenderSettings is followed. The
+        # settings are also set on the engine directly: in stock OpenUSD, which Blender ships,
+        # nothing marks the prim active for HdRenderSettings::Sync (no
+        # HdsiRenderSettingsFilteringSceneIndex is ever made), and a request made before the
+        # first render is dropped, so the delegate never sees them. A patched USD (the
+        # usdbundle's) does both, and then this just sets the same values twice.
+        settings_path = delegates.render_settings_path(stage)
+        if settings_path != _state["render_settings"]:
+            engine.SetActiveRenderSettingsPrimPath(settings_path)
+            _state["render_settings"] = settings_path
+        settings = (delegates.renderer_settings(stage.GetPrimAtPath(settings_path), current_time())
+                    if not settings_path.isEmpty else {})
+        if settings != _state["renderer_settings"]:
+            for key, value in settings.items():
+                engine.SetRendererSetting(key, value)
+            _state["renderer_settings"] = settings
+        # Blender's viewport camera drives Hydra, so navigation just works -- through
+        # stage_to_blender, so a Y-up stage stands up in Blender's Z-up world. Transposed
         # because mathutils is row-major and Gf is column-major.
-        view = Gf.Matrix4d(*[v for row in rv3d.view_matrix.transposed() for v in row])
+        view = stage_view_matrix(stage, rv3d)
         proj = Gf.Matrix4d(*[v for row in rv3d.window_matrix.transposed() for v in row])
 
         params = _state["renderParams"]
-        params.enableLighting = _state["lighting"]
+        # The camera light is Storm's: without it Storm draws a stage with no lights black. A
+        # path tracer lights with the stage's own lights, and takes the camera light as a light
+        # change on every draw -- Aurora's denoiser dropped its history each frame, so the view
+        # never got past a few samples' worth of noise.
+        lighting = _state["lighting"] and engine.GetCurrentRendererId() == STORM
+        params.enableLighting = lighting
         # The timeline drives the stage: animation, value clips and Skel Pose play here.
         params.frame = current_time()
         params.drawMode = getattr(UsdImagingGL.DrawMode,
@@ -424,13 +510,15 @@ def _draw():
 
         engine.SetRenderViewport(Gf.Vec4d(0, 0, region.width, region.height))
         engine.SetCameraState(view, proj)
-        if _state["lighting"]:
-            _headlight(engine, rv3d)
+        if lighting:
+            _headlight(engine, rv3d, stage)
         try:
             engine.Render(stage.GetPseudoRoot(), params)
         except Exception:
             # HgiGL flushing pending GL errors after the draw -- see the module docstring.
             pass
+        if not engine.IsConverged() and not bpy.app.timers.is_registered(_redraw_until_converged):
+            bpy.app.timers.register(_redraw_until_converged, first_interval=_CONVERGE_INTERVAL)
         _state["error"] = ""
     except Exception as exc:  # a real failure: report once, keep the viewport alive
         if _state["error"] != str(exc):
@@ -464,6 +552,25 @@ def _redraw() -> None:
         for area in window.screen.areas:
             if area.type == "VIEW_3D":
                 area.tag_redraw()
+
+
+#: Seconds between redraws while a progressive delegate is still adding samples.
+_CONVERGE_INTERVAL = 0.03
+
+
+def _redraw_until_converged():
+    """Keep drawing until the delegate says the image is done.
+
+    A path tracer (Aurora, ...) adds samples on each draw, and Blender only draws a 3D view
+    when something changes, so without this the view stops at its first few samples. usdview
+    does the same: it schedules another paint while the renderer is not converged. Storm
+    converges on the first draw, so it never starts this.
+    """
+    engine = _state["engine"]
+    if _state["handle"] is None or engine is None or engine.IsConverged():
+        return None
+    _redraw()
+    return _CONVERGE_INTERVAL
 
 
 def _on_frame_change(*_args) -> None:
@@ -595,11 +702,11 @@ def _renderer_display_name(plugin_id) -> str:
 class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
     """Switch the Hydra render delegate drawing the stage.
 
-    Blender's own runtime currently exposes only HdStorm (measured:
-    UsdImagingGL.Engine.GetRendererPlugins() == ['HdStormRendererPlugin']) -- there is no
-    route to add hdVray/hdCycles/etc into it, since they are ABI-locked to whatever exact
-    USD build produced them and Blender's is a differently-namespaced, monolithic one. This
-    menu is future-proofed for whenever that changes rather than hardcoded to one entry.
+    Blender ships only HdStorm. Any other delegate has to be built against Blender's own USD
+    (its monolithic, privately namespaced usd_ms): one built for another USD build cannot
+    load beside it. Built that way it is found like Storm -- from PXR_PLUGINPATH_NAME, or
+    from the folders the add-on registers at start (delegates.py) -- and listed here.
+    Measured: hdAurora built against Blender 5.1's USD 25.08 draws the live view.
     """
 
     bl_idname = "usd_chunks.set_renderer"
@@ -613,6 +720,7 @@ class USDCHUNKS_OT_set_renderer(bpy.types.Operator):
         if engine is not None:
             try:
                 engine.SetRendererPlugin(self.plugin)
+                _state["renderer_settings"] = None  # a new delegate: give it the settings again
             except Exception:
                 self.report({"WARNING"}, f"could not switch to {self.plugin}")
                 return {"CANCELLED"}

@@ -104,7 +104,10 @@ def _refresh_edit_target(owner, notice, sender):
     per alias across all of them (see chunk_notice._register_global).
     """
     _chunk = owner.get_chunk()
-    stage = _chunk.get_stage() if _chunk else None
+    # The scene's stage: this runs on any stage change, also inside another chunk's cook,
+    # where get_stage() is that cook's stage -- only what is upstream of it, without the
+    # layer picked here, which was then dropped as gone.
+    stage = _chunk.get_scene_stage() if _chunk else None
     if not stage:
         return
     if _chunk.is_blocked():

@@ -223,7 +223,9 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
             left = _still_missing(_missing)
             _missing.clear()
             _missing.update(left)
-            made = bg.register_chunk_types()
+            # Only the types that failed for want of these packages; the rest are built
+            # when a node of them is first made (bg.ensure_chunk_type).
+            made = bg.retry_failed_chunk_types()
             redone = _recook_waiting(self._chunks)
             message = (f"Installed; {len(made)} chunk node type(s) now available"
                        + (f", {redone} chunk(s) recooked" if redone else ""))

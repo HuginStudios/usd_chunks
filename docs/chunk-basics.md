@@ -60,7 +60,7 @@ that is still at its default value may not have the attribute yet.
 | `Menu` | `str` | `menu_items` is the list of choices |
 | `Checkbox` | `bool` | |
 | `LineEdit` | `str` | Single line |
-| `TextEdit` | `str` | Multi-line; `rows` sets the height |
+| `TextEdit` | `str` | Multi-line; `rows` sets the height; `wrap=True` for prose (lines wrap, UI font) rather than code |
 | `FileBrowser` | `str` \| `Sdf.AssetPath` | `extensions` and `pattern` filter the dialog |
 | `ColorPicker` | `(r, g, b)` | Components in the 0–1 range |
 | `Button` | — | Holds no value; use it with a callback |

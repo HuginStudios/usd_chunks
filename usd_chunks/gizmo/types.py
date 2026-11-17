@@ -37,8 +37,17 @@ GIZMO_TRANSFORM_ARITY = 9
 # apply_stroke. Its `driver` names the params holding the brush's own settings, so a host can
 # read the radius to draw the ring; it never writes them.
 GIZMO_BRUSH_TYPE = "brush"
+
+# A box whose faces are the handles: the user hovers a face of the box, grabs it and pulls
+# it along its normal, and only that face moves. No handle is drawn on its own; the box is
+# the handle. It drives six params, the distance from the anchor's origin to each face, in a
+# fixed order -- +X, -X, +Y, -Y, +Z, -Z -- and sends back six numbers. The faces picked
+# are the box's own, from those six values (pick_box_face), never the geometry inside it.
+GIZMO_BOX_TYPE = "box"
+GIZMO_BOX_ARITY = 6
+
 GIZMO_TYPES = (
-    GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE, GIZMO_BRUSH_TYPE}
+    GIZMO_MANIPULATOR_TYPES | GIZMO_SHAPE_TYPES | {GIZMO_TRANSFORM_TYPE, GIZMO_BRUSH_TYPE, GIZMO_BOX_TYPE}
 )
 # Signed, because direction is half the meaning. Focus distance runs along the camera's
 # *-Z*: an unsigned token would put the handle out the back of the camera, and nothing else
@@ -96,7 +105,9 @@ class GizmoBase:
             a single scalar.
         label (str): Display name. Falls back to the chunk's name when empty.
         anchor (str): Name of the param holding the target prim path. Empty means infer --
-            see chunk_gizmo.resolve_anchor_param.
+            see chunk_gizmo.resolve_anchor_param. A prim path ("/...") is taken as the target
+            itself: for a handle a gizmos(node) hook makes per row, hanging off the prim the
+            chunk makes for that row.
         driver (tuple[str, ...]): The params this handle writes, as paths on its own chunk --
             ("translate_grp.tx", "translate_grp.ty", "translate_grp.tz"), or a single entry
             for a scalar or a vector-typed param. A bare string normalises to a one-tuple.
@@ -145,6 +156,11 @@ class GizmoBase:
             raise ValueError(
                 f"Gizmo {self.name!r}: a transform handle drives {GIZMO_TRANSFORM_ARITY} params "
                 f"(translate xyz, rotate xyz, scale xyz, in that order), got {len(driver)}"
+            )
+        if self.type == GIZMO_BOX_TYPE and len(driver) != GIZMO_BOX_ARITY:
+            raise ValueError(
+                f"Gizmo {self.name!r}: a box handle drives {GIZMO_BOX_ARITY} params "
+                f"(the +X, -X, +Y, -Y, +Z, -Z faces, in that order), got {len(driver)}"
             )
         self.driver = driver
 

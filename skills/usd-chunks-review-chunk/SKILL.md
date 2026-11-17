@@ -39,8 +39,12 @@ usdchunks show <module>        # the description and params as someone finding t
 - [ ] `execute` authors through `node.get_stage()` in the edit context it's given, and
       doesn't change the stage's edit target or write to another layer (unless
       `interactive=True`).
-- [ ] `execute` doesn't `Clear()` its layer (the framework already did). Authoring from a
-      callback goes through `owner.get_edit_context()`.
+- [ ] `execute` doesn't `Clear()` its layer (every cook starts from an empty one). Authoring
+      from a callback goes through `owner.get_edit_context()`.
+- [ ] `execute` reads and writes through `node.get_stage()` and `node.get_edit_context()`,
+      not the scene's stage (`get_scene_stage()`, `scene.get_stage()`), and a cache kept
+      between cooks is keyed on `node.get_layer_identifier()`, not the edit layer's
+      identifier.
 - [ ] Same params give the same result: no unseeded randomness, wall-clock time or
       ordering that depends on dict or set order.
 

@@ -30,6 +30,7 @@ import heapq
 import itertools
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -41,6 +42,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
+from usd_chunks.frontends.blender import delegates
 from usd_chunks.frontends.blender import nodegraph as bg
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.blender.addon import brush
@@ -192,6 +194,8 @@ _later_order = itertools.count()
 
 #: How often the queue is checked: the resolution of a call_later delay.
 _LATER_INTERVAL = 0.05
+#: The soonest the queue is checked again when a call is about due.
+_LATER_MIN = 0.001
 
 
 def _run_due_calls() -> float:
@@ -207,6 +211,11 @@ def _run_due_calls() -> float:
             fn()
         except Exception:  # one failing call must not stop the queue for good
             logger.exception("usd_chunks: a call_later callback failed")
+    # Wake for the next call when it is due, not at the next poll: a gizmo drag's held-back
+    # write is due within a frame or two, and a 50 ms poll would add up to 50 ms to it.
+    with _later_lock:
+        if _later:
+            return min(_LATER_INTERVAL, max(_LATER_MIN, _later[0][0] - time.monotonic()))
     return _LATER_INTERVAL
 
 
@@ -235,13 +244,11 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     # Reference8, View1 -> View11) laid out in a row off to the right of the real
     # network, which read as "the file's positions are wrong".
     chunk_stage.ChunkStageSync().initialize(stage, _scene)
-    # Node classes are generated from the registry, and the registry only discovers chunks
-    # once a scene exists -- so this cannot happen in register(), where there is no scene
-    # yet and every class would be generated from an empty library. Idempotent, so opening
-    # a second network costs a dict lookup per already-registered type.
-    made = bg.register_chunk_types()
-    if made:
-        logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
+    # The Add menu comes from the registry, and the registry only discovers chunks once a
+    # scene exists -- so this cannot happen in register(), where there is no scene yet.
+    # Node classes are not built here: the tree builds the ones it needs as it is made
+    # (bg.ensure_chunk_type), so opening a network loads only the chunks it uses.
+    bg.build_add_menu()
 
     if tree is None:
         tree = _active_tree()
@@ -257,11 +264,52 @@ def _open_stage(stage, context_path=None, tree=None) -> None:
     context = context_path or bg.chunk_graph.default_context(stage)
     view = bg.BlenderGraphView(stage, _scene, tree=tree, context=context)
     view.chunks = chunks
+    # Read by the Open operator's report and the sidebar panel: a chunk type that no
+    # module registers was once a log line only, and the network looked half-empty.
+    view.missing_types = bg.missing_chunk_types(stage)
     view.reload()
     # A context with no view cooks nothing, so this is not cosmetic -- see ensure_view.
     view.ensure_view()
     # From here on the network's USD rides along with Blender's undo steps.
     undo.track(view.tree, stage)
+    if view.tree is not None:
+        _frame_soon(view.tree)
+
+
+def _frame_soon(tree) -> None:
+    """Fit the whole graph in every node editor showing `tree`, once it has drawn.
+
+    Saved positions are wherever the file put them, often thousands of units from the
+    origin the editor starts at, so a freshly opened network looked like an empty editor
+    until Home was pressed. Deferred: a node's size is only known after its first draw,
+    and view_all frames nothing before that.
+    """
+    name = tree.name
+    tries = [50]  # 0.1 s apart: a slow first draw (a big library loading) gets 5 s
+
+    def frame():
+        tree_now = bpy.data.node_groups.get(name)
+        if tree_now is None:
+            return None
+        if not any(n.dimensions[0] for n in tree_now.nodes):
+            tries[0] -= 1
+            return 0.1 if tries[0] > 0 else None
+        for window in getattr(bpy.context.window_manager, "windows", ()):
+            for area in window.screen.areas:
+                if area.type != "NODE_EDITOR" or getattr(area.spaces.active, "node_tree", None) != tree_now:
+                    continue
+                region = next((r for r in area.regions if r.type == "WINDOW"), None)
+                if region is None:
+                    continue
+                try:
+                    with bpy.context.temp_override(window=window, area=area, region=region):
+                        bpy.ops.node.view_all()
+                except RuntimeError:
+                    logger.debug("usd_chunks: could not frame %s", name, exc_info=True)
+        return None
+
+    if not bpy.app.background:
+        bpy.app.timers.register(frame, first_interval=0.2)
 
 
 # ---------------------------------------------------------------------------
@@ -678,8 +726,132 @@ class USDCHUNKS_OT_open_network(bpy.types.Operator):
         tree.chunk_network_embedded = ""
         _show_tree(context, tree)
         _open_stage(stage, tree=tree)
-        self.report({"INFO"}, f"opened {self.filepath}")
+        missing = missing_types_message(get_view())
+        if missing:
+            # WARNING, not ERROR: the open worked, and an ERROR report makes a scripted
+            # bpy.ops call raise. It still shows in the status bar and Info log.
+            self.report({"WARNING"}, f"opened {self.filepath}, but {missing}")
+        else:
+            self.report({"INFO"}, f"opened {self.filepath}")
         return {"FINISHED"}
+
+
+def missing_types_message(view) -> str:
+    """One line naming the chunk types the open network needs and no module registers,
+    or "" when there are none."""
+    missing = getattr(view, "missing_types", None) or {}
+    if not missing:
+        return ""
+    count = sum(len(paths) for paths in missing.values())
+    names = ", ".join(sorted(missing))
+    return (f"{count} chunk(s) have no module ({names}) -- "
+            "is their folder on USD_CHUNK_DIRS?")
+
+
+# ---------------------------------------------------------------------------
+# File > Import > USD
+# ---------------------------------------------------------------------------
+
+def has_chunk_network(stage) -> bool:
+    """Whether `stage` carries a chunk network: a Chunk prim anywhere under /chunks."""
+    root = stage.GetPrimAtPath(chunk_graph.CHUNKS_ROOT) if stage is not None else None
+    if not root:
+        return False
+    return any(p.GetTypeName() == chunk_graph.CHUNK_TYPENAME for p in Usd.PrimRange(root))
+
+
+def open_imported_network(path: str):
+    """Open the network in the file Blender just imported, into a tree of its own.
+
+    A new tree rather than the active one: an import adds to the scene, so it must not
+    replace a network already open (_open_stage parks that one's edits). Every node editor
+    showing a chunk tree, or none, is pointed at it, so the graph is on screen at once.
+    Returns the tree, or None if the file could not be opened.
+    """
+    stage = Usd.Stage.Open(path)
+    if stage is None:
+        logger.warning("usd_chunks: could not open the imported network %s", path)
+        return None
+    tree = bpy.data.node_groups.new(bpy.path.display_name_from_filepath(path), bg.TREE_ID)
+    tree.chunk_network_path = path
+    tree.chunk_network_embedded = ""
+    _open_stage(stage, tree=tree)
+    for window in getattr(bpy.context.window_manager, "windows", ()):
+        for area in window.screen.areas:
+            if area.type != "NODE_EDITOR":
+                continue
+            space = area.spaces.active
+            if getattr(space, "tree_type", "") == bg.TREE_ID:
+                space.node_tree = tree
+                area.tag_redraw()
+    missing = missing_types_message(get_view())
+    if missing:
+        logger.warning("usd_chunks: imported %s, but %s", path, missing)
+        _popup(f"Imported {bpy.path.basename(path)}, but {missing}", "ERROR")
+    else:
+        logger.info("usd_chunks: opened the chunk network in %s", path)
+    return tree
+
+
+def _popup(message: str, icon: str) -> None:
+    """A popup at the mouse: the import's own report is the importer's, not ours, so a
+    problem with the network would otherwise be a console line only."""
+    if bpy.app.background:
+        return
+
+    def draw(menu, _context):
+        menu.layout.label(text=message)
+
+    bpy.context.window_manager.popup_menu(draw, title="USDChunks", icon=icon)
+
+
+#: Network files imported but not opened yet; see USDCHUNKS_usd_hook.
+_pending_imports: list[str] = []
+
+
+def _open_pending_imports():
+    """Timer: open what on_import queued, now that the importer has finished."""
+    while _pending_imports:
+        path = _pending_imports.pop(0)
+        try:
+            open_imported_network(path)
+        except Exception:  # a timer that raises is unregistered for good
+            logger.exception("usd_chunks: could not open the imported network %s", path)
+            _popup(f"Could not open the chunk network in {bpy.path.basename(path)}: "
+                   "see the system console", "ERROR")
+    return None
+
+
+if hasattr(bpy.types, "USDHook"):
+    class USDCHUNKS_usd_hook(bpy.types.USDHook):
+        """File > Import > USD opens the file's chunk network in the node editor.
+
+        Blender's importer makes objects from the prims and ignores the /chunks graph, so
+        without this an imported network file showed no graph and cooked nothing. The open
+        is deferred to a timer: on_import runs inside the importer's operator, mid-import,
+        and the network gets a stage of its own opened from the file.
+        """
+
+        bl_idname = "usd_chunks_network"
+        bl_label = "USDChunks network"
+        bl_description = "Open the file's chunk network in the USDChunks node editor"
+
+        @staticmethod
+        def on_import(import_context):
+            stage = import_context.get_stage()
+            if not has_chunk_network(stage):
+                return True
+            path = stage.GetRootLayer().realPath
+            if not path:
+                return True
+            _pending_imports.append(path)
+            if not bpy.app.timers.is_registered(_open_pending_imports):
+                bpy.app.timers.register(_open_pending_imports, first_interval=0.0)
+            return True
+
+    _USD_HOOKS: tuple = (USDCHUNKS_usd_hook,)
+else:  # pragma: no cover - a Blender without USD hooks
+    _USD_HOOKS = ()
 
 
 class USDCHUNKS_OT_new_network(bpy.types.Operator):
@@ -1079,6 +1251,17 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
                              icon="ERROR")
             else:
                 layout.label(text=bpy.path.basename(tree.chunk_network_path), icon="FILE")
+        missing = getattr(view, "missing_types", None) if view is not None else None
+        if missing:
+            # Kept on screen, not only reported once: a report scrolls away, and the
+            # network keeps cooking without these chunks until the user fixes the path.
+            box = layout.box()
+            box.alert = True
+            count = sum(len(paths) for paths in missing.values())
+            box.label(text=f"{count} chunk(s) have no module", icon="ERROR")
+            for name in sorted(missing):
+                box.label(text=f"{name}  ({len(missing[name])})")
+            box.label(text="Add their folder to USD_CHUNK_DIRS")
         layout.separator()
         layout.operator(USDCHUNKS_OT_auto_layout.bl_idname, icon="GRAPH")
         row = layout.row(align=True)
@@ -1116,7 +1299,39 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
             layout.label(text=view.status)
 
 
+def _register_delegates(_prefs=None, _context=None) -> list[str]:
+    """Make the delegates in USD_CHUNKS_HYDRA_DELEGATES and the preference available.
+
+    Also the preference's update callback, so a folder typed in takes effect at once: the
+    Renderer menu asks USD for its delegates every time it opens.
+    """
+    folders = delegates.split_folders(os.environ.get(delegates.ENV_VAR, ""))
+    addon_entry = bpy.context.preferences.addons.get(__package__)
+    if addon_entry is not None:
+        folders += delegates.split_folders(addon_entry.preferences.hydra_delegate_folders)
+    return delegates.register_folders(folders)
+
+
+class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    hydra_delegate_folders: bpy.props.StringProperty(
+        name="Hydra Delegate Folders",
+        description=(
+            "Render delegates for the live view, built against Blender's USD: each folder "
+            "holds plugInfo.json or a resources folder with one. Separate several with ';'"),
+        default="",
+        update=_register_delegates,
+    )
+
+    def draw(self, _context):
+        self.layout.prop(self, "hydra_delegate_folders")
+        self.layout.label(text="Pick one in the 3D viewport: N panel > USDChunks > Renderer",
+                          icon="INFO")
+
+
 _CLASSES = (
+    USDCHUNKS_AP_preferences,
     USDCHUNKS_OT_open_network,
     USDCHUNKS_OT_new_network,
     USDCHUNKS_OT_save_network,
@@ -1136,7 +1351,7 @@ _CLASSES = (
     USDCHUNKS_OT_group,
     USDCHUNKS_OT_create_view,
     USDCHUNKS_PT_panel,
-)
+) + _USD_HOOKS
 
 #: (keymap, keymap_item) pairs, so unregister removes exactly what register added.
 _keymaps: list = []
@@ -1244,8 +1459,32 @@ def _unregister_keymap() -> None:
     _keymaps.clear()
 
 
+@persistent
+def forget_unloaded_modules(*_args, modules: dict | None = None) -> int:
+    """Drop modules that were found but never run from sys.modules. Returns how many.
+
+    The registry puts each chunk module it discovers in sys.modules as a lazy module, run
+    on its first attribute access. Blender's quit (addon_utils.disable_all) reads
+    `__dict__` off every module there, which ran every chunk the session never used: a
+    slower quit, and a chunk that needs another host (display_modes wants usdview) printed
+    a traceback on the way out. `type()`, not an attribute, so asking does not run one.
+    """
+    modules = sys.modules if modules is None else modules
+    lazy = [name for name, mod in list(modules.items())
+            if type(mod).__name__ == "_LazyModule"]
+    for name in lazy:
+        modules.pop(name, None)
+    return len(lazy)
+
+
 def register() -> None:
     configure_logging()
+    # exit_pre runs before Blender's quit disables the add-ons (bpy.utils._on_exit ->
+    # addon_utils.disable_all), which is what this has to get ahead of. Not atexit: that
+    # runs after, when the interpreter is finalized.
+    exit_pre = getattr(bpy.app.handlers, "exit_pre", None)
+    if exit_pre is not None and forget_unloaded_modules not in exit_pre:
+        exit_pre.append(forget_unloaded_modules)
     bg.register()
     for cls in dependencies.CLASSES + _CLASSES:
         bg._register_once(cls)
@@ -1279,6 +1518,11 @@ def register() -> None:
         bpy.app.handlers.undo_post.append(_on_undo)
     if _on_undo not in bpy.app.handlers.redo_post:
         bpy.app.handlers.redo_post.append(_on_undo)
+    # Before the viewport: its Renderer menu lists whatever delegates USD knows by then.
+    try:
+        _register_delegates()
+    except Exception:  # a bad folder must not take the add-on down with it
+        logger.exception("could not register Hydra delegates")
     viewport.register()
     gizmos.register()
     brush.register()
@@ -1286,6 +1530,9 @@ def register() -> None:
 
 
 def unregister() -> None:
+    exit_pre = getattr(bpy.app.handlers, "exit_pre", None)
+    if exit_pre is not None and forget_unloaded_modules in exit_pre:
+        exit_pre.remove(forget_unloaded_modules)
     undo.untrack()
     camera.unregister()
     brush.unregister()
@@ -1309,6 +1556,9 @@ def unregister() -> None:
     _unregister_keymap()
     if bpy.app.timers.is_registered(_poll_new_trees):
         bpy.app.timers.unregister(_poll_new_trees)
+    if bpy.app.timers.is_registered(_open_pending_imports):
+        bpy.app.timers.unregister(_open_pending_imports)
+    _pending_imports.clear()
     dependencies.unregister()
     for cls in reversed(dependencies.CLASSES + _CLASSES):
         try:

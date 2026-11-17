@@ -13,6 +13,7 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_widget_api
 from usd_chunks import chunk_core
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_trace
 from usd_chunks.graph import engine as chunk_graph
 from usd_chunks.frontends.qt import node_theme
 
@@ -958,14 +959,26 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
 
 
 class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
+    # Past this many characters, or a line this long, the field shows a short read-only
+    # preview instead of the text. Qt lays out whole lines: a 10 MB inline terrain, 48 lines
+    # of megabytes each, took seconds per scroll or repaint and froze the panel.
+    HUGE_TEXT = 256_000
+    HUGE_LINE = 20_000
+    _PREVIEW_LINES = 40
+    _PREVIEW_WIDTH = 200
+
     def __init__(self, param: chunk.TextEdit):
         super().__init__(param)
+        self._huge = None  # the whole value while only a preview is shown
 
         self.text = QtWidgets.QPlainTextEdit(parent=self)
         self.text.setSizePolicy(QtWidgets.QSizePolicy.Policy.MinimumExpanding, QtWidgets.QSizePolicy.Policy.Maximum)
         self.text.textChanged.connect(self.value_changed)
         self.text.setTabStopDistance(QtGui.QFontMetricsF(self.text.font()).horizontalAdvance(" ") * 4)
-        self.text.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        # Prose (wrap) wraps at the field's edge; code keeps its lines whole and scrolls.
+        self.text.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth if param.wrap
+            else QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
 
         hlm = None
         self.hl = None
@@ -976,8 +989,10 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         if hlm:
             self.hl = SyntaxHighlighter(self.text.document(), hlm)
 
-        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
-        self.text.setFont(font)
+        # Code reads in a fixed-width font; prose keeps the UI's own.
+        if not param.wrap:
+            font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+            self.text.setFont(font)
 
         if param.rows is not None:
             line_h = QtGui.QFontMetrics(self.text.font()).lineSpacing()
@@ -995,12 +1010,33 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
         return super().focusOutEvent(event)
 
     def get_value(self):
+        if self._huge is not None:
+            return self._huge
         return self.text.document().toPlainText()
 
     def set_value(self, value):
-        if value != self.get_value():
-            with QtCore.QSignalBlocker(self.text):
-                self.text.setPlainText(str(value))
+        value = str(value)
+        if value == self.get_value():
+            return
+        # Every line is measured: the size check comes first, so this splits at most HUGE_TEXT.
+        huge = len(value) > self.HUGE_TEXT or max(map(len, value.split("\n")), default=0) > self.HUGE_LINE
+        with QtCore.QSignalBlocker(self.text):
+            if huge:
+                self._huge = value
+                self.text.setPlainText(self._preview(value))
+            else:
+                self._huge = None
+                self.text.setPlainText(value)
+            self.text.setReadOnly(huge)
+
+    def _preview(self, value):
+        """The first lines, clipped, under a note saying what this is and why."""
+        lines = [line if len(line) <= self._PREVIEW_WIDTH else line[:self._PREVIEW_WIDTH] + " ..."
+                 for line in value.split("\n", self._PREVIEW_LINES)[:self._PREVIEW_LINES]]
+        size = f"{len(value) / 1e6:.1f} MB" if len(value) >= 1e6 else f"{len(value) / 1e3:.0f} KB"
+        note = (f"# {size} of text: too big to edit here, so shown shortened and read-only. "
+                f"Text this size is better kept in a file and brought in with a Reference chunk.")
+        return "\n".join([note, *lines, "..."])
 
     def set_hidden(self, val: bool):
         self.setHidden(val)
@@ -2804,6 +2840,8 @@ class ViewSlotState(QtCore.QObject):
         # Inspect, Rename and Set View stay singular on purpose: one dialog, one name (six
         # chunks cannot share it), and a view targets one chunk. Everything else scales.
         inspect_action = menu.addAction("Inspect Layer")
+        select_prims_action = menu.addAction(_label("Select Its Prims"))
+        select_prims_action.setToolTip("Select in the viewport the prims this chunk made or changed")
         rename_action = menu.addAction("Rename…")
         stage_for_rename = grp.get_stage()
         prim_for_rename = stage_for_rename.GetPrimAtPath(prim_path) if stage_for_rename else None
@@ -2877,6 +2915,8 @@ class ViewSlotState(QtCore.QObject):
             layer = grp.get_edit_context()
             if layer:
                 source_code_dial(layer.ExportToString(), chunk_core.UsdSyntaxHighlightMapping())
+        elif res == select_prims_action:
+            select_chunk_prims(targets)
         elif res == rename_action:
             old = grp.name
             new, ok = QtWidgets.QInputDialog.getText(
@@ -4496,3 +4536,23 @@ def context_ancestry(ctx) -> list:
         node = parent_ref() if parent_ref else None
     chain.reverse()
     return chain
+
+
+def select_chunk_prims(chunks) -> bool:
+    """Select in the host the prims these chunks made or changed, read from their own layers.
+
+    Args:
+        chunks: The chunks.
+
+    Returns:
+        False when they made nothing there or the host has no selection to drive.
+    """
+    scene = chunks[0].get_scene() if chunks else None
+    stage = scene.get_stage() if scene else None
+    if stage is None:
+        return False
+    paths: dict = {}
+    for target in chunks:
+        found, _more = chunk_trace.chunk_prims(target, stage)
+        paths.update(dict.fromkeys(found))
+    return bool(paths) and scene.select_prims(list(paths))

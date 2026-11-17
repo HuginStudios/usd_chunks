@@ -555,6 +555,90 @@ _TILE_BLOCK = 250_000
 _tiles: dict = {}
 
 
+_UNDECIDED, _KEPT, _REJECTED = 0, 1, 2
+
+
+def _kept_in_draw_order(n, i, j):
+    """Which of *n* candidates a darts fill keeps, as a bool array: taken in draw order (by
+    index), each is kept unless an earlier candidate it clashes with was kept. *i* < *j* are
+    the clashing pairs.
+
+    The same answer as walking them one at a time, settled in rounds over every candidate at
+    once: one whose earlier clashes are all rejected is kept, one with a kept earlier clash is
+    rejected, and each round settles at least the earliest one still open. Walked one at a
+    time it was a numpy call per candidate after an argsort of every pair -- 4.4 s of a 4.9 s
+    tile for a birch forest's 0.8-1.6 scales.
+    """
+    state = np.zeros(n, dtype=np.int8)
+    while len(j):
+        before = state[i]
+        blocked = np.bincount(j[before == _KEPT], minlength=n) > 0
+        waiting = np.bincount(j[before == _UNDECIDED], minlength=n) > 0
+        open_ = state == _UNDECIDED
+        state[open_ & blocked] = _REJECTED
+        state[open_ & ~blocked & ~waiting] = _KEPT
+        # A pair matters while its later end is open and its earlier one is not rejected.
+        live = (state[j] == _UNDECIDED) & (state[i] != _REJECTED)
+        i, j = i[live], j[live]
+    # Open with nothing left to wait on: no earlier clash was kept.
+    return state != _REJECTED
+
+
+#: Candidates per batch of _darts_fill: small enough that most of a batch meets the kept
+#: points first, large enough that a batch's Python overhead does not add up.
+_DARTS_BATCH = 4096
+
+
+def _clashes(pts, rad, side, a, b):
+    """Which of the pairs (*a*[k], *b*[k]) sit closer than their radii add up to, across the
+    tile's edges too. One formula for every caller, so a pair is judged the same wherever."""
+    diff = pts[b] - pts[a]
+    diff -= side * np.round(diff / side)
+    return (diff ** 2).sum(axis=1) < (rad[a] + rad[b]) ** 2
+
+
+def _darts_fill(pts, rad, side, reach, cKDTree):
+    """Which candidates a darts fill keeps, taken in draw order: each is kept if it clears
+    every one kept before it by both radii. *reach* is the farthest any two can clash.
+
+    Against the kept points rather than every candidate: the tile throws ~37 candidates for
+    each it keeps, and finding every clashing pair among all of them was 16.7 million pairs
+    to keep 5,663 (a birch forest's 0.8-1.6 scales). In batches, in draw order: a batch's
+    candidates are tested against what earlier batches kept, and those that survive are
+    settled among themselves (_kept_in_draw_order). The rule and the clash test are the
+    same, so the tile is the same.
+
+    The trees are periodic (boxsize), so the copies laid side by side meet as cleanly as the
+    inside.
+    """
+    n = len(pts)
+    kept = np.zeros(n, dtype=bool)
+    kept_idx = np.empty(0, dtype=np.intp)
+    for start in range(0, n, _DARTS_BATCH):
+        batch = np.arange(start, min(start + _DARTS_BATCH, n))
+        if len(kept_idx):
+            near = cKDTree(pts[kept_idx], boxsize=side).sparse_distance_matrix(
+                cKDTree(pts[batch], boxsize=side), reach, output_type="ndarray")
+            if len(near):
+                a, b = kept_idx[near["i"]], batch[near["j"]]
+                hit = _clashes(pts, rad, side, a, b)
+                batch = np.setdiff1d(batch, b[hit], assume_unique=False)
+        if not len(batch):
+            continue
+        pairs = cKDTree(pts[batch], boxsize=side).query_pairs(reach, output_type="ndarray")
+        if len(pairs):
+            i, j = batch[pairs.min(axis=1)], batch[pairs.max(axis=1)]
+            hit = _clashes(pts, rad, side, i, j)
+            # Local indices, so the rounds work on this batch's survivors only.
+            local = np.searchsorted(batch, np.stack([i[hit], j[hit]]))
+            keep = _kept_in_draw_order(len(batch), local[0], local[1])
+        else:
+            keep = np.ones(len(batch), dtype=bool)
+        kept[batch[keep]] = True
+        kept_idx = np.flatnonzero(kept)
+    return kept
+
+
 def _blue_tile(seed, unit, r_lo, r_hi, scale_lo, scale_hi, bias, vary, spacing):
     """A square tile of points that repeats without a seam -- (side, (N, 2) points, scales,
     radii) -- filled the way a darts scatter fills a surface: candidates in random order, each
@@ -573,24 +657,7 @@ def _blue_tile(seed, unit, r_lo, r_hi, scale_lo, scale_hi, bias, vary, spacing):
     u = gen.random(n)
     sc = scale_lo + (scale_hi - scale_lo) * (u ** bias if bias != 1.0 else u)
     rad = unit * sc if vary else np.full(n, spacing * 0.5)
-    # Distances across the tile's edges as well: boxsize makes the tree periodic, so the
-    # copies laid side by side meet as cleanly as the inside.
-    pairs = cKDTree(pts, boxsize=side).query_pairs(2.0 * r_hi * (1.0 + 1e-9), output_type="ndarray")
-    kept = np.ones(n, dtype=bool)
-    if len(pairs):
-        i, j = pairs.min(axis=1), pairs.max(axis=1)
-        diff = pts[j] - pts[i]
-        diff -= side * np.round(diff / side)
-        hit = (diff ** 2).sum(axis=1) < (rad[i] + rad[j]) ** 2
-        i, j = i[hit], j[hit]
-        if len(j):
-            order = np.argsort(j, kind="stable")
-            i, j = i[order], j[order]
-            later, starts = np.unique(j, return_index=True)
-            # In draw order, as _settle_batch walks a batch: each candidate asks only whether
-            # an earlier one it clashes with was kept.
-            for k, earlier in zip(later.tolist(), np.split(i, starts[1:])):
-                kept[k] = not kept[earlier].any()
+    kept = _darts_fill(pts, rad, side, 2.0 * r_hi * (1.0 + 1e-9), cKDTree)
     tile = (side, pts[kept], sc[kept], rad[kept])
     _tiles[key] = tile
     return tile
@@ -2975,9 +3042,10 @@ def execute(node):
                 avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5)
                 if avoid._dist <= 0.0:
                     avoid = None
-            if len(surf_tris) and sampling == "Tiles" and spacing > 0:
+            if len(surf_tris) and sampling == "Tiles" and spacing > 0 and max_slope <= 90.0:
                 # Sampling: Tiles -- the same rules from a laid blue-noise tile (opt-in: a
-                # different layout).
+                # different layout). Tiles drops points from above, so it can't reach a face
+                # that points down: past 90, Max Slope asks for those, and Darts takes over.
                 positions, normals, drawn = _scatter_tiles(
                     surf_tris, max_count, rng, spacing, random.Random(seed + 13),
                     scale_min, scale_max, scale_bias, mask=mask, avoid=avoid, vary=size_spacing,
@@ -3147,6 +3215,8 @@ def execute(node):
         # surface mesh is set puts the graph there on the way to a working setup, which is
         # exactly how it was hit. An empty instancer is coherent -- zero instances of the
         # prototypes it declares -- where a half-declared one is not.
+        out_positions, out_orients, out_scales = _into_parent_space(
+            stage, inst_path, out_positions, out_orients, out_scales)
         instancer.GetPositionsAttr().Set(out_positions)
         instancer.GetProtoIndicesAttr().Set(out_indices)
         instancer.GetScalesAttr().Set(out_scales)
@@ -3163,6 +3233,43 @@ def execute(node):
 
     triangles = sum(q * _triangle_count(stage.GetPrimAtPath(p.path)) for p, q in zip(protos, quota) if q)
     _report(node, protos, quota, count, scatter_mode, pack_levels, missing, triangles, surface_missing)
+
+
+def _into_parent_space(stage, inst_path, positions, orients, scales):
+    """World-space instances as the instancer's parent places them.
+
+    Instances are scattered in world space, and an instancer under a moved, turned or scaled
+    prim draws them in that prim's space, which applied the move twice. Positions take the
+    parent's whole transform back out, orientations its turn, scales its size (one figure:
+    a parent scaled unevenly cannot be undone exactly for turned instances).
+
+    Args:
+        stage: The stage the instancer is authored on.
+        inst_path: The instancer's path.
+        positions: World positions (Vt.Vec3fArray).
+        orients: World orientations (Vt.QuathArray).
+        scales: World scales (Vt.Vec3fArray).
+
+    Returns:
+        The three arrays in the parent's space; the same arrays when it sits unmoved.
+    """
+    parent = stage.GetPrimAtPath(inst_path).GetParent()
+    world = np.array(UsdGeom.XformCache().GetLocalToWorldTransform(parent) if parent else Gf.Matrix4d(1))
+    if np.allclose(world, np.eye(4), atol=1e-9) or not len(positions):
+        return positions, orients, scales
+    inverse = np.linalg.inv(world)
+    local = np.asarray(positions, np.float64) @ inverse[:3, :3] + inverse[3, :3]
+    size = float(np.cbrt(abs(np.linalg.det(world[:3, :3])))) or 1.0
+    turn = Gf.Matrix3d(*(world[:3, :3] / size).reshape(-1)).ExtractRotation().GetQuat().GetInverse()
+    a_w, a_v = turn.GetReal(), np.array(turn.GetImaginary())
+    q = np.asarray(orients, np.float64)
+    b_v, b_w = q[:, :3], q[:, 3]
+    # Hamilton product turn * q: the parent's turn undone, then the instance's own.
+    w = a_w * b_w - b_v @ a_v
+    v = a_w * b_v + b_w[:, None] * a_v + np.cross(a_v, b_v)
+    quats = np.concatenate([v, w[:, None]], 1).astype(np.float16)
+    return (Vt.Vec3fArray.FromNumpy(local.astype(np.float32)), Vt.QuathArray.FromNumpy(quats),
+            Vt.Vec3fArray.FromNumpy((np.asarray(scales, np.float64) / size).astype(np.float32)))
 
 
 def _random_lateral(rng, lat_a, lat_b, axis_vec):
@@ -3454,7 +3561,8 @@ def main():
             "each held to every one before it. Tiles lays one blue-noise tile across the "
             "ground and drops it onto the surface -- the same spacing, many times faster on "
             "big terrains, read from above (a terrain, not a cave). A different layout: "
-            "switching moves every instance.",
+            "switching moves every instance. With Max Slope over 90, Darts is used, as "
+            "Tiles can't reach faces that point down.",
         )
     )
     dist_grp.add_param(
@@ -3670,7 +3778,8 @@ def main():
             "Max Slope",
             default_value=90.0,
             tooltip="Only scatter on faces within this many degrees of facing up.\n"
-            "90 = all upward faces, lower = flatter ground only, 180 = every face.",
+            "90 = all upward faces, lower = flatter ground only, 180 = every face.\n"
+            "Over 90, Sampling: Tiles is replaced by Darts.",
         )
     )
     chunk_api.add_param(_collapsed(region_grp))

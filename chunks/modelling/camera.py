@@ -586,7 +586,9 @@ def main():
 
     chunk_api.add_param(chunk.LineEdit(
         "aim_at", "Aim At",
-        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        # PRIM_PATHS, not PRIM_SELECTION: a prim it reads, never filled from the selection. A
+        # camera made with a prim selected aimed at it, and unchecking Aim At Point fell back to it.
+        flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
         tooltip="A prim to keep the camera pointed at, from wherever it is moved to. Sets "
         "Rotate on every cook; clear it to rotate by hand again.",
     ))

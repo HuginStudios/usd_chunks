@@ -1,0 +1,51 @@
+name: Blender add-on
+
+# One zip a Blender user installs with Install from Disk, and nothing else to set up:
+# the add-on with usd_chunks (chunks included) inside it as a wheel. Built by
+# tools/build_blender_addon.py, which says what is in it and why.
+#
+# On a v* tag it is attached to that tag's GitHub release (made if there is none yet).
+# Run by hand from the Actions tab, it is only kept as a workflow artifact.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to make the release and attach the zip
+
+jobs:
+  build:
+    # Linux: the build is pure Python and needs neither Blender nor OpenUSD, and Linux
+    # runners cost half what Windows ones do.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build the add-on zip
+        # A tag names the version (v0.2.0 -> 0.2.0); by hand, the manifest's version.
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            python tools/build_blender_addon.py --out dist --version "$GITHUB_REF_NAME"
+          else
+            python tools/build_blender_addon.py --out dist
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usd_chunks_blender
+          path: dist/usd_chunks_blender-*.zip
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/usd_chunks_blender-*.zip --clobber

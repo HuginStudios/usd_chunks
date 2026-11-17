@@ -222,7 +222,37 @@ def _range(param, cast):
     return kw
 
 
+#: Answers drawing asks about a param on every frame of every node: its list row, and the
+#: layers that override or hold its value. A network of a dozen nodes asked them ~180 times
+#: a frame, and the two layer questions walk the stage. Keyed by the param's id with the
+#: param kept beside it (an id is only reused once its object is gone, and this holds it),
+#: cleared by clear_draw_cache whenever the network's stage changes or the tree is rebuilt.
+_draw_cache: dict = {}
+
+
+def clear_draw_cache(*_args) -> None:
+    """Forget every cached answer. Takes and ignores a notice's arguments."""
+    _draw_cache.clear()
+
+
+def _cached(kind: str, param, compute):
+    key = (kind, id(param))
+    hit = _draw_cache.get(key)
+    if hit is not None and hit[0] is param:
+        return hit[1]
+    value = compute(param)
+    _draw_cache[key] = (param, value)
+    return value
+
+
 def list_row_of(param):
+    """(list group, row group) enclosing `param`, or None when it is not in a ListGroup.
+
+    Cached (see _draw_cache): it is asked for every param on every frame."""
+    return _cached("row", param, _list_row_of)
+
+
+def _list_row_of(param):
     """(list group, row group) enclosing `param`, or None when it is not in a ListGroup.
 
     A row is a ChunkGroupBase directly under a ChunkListGroupBase; the param may sit a
@@ -364,6 +394,12 @@ def property_for(param):
     return None
 
 
+def node_builtins() -> frozenset:
+    """Every property a plain `bpy.types.Node` already has: name, label, color, location,
+    width, hide, mute, ... A param must not be declared under one of these names."""
+    return frozenset(p.identifier for p in bpy.types.Node.bl_rna.properties)
+
+
 def annotations_for(chunk) -> tuple[dict, list, list]:
     """(rna properties, button param names, unmapped param names) for one chunk.
 
@@ -384,6 +420,12 @@ def annotations_for(chunk) -> tuple[dict, list, list]:
             # property fails the whole node class: Layer's private bookkeeping params left
             # it with no node at all. Such a param is an ID property instead, made by
             # sync_to_node, as a lofted param is.
+            continue
+        if param.name in node_builtins():
+            # A param named like one of Node's own properties -- Exterior Walls' `color`
+            # -- took that property over: painting the node's header (apply_node_state
+            # sets node.color) fired the param's update and wrote the header grey into
+            # the chunk, so the walls cooked grey. An ID property instead, like "_" above.
             continue
         prop = property_for(param)
         if prop is not None:
@@ -482,6 +524,9 @@ def sync_to_node(node, chunk) -> None:
                 # the module docstring describes only works if this is the layer that
                 # seeds layer 2.
                 node[key] = value
+                if PT.COLOR_PICKER in param.get_type():
+                    # A swatch, not three bare numbers: what a declared colour draws as.
+                    node.id_properties_ui(key).update(subtype="COLOR", min=0.0, max=1.0)
                 # Seen as mirrored, not edited: sync_lofted pushes only a user's change.
                 _lofted_seen[(node.as_pointer(), key)] = _plain(node[key])
         except Exception:
@@ -514,9 +559,11 @@ def sync_lofted(node, chunk) -> None:
     every frame. So a key is pushed when the node's value differs from what this last
     saw, which only a user edit does.
     """
-    declared = node.bl_rna.properties
     for key in list(node.keys()):
-        if key.startswith("_") or key in _RESERVED or key in declared:
+        # declares(), the class's own fields, not node.bl_rna.properties: that also lists
+        # Node's built-ins, and a param named like one (`color`) lives here as an ID
+        # property precisely because it cannot be a field (see annotations_for).
+        if key.startswith("_") or key in _RESERVED or declares(node, key):
             continue
         value = _plain(node[key])
         seen_key = (node.as_pointer(), key)
@@ -562,8 +609,10 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
     # sequence. Blender's alert red is the nearest built-in "this is not the default".
     # Held by a stronger layer (chunk_stage.param_held_by) is marked the same way: the
     # value shown is not this graph's either, and an edit here will not show.
-    override_source = chunk_stage.param_override_source(param)
-    layout.alert = override_source is not None or chunk_stage.param_held_by(param) is not None
+    # Both walk the stage, so they are cached until it changes (see _draw_cache).
+    override_source = _cached("override", param, chunk_stage.param_override_source)
+    layout.alert = (override_source is not None
+                    or _cached("held", param, chunk_stage.param_held_by) is not None)
     # A PRIM_SELECTION field gets a pin button beside it, same as Qt's -- pulling in
     # whatever the viewport-click picker last found (chunk_blender_nodegraph.pin_prim /
     # set_picked_prim_paths), which is this frontend's counterpart of the Qt/usdview

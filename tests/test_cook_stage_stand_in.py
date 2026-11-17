@@ -117,3 +117,43 @@ def test_what_a_cook_authors_into_the_session_layer_reaches_the_scene(stood_in) 
         assert stood_in, "the noter cooked on a stand-in"
         assert stood_in[-1].layer is not scene.get_stage().GetSessionLayer()
         assert scene.get_stage().GetSessionLayer().GetAttributeAtPath("/Note.size").default == 8.0
+
+
+def _clock_reader(name: str):
+    """Writes /<name>.t: /Gen.t as the stage reads it at time 10."""
+
+    def main():
+        c = chunk.Chunk(name)
+        c.add_param(chunk.LineEdit("target", default_value="/Gen",
+                                   flags=chunk.ChunkFlags.ParamFlags.PRIM_SELECTION))
+        return c
+
+    def execute(node):
+        stage = node.get_stage()
+        source = stage.GetPrimAtPath(node.get_param("target").value)
+        attr = source.GetAttribute("t") if source else None
+        prim = stage.DefinePrim(f"/{name}", "Xform")
+        prim.CreateAttribute("t", Sdf.ValueTypeNames.Double).Set((attr.Get(10) if attr else None) or -1.0)
+
+    return register_stub_module(main=main, execute=execute)
+
+
+def test_a_kept_sublayer_keeps_its_time_offset(stood_in) -> None:
+    """The stand-in sublayers what the session layer does, each at the session layer's offset."""
+    with Scene() as scene:
+        session = scene.get_stage().GetSessionLayer()
+        clock = Sdf.Layer.CreateAnonymous("clock")
+        clock.ImportFromString('#usda 1.0\nover "Gen"\n{\n    double t.timeSamples = {0: 0, 20: 20}\n}\n')
+        session.subLayerPaths.append(clock.identifier)
+        session.subLayerOffsets[len(session.subLayerPaths) - 1] = Sdf.LayerOffset(offset=5)
+        gen = _network(scene, _clock_reader("Clock"))
+        stood_in.clear()
+
+        gen.get_param("size").value = 2.0
+
+        assert stood_in, "the reader cooked on a stand-in"
+        stand_in = stood_in[-1]
+        paths = list(stand_in.layer.subLayerPaths)
+        assert stand_in.layer.subLayerOffsets[paths.index(clock.identifier)] == Sdf.LayerOffset(offset=5)
+        # Shifted 5 later: what the samples say at 5 is what the stage reads at 10.
+        assert scene.get_stage().GetAttributeAtPath("/Clock.t").Get() == 5.0

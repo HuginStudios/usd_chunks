@@ -21,6 +21,7 @@ A gizmo drives exactly one thing, and its type says what it sends back:
 | `translate`, `rotate`, `scale` | a `Vector` or a group of three params | `Gf.Vec3d` (rotate: Euler XYZ, degrees) |
 | `cube`, `sphere` | one scalar param (a `Slider`) | a number |
 | `transform` | the whole chunk; drives nine params, translate xyz, rotate xyz, scale xyz | `Gf.Matrix4d` |
+| `box` | six face params (+X, -X, +Y, -Y, +Z, -Z), declared in `config()` | six numbers; the box's faces are the handles, dragged one at a time |
 | `brush` | a painting chunk (see `chunks/modelling/scatter_brush.py`) | stroke samples to a hook |
 
 Read a chunk that already does it: `chunks/transforms/transform.py` (groups + a whole-chunk
@@ -63,7 +64,7 @@ def config():
 | `name` | The handle's id on this chunk (not its type; two cubes on one chunk is fine) |
 | `type` | From the table above |
 | `driver` | The param path(s) it writes: one (`"focusDistance"`, a vector), three, or nine for `transform`, in order. Required |
-| `anchor` | Name of the prim-path param the handle hangs off. Empty: inferred from the `PRIM_SELECTION` param, or `primpath_location` |
+| `anchor` | Name of the prim-path param the handle hangs off, or a literal prim path starting with `/` (a row's handle on the prim the chunk makes for that row). Empty: inferred from the `PRIM_SELECTION` param, or `primpath_location` |
 | `axis` | `X`, `-X`, `Y`, `-Y`, `Z`, `-Z` or `screen`, in the anchor's local space. Set it only when the direction is the meaning (focus runs along -Z). `None` = free drag |
 | `label` | Display name; defaults to the chunk's name |
 | `space` | `"local"` (default) or `"world"` |
@@ -84,6 +85,10 @@ Module-level functions the framework calls if they exist. Write them only when n
 - `gizmo_changed(node, gizmo, value) -> bool`: solve the drag yourself (IK, constraints).
   Set the params, then return `True` to skip the declared drivers.
 - `gizmo_stroke(node, gizmo, samples) -> bool`: for `brush` handles.
+- `gizmos(node) -> list[chunk.Gizmo]`: handles that come and go with the chunk's params,
+  one per row of a list. A driver entry names a row as `list.param[i]` (`doors.u[2]`).
+  A row added gets its handle, a row removed loses it. Read
+  `tests/test_chunk_gizmo_rows.py`.
 - `gizmo_offset_changed`: for a draggable pivot. Read its use in `chunks/transforms/transform.py`
   and `usd_chunks/gizmo/runtime.py` before you write one.
 

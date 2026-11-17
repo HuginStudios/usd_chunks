@@ -59,9 +59,9 @@ def _tool(name: str, label: str, submenu: str, script: str, help_text: str = "")
 
 
 def shelf_xml(entries) -> str:
-    """A shelf document with one LOP TAB menu tool per menu entry, and Import Network."""
+    """A shelf document with one LOP TAB menu tool per menu entry, and Chunk Import."""
     tools = [_tool(
-        "usdchunks_import_network", "Import Network...", ROOT_MENU,
+        "usdchunks_chunk_import", "Chunk Import...", ROOT_MENU,
         "from usd_chunks.hosts.houdini import chunkgroup\nchunkgroup.import_from_tool(kwargs)\n",
         "Import a usd_chunks network (.usda) as chunk LOPs: a chunkgroup becomes a subnet, "
         "its wires LOP wires.")]

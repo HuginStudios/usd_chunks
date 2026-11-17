@@ -3,12 +3,26 @@
 usd_chunks adds a **USDChunks Editor** node editor to Blender. You build a chunk network
 there, and the 3D viewport shows the result.
 
-You need Blender 4.2 or newer and a clone of usd_chunks. Tested with Blender 5.2 on
-Windows.
+You need Blender 4.2 or newer. Tested with Blender 5.1 and 5.2 on Windows.
 
 ## Install
 
-Open cmd in the folder you cloned usd_chunks into:
+1. Download `usd_chunks_blender-<version>.zip` from the
+   [Releases page](https://github.com/HuginStudios/usd_chunks/releases). Don't unzip it.
+2. In Blender, go to **Edit > Preferences > Add-ons**, open the **⌄** menu at the top right,
+   choose **Install from Disk...** and pick the zip.
+
+That is all: usd_chunks and its chunks are inside the zip, and Blender has its own USD.
+To use your own chunks as well, set `USD_CHUNK_DIRS` to their folders before starting
+Blender.
+
+**Try it:** switch any area to **USDChunks Editor**, click **New**, and press Shift+A to add
+a chunk.
+
+## Install from a clone
+
+To install a version that isn't released yet. Open cmd in the folder you cloned usd_chunks
+into:
 
 ```
 cd C:\src\usd_chunks
@@ -38,17 +52,30 @@ the **⌄** menu at the top right, choose **Install from Disk...** and pick
 **Step 4. Try it:** switch any area to **USDChunks Editor**, click **New**, and press
 Shift+A to add a chunk.
 
+To join a branch into a chain, drag a node with no wires onto a wire: it goes in through a
+Merge, the dropped node winning, as in the other graph editors.
+
 To open a saved network, press N in the editor, go to the **USDChunks** tab and click
-**Open Chunk Network**.
+**Open Chunk Network**. **File > Import > USD** of a network file opens its network too, in
+a node tree of its own.
 
 To move things in the viewport, Ctrl+click a prim to pick it, then press G, R or S to move,
-rotate or scale it, like a Blender object. X, Y or Z locks an axis. Click to confirm, Esc
-to cancel. This changes the chunk's params. A prim no chunk drives gets a Transform chunk.
+rotate or scale it, like a Blender object. X, Y or Z locks an axis, named as in Blender:
+Z is up. Click to confirm, Esc to cancel. This changes the chunk's params. A prim no chunk drives gets a Transform chunk.
 The handles are part of the add-on, so there is nothing else to install.
+
+A chunk with a box handle (Blockout Box, Blocking Volume) shows a wire box when you pick
+its prim or select its node in the editor. Hover a face to light it, then drag it to move
+that face. Esc puts it back.
+
+A network saved Y-up (usdview's default) is turned to stand up in Blender's Z-up viewport,
+as Blender's USD importer does, and scaled by its `metersPerUnit`. The file itself is not
+changed: chunks still read and write in the network's own space.
 
 ## Updating
 
-After a `git pull`, run steps 1 to 3 again and restart Blender.
+Install the newer zip the same way and restart Blender; it replaces the old one. From a
+clone: after a `git pull`, run steps 1 to 3 again and restart Blender.
 
 ## Working from a checkout
 
@@ -67,10 +94,34 @@ For people working on usd_chunks itself. This links Blender to your clone, so a
 
 3. Start Blender and turn on **USDChunks Editor** in Preferences.
 
+## Other renderers in the live view
+
+The live view draws with Storm, the renderer Blender ships. Another Hydra render delegate
+can draw it instead, if it was built against **Blender's own USD**: a build for any other
+USD won't load inside Blender.
+
+1. In **Edit > Preferences > Add-ons > USDChunks Editor**, set **Hydra Delegate Folders**
+   to the delegate's folder: the one with its `plugInfo.json`, or with a `resources`
+   folder that has it. Separate several folders with `;`.
+2. In the 3D viewport, open the sidebar (N) and pick it in **USDChunks > Renderer**.
+
+A launcher can set `USD_CHUNKS_HYDRA_DELEGATES` to the same list instead. The add-on reads
+it when it starts.
+
+The live view uses the stage's RenderSettings prim: the one the stage's
+`renderSettingsPrimPath` names, or else the first one under `/Render`. The renderer's own
+settings on it, such as Aurora's `aurora:max_samples` or `aurora:is_denoising_enabled`,
+apply to the live view. A path tracer keeps refining the image until it is done.
+
 ## If something is wrong
 
 **"No module named 'usd_chunks'" when the add-on turns on.** Step 1 didn't run, or used
 another Blender version's folder. Run step 1, then turn the add-on off and on again.
+
+**A node is red and says "Missing chunk type".** The network uses a chunk that no folder
+on `USD_CHUNK_DIRS` has, such as one from your own chunk library. Its node keeps its wires
+and the values saved in the file. Add the folder to `USD_CHUNK_DIRS` and restart Blender.
+The USDChunks tab in the sidebar lists every missing type.
 
 **A chunk is missing from Shift+A.** It needs a pip package that isn't installed. Use the
 chunk and Blender asks to install it. That needs **Allow Online Access** on, in **Edit >

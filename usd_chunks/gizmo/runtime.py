@@ -23,6 +23,9 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import re
+import time
+import weakref
 from collections.abc import Iterable
 from typing import Any
 
@@ -34,6 +37,8 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_topology
+from usd_chunks import chunk_trace
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
 
@@ -107,7 +112,8 @@ def get_gizmos(chunk: core.ChunkBase) -> list:
         chunk: The chunk to read.
 
     Returns:
-        The chunk's gizmos; an explicit Gizmo wins over sugar of the same name.
+        The chunk's gizmos; an explicit Gizmo wins over sugar of the same name, and both win
+        over a runtime one (GIZMOS_HOOK) of the same name.
     """
     config = chunk.get_config() if hasattr(chunk, "get_config") else None
     gizmos = list(getattr(config, "gizmos", None) or ())
@@ -118,7 +124,32 @@ def get_gizmos(chunk: core.ChunkBase) -> list:
         # form is "write the full one", and that has to actually replace the short one.
         if sugared.name not in declared:
             gizmos.append(sugared)
+            declared.add(sugared.name)
+    for runtime in _runtime_gizmos(chunk):
+        if runtime.name not in declared:
+            gizmos.append(runtime)
+            declared.add(runtime.name)
     return gizmos
+
+
+#: A module function returning more handles, worked out from the chunk as it is now:
+#: ``def gizmos(node) -> list[chunk.Gizmo]``. For handles that come and go with the chunk's
+#: params -- one per row of a list (driving ``doors.u[2]``), one per joint. config() runs
+#: once, before the chunk has any rows; this runs whenever the handles are authored or
+#: refreshed, so a row added or removed adds or removes its handle.
+GIZMOS_HOOK = "gizmos"
+
+
+def _runtime_gizmos(chunk: core.ChunkBase) -> list:
+    hook = getattr(chunk, "_module_hook", lambda _name: None)(GIZMOS_HOOK)
+    if hook is None:
+        return []
+    try:
+        return [g for g in (hook(chunk) or ()) if isinstance(g, core.GizmoBase)]
+    except Exception:
+        # Called from the param-changed path: a hook that raises must not break editing.
+        logger.exception("%s hook failed on chunk %r", GIZMOS_HOOK, getattr(chunk, "name", chunk))
+        return []
 
 
 def _sugared_gizmos(chunk: core.ChunkBase) -> list:
@@ -278,6 +309,11 @@ def _anchor_targets(chunk: core.ChunkBase, gizmo, stage: Usd.Stage) -> list:
     never have to evaluate a chunk param to find out where to draw. We already re-read this
     param on every cook, so keeping the rel fresh costs nothing.
     """
+    # A prim path rather than a param's name: a handle the module's gizmos(node) hook made
+    # for one row, hanging off the prim the chunk makes for that row -- no param holds it.
+    if str(gizmo.anchor).startswith("/"):
+        return [Sdf.Path(gizmo.anchor)] if Sdf.Path.IsValidPathString(gizmo.anchor) else []
+
     param = resolve_anchor_param(chunk, gizmo)
 
     resolve = getattr(param, "resolve_paths", None)
@@ -362,6 +398,42 @@ def _iter_vectors(obj, prefix: str = ""):
             yield from _iter_vectors(param, path)
 
 
+#: A driver entry naming one row of a list: ``u[2]``, or ``doors.u[2]`` with the list's path.
+_ROW_ENTRY = re.compile(r"^(?P<name>.+)\[(?P<index>\d+)\]$")
+
+
+def _iter_lists(obj, prefix: str = ""):
+    """(path, list group) for every list group under obj, not crossing into a nested chunk."""
+    for param in obj.get_my_params():
+        if isinstance(param, core.ChunkBase):
+            continue
+        path = f"{prefix}.{param.name}" if prefix else param.name
+        if isinstance(param, core.ChunkListGroupBase):
+            yield path, param
+        elif isinstance(param, core.ChunkGroupBase) and not isinstance(param, core.ChunkVectorBase):
+            yield from _iter_lists(param, path)
+
+
+def _row_entry(chunk: core.ChunkBase, entry: str):
+    """(row param, column path) for a driver entry naming a list row, or None if it names none.
+
+    The column path is the list's path and the param's name -- what the list keeps that
+    param's rows under, one array attribute for all of them.
+    """
+    match = _ROW_ENTRY.match(str(entry).strip())
+    if not match:
+        return None
+    name, index = match["name"], int(match["index"])
+    for path, group in _iter_lists(chunk):
+        template = name[len(path) + 1:] if name.startswith(path + ".") else name
+        if group.get_param(template) is None or not 0 <= index < group.size:
+            continue
+        row = group.get_indexed_param(template, index)
+        if row is not None:
+            return row, f"{path}.{template}"
+    return None
+
+
 def _param_path(chunk: core.ChunkBase, entry: str) -> str:
     """The full dotted path of a driven param, from either its path or its bare name.
 
@@ -373,6 +445,9 @@ def _param_path(chunk: core.ChunkBase, entry: str) -> str:
     for path, param in itertools.chain(_iter_params(chunk), _iter_vectors(chunk)):
         if path == entry or param.name == entry:
             return path
+    # A list row is kept in its column's array: the connection names the column.
+    if row := _row_entry(chunk, entry):
+        return row[1]
     raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
 
 
@@ -438,6 +513,53 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> No
                 # One malformed gizmo must not take the chunk prim down with it -- the rest of
                 # the prim's bookkeeping (exec ports, params) is what makes the chunk work at all.
                 logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
+
+
+def _record_matches(prim: Usd.Prim, chunk: core.ChunkBase, gizmo) -> bool:
+    """Whether the prim's record of a handle still says what the chunk now declares.
+
+    The parts a newer version of a chunk changes and a host reads: the type, the axis, where
+    the anchor comes from (a param, or a literal prim path) and how many params it drives.
+    The label, offset, hidden flag and anchor target are refreshed on every param change.
+    """
+    def token(field):
+        attr = prim.GetAttribute(_attr_name(gizmo.name, field))
+        return attr.Get() if attr and attr.HasAuthoredValue() else None
+
+    if token("type") != gizmo.type or token("axis") != gizmo.axis:
+        return False
+    literal = str(gizmo.anchor).startswith("/")
+    if literal != (token("anchorSource") is None):
+        return False
+    driver = prim.GetAttribute(_driver_attr_name(gizmo.name))
+    return bool(driver) and len(driver.GetConnections()) == len(gizmo.driver)
+
+
+def _sync_runtime_records(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmos: list) -> bool:
+    """Bring the prim's records in line with a chunk whose handles change (GIZMOS_HOOK).
+
+    A row's handle that is new gets authored; one whose row has gone loses its record, or a
+    host would keep drawing a handle that drives nothing. A handle whose record no longer says
+    what the chunk declares -- a network saved by an older version of the chunk, whose handle
+    has since moved to another anchor or become flat -- is authored again. Only for a chunk with
+    the hook: a plain chunk's set never changes. True if anything was written.
+    """
+    if getattr(chunk, "_module_hook", lambda _name: None)(GIZMOS_HOOK) is None:
+        return False
+    wanted = {g.name for g in gizmos}
+    have = set(_gizmo_names(prim))
+    stale = {g.name for g in gizmos if g.name in have and not _record_matches(prim, chunk, g)}
+    gone, new = (have - wanted) | stale, [g for g in gizmos if g.name not in have or g.name in stale]
+    if not gone and not new:
+        return False
+    with Sdf.ChangeBlock():
+        for prop in prim.GetProperties():
+            name = prop.GetName()
+            if name.startswith(GIZMO_PREFIX) and name[len(GIZMO_PREFIX):].split(":")[0] in gone:
+                prim.RemoveProperty(name)
+    if new:
+        author_gizmos(stage, prim, chunk)
+    return True
 
 
 def _author_hidden(prim: Usd.Prim, chunk: core.ChunkBase, name: str) -> None:
@@ -508,8 +630,9 @@ def _author_one(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmo) 
     # anchorSource is for us, not for hosts: write-back needs to know which param produced
     # the target, and a host that had to read it would be back to the two-hop lookup this
     # schema exists to avoid.
-    anchor_param = resolve_anchor_param(chunk, gizmo)
-    _uniform_token(prim, _attr_name(gizmo.name, "anchorSource")).Set(anchor_param.name)
+    if not str(gizmo.anchor).startswith("/"):  # a literal prim path has no param behind it
+        anchor_param = resolve_anchor_param(chunk, gizmo)
+        _uniform_token(prim, _attr_name(gizmo.name, "anchorSource")).Set(anchor_param.name)
 
     rel = prim.CreateRelationship(_attr_name(gizmo.name, "anchor"), custom=False)
     rel.SetTargets(_anchor_targets(chunk, gizmo, stage))
@@ -530,7 +653,11 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBas
         chunk: The chunk whose gizmos to refresh.
     """
     gizmos = get_gizmos(chunk)
-    if not gizmos or not (prim and prim.IsValid()):
+    if not (prim and prim.IsValid()):
+        return
+    if _sync_runtime_records(stage, prim, chunk, gizmos):
+        return  # re-authored whole, anchors included
+    if not gizmos:
         return
 
     for gizmo in gizmos:
@@ -570,7 +697,7 @@ def refresh_gizmo_anchors(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBas
 
 def _gizmo_names(prim: Usd.Prim) -> list:
     names = []
-    for attr in prim.GetAttributes():
+    for attr in prim.GetProperties():
         name = attr.GetName()
         if not name.startswith(GIZMO_PREFIX):
             continue
@@ -669,57 +796,20 @@ def chunks_for_prim(prim: Usd.Prim) -> list:
     Returns:
         The chunks that touched it.
     """
-    manager = ChunkLayerManager()
-    if not getattr(manager, "initialized", False) or not manager.chunk_layers:
-        return []
-
-    # chunk_layers is keyed by ChunkHash, not by the chunk object, so it cannot be inverted
-    # on its own -- go via the scene's live chunks to get back to something with params to
-    # write. Several chunks can legitimately share one layer (a CONTEXT group hands its
-    # layer to its children), hence a list per identifier rather than a single entry.
-    scene = getattr(ChunkRegistry(), "scene", None)
-    if scene is None:
-        return []
-
-    by_identifier: dict = {}
-    for candidate in scene.get_chunks():
-        layer = manager.chunk_layers.get(candidate.get_hash())
-        if layer is not None:
-            by_identifier.setdefault(layer.identifier, []).append(candidate)
+    # Several chunks can share one layer (a CONTEXT group hands its layer to its children).
+    by_identifier = chunk_trace.chunks_by_layer()
     if not by_identifier:
         return []
 
     found = []
     for spec in prim.GetPrimStack():
         layer = getattr(spec, "layer", None)
-        if layer is None or not _is_meaningful_spec(spec):
+        if layer is None or not chunk_trace.is_meaningful_spec(spec):
             continue
         for chunk in by_identifier.get(layer.identifier, ()):
             if not any(chunk is seen for seen in found):
                 found.append(chunk)
     return found
-
-
-def _is_meaningful_spec(spec) -> bool:
-    """Whether this spec is the chunk actually touching the prim, or just scaffolding.
-
-    Authoring an override on a prim implicitly creates empty `over` specs for every
-    ancestor, because the descendant needs a path to hang off. Those are not a claim on the
-    ancestor, but they are in its prim stack all the same -- so a Transform chunk driving
-    `/apple/grp/mesh` looked like it also drove `/apple` and `/apple/grp`.
-
-    Only one direction is allowed: a descendant is not scaffolding for an ancestor.
-    Dragging a mesh and then its parent must make a second chunk, just as dragging the
-    parent and then the mesh does.
-
-    Anything the chunk genuinely authored -- a property, metadata such as an `active` flag
-    from a prune, or a specifier that defines rather than overrides -- counts.
-    """
-    if spec.properties:
-        return True
-    if set(spec.ListInfoKeys()) - {"specifier"}:
-        return True
-    return spec.specifier != Sdf.SpecifierOver
 
 
 def _chunk_prim(stage: Usd.Stage, chunk: core.ChunkBase) -> Usd.Prim | None:
@@ -775,6 +865,11 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     # Order matters and is preserved: chunks_for_prim walks GetPrimStack(), which USD
     # returns strength-ordered, so the chunk whose result is actually on screen stays first
     # and a host driving handles[0] drives the one the user can see.
+    # A handle anchored by a literal prim path (one a gizmos(node) hook made for one row) is
+    # that prim's alone. Its chunk writes every row's prim, so each prim's layer stack names
+    # the chunk -- and without this, dragging one door handed the drag to every door.
+    path = prim.GetPath()
+    descs = [d for d in descs if d.anchor_source or not d.anchor or path in d.anchor]
     seen = {(str(d.chunk_prim), d.name) for d in descs}
     for desc in _gizmos_anchored_at(prim):
         if (str(desc.chunk_prim), desc.name) not in seen:
@@ -782,23 +877,43 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     return _ordered_downstream_first(stage, descs)
 
 
-def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
-    """How far down the exec chain a chunk prim sits. Bigger is further downstream."""
-    depth, path, seen = 0, Sdf.Path(str(chunk_prim_path)), set()
-    while path not in seen:
+def _exec_depth(stage: Usd.Stage, chunk_prim_path, memo: dict | None = None) -> int:
+    """How far down the exec chain a chunk prim sits. Bigger is further downstream.
+
+    Args:
+        stage: The stage holding the chunk prims.
+        chunk_prim_path: The chunk prim to measure.
+        memo: Depths already found, by prim path. Pass the same dict to measure several
+            chunks of one chain: each walk stops where an earlier one went, so the chain
+            is walked once, not once per chunk.
+
+    Returns:
+        The number of exec hops up to the top of the chain.
+    """
+    memo = {} if memo is None else memo
+    start = path = Sdf.Path(str(chunk_prim_path))
+    chain, seen = [], set()
+    while path not in memo:
+        if path in seen:
+            # A cycle: the hops taken so far, and nothing kept, since the depth of a prim
+            # on a loop depends on where the walk started.
+            return len(chain)
         seen.add(path)
         prim = stage.GetPrimAtPath(path)
-        if not (prim and prim.IsValid()):
-            break
-        upstream = chunk_stage.exec_input_connections(prim)
+        upstream = chunk_stage.exec_input_connections(prim) if prim and prim.IsValid() else []
         if not upstream:
+            memo[path] = 0
             break
+        chain.append(path)
         # The strongest branch, matching how the chain is read everywhere else. A merge
         # feeding several inputs makes depth approximate, and approximate is fine: it only
         # decides which of two handles on ONE prim is offered first.
         path = upstream[0].GetPrimPath()
+    depth = memo[path]
+    for step in reversed(chain):
         depth += 1
-    return depth
+        memo[step] = depth
+    return memo[start]
 
 
 def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
@@ -817,11 +932,11 @@ def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
     """
     if len(descs) < 2:
         return descs
-    depths = {}
+    depths, memo = {}, {}
     for desc in descs:
         key = str(desc.chunk_prim)
         if key not in depths:
-            depths[key] = _exec_depth(stage, desc.chunk_prim)
+            depths[key] = _exec_depth(stage, desc.chunk_prim, memo)
     # Stable, so handles from one chunk keep their declared order and equal-depth chunks
     # keep the layer-stack order they arrived in.
     return sorted(descs, key=lambda d: -depths[str(d.chunk_prim)])
@@ -957,6 +1072,100 @@ def _translation_about(matrix: Gf.Matrix4d, translation, pivot: tuple | None) ->
 
 
 # ---------------------------------------------------------------------------
+# box handles: the face under the mouse, and where a drag takes it
+# ---------------------------------------------------------------------------
+
+#: (axis index, sign) of each face of a `box` handle, in its driver order: +X, -X, +Y, -Y, +Z, -Z.
+BOX_FACES = ((0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1))
+
+# Below this a ray runs along a slab, or along the face's normal, and has no answer there.
+_PARALLEL_EPSILON = 1e-12
+
+
+def box_bounds(values) -> tuple[Gf.Vec3d, Gf.Vec3d]:
+    """The (min, max) corners of a `box` handle's six values, in the anchor's own space.
+
+    Args:
+        values: The six face distances from the anchor's origin, +X, -X, +Y, -Y, +Z, -Z.
+    """
+    px, nx, py, ny, pz, nz = (float(v) for v in values)
+    return Gf.Vec3d(-nx, -ny, -nz), Gf.Vec3d(px, py, pz)
+
+
+def pick_box_face(values, origin, direction) -> tuple[int, float] | None:
+    """Which face of a `box` handle a ray enters it through, and how far along the ray.
+
+    Against the box the six values describe and nothing else: a mesh inside the box, or the
+    box's own drawn geometry, can never be what is picked, so a host tests this before (and
+    instead of) its own pick. Offered to hosts for the same reason `decompose()` is -- the
+    face order and the "entering face" rule live in one place.
+
+    Args:
+        values: The handle's six face distances (the params it drives, as they are now).
+        origin: The ray's start, in the anchor's own space (the inverse of its world transform
+            applied to the world ray).
+        direction: The ray's direction, in the same space. Need not be unit length.
+
+    Returns:
+        (face index into BOX_FACES and the driver, ray parameter of the hit), or None when
+        the ray misses the box or starts inside it.
+    """
+    lo, hi = box_bounds(values)
+    o, d = Gf.Vec3d(*origin), Gf.Vec3d(*direction)
+    t_enter, t_exit, face = -math.inf, math.inf, None
+    for axis in range(3):
+        if abs(d[axis]) < _PARALLEL_EPSILON:
+            if not lo[axis] <= o[axis] <= hi[axis]:
+                return None
+            continue
+        t_lo, t_hi = (lo[axis] - o[axis]) / d[axis], (hi[axis] - o[axis]) / d[axis]
+        near, far = min(t_lo, t_hi), max(t_lo, t_hi)
+        if near > t_enter:
+            # A ray heading up an axis enters through that axis's min face, the -X face for X.
+            t_enter, face = near, 2 * axis + (1 if d[axis] > 0 else 0)
+        t_exit = min(t_exit, far)
+    if face is None or t_enter > t_exit or t_enter < 0.0:
+        return None
+    return face, t_enter
+
+
+def drag_box_face(values, face: int, grab, origin, direction) -> list[float]:
+    """The six values of a `box` handle once `face` is pulled to where a ray now points.
+
+    The face moves along its own normal only: the new distance is where the line through
+    the grab point along the normal comes closest to the ray. All in the anchor's own space.
+
+    Args:
+        values: The six face distances **as they were when the drag began**, not the last
+            tick's, so a drag never drifts.
+        face: The face being dragged, from pick_box_face.
+        grab: The point the face was grabbed at, also from the press:
+            ``origin + direction * t`` for the press's ray and pick_box_face's t.
+        origin: This tick's ray start.
+        direction: This tick's ray direction.
+
+    Returns:
+        The six values to send to apply_bindings. Unchanged while the ray runs along the
+        normal (looking straight at the face), where no point on it is nearer than another.
+        A face is never pulled past the opposite one.
+    """
+    out = [float(v) for v in values]
+    axis, sign = BOX_FACES[face]
+    normal = Gf.Vec3d(0, 0, 0)
+    normal[axis] = float(sign)
+    d = Gf.Vec3d(*direction)
+    w = Gf.Vec3d(*grab) - Gf.Vec3d(*origin)
+    b, c = normal * d, d * d
+    denom = c - b * b
+    if denom < _PARALLEL_EPSILON * max(c, 1.0):
+        return out
+    s = (b * (d * w) - c * (normal * w)) / denom
+    opposite = face ^ 1
+    out[face] = max(out[face] + s, -out[opposite])
+    return out
+
+
+# ---------------------------------------------------------------------------
 # write-back
 # ---------------------------------------------------------------------------
 
@@ -994,6 +1203,8 @@ def _param_for_entry(chunk: core.ChunkBase, entry: str):
     A name that does not resolve is a declaration bug -- the chunk's own config naming a
     param it does not have -- so it raises rather than quietly doing nothing.
     """
+    if row := _row_entry(chunk, entry):
+        return row[0]
     param = chunk.get_param(str(entry).strip())
     if param is None:
         raise ValueError(f"Chunk {chunk.name!r} has no param {entry!r} to drive")
@@ -1335,6 +1546,13 @@ def apply_bindings(chunk: core.ChunkBase, name: str, value: Any) -> None:
         value: A `Gf.Vec3d` for a manipulator type (rotations are Euler XYZ in degrees), a
             single number for a shape type.
 
+    Inside a drag (between `chunk.start_gizmo()` and `chunk.stop_gizmo()`) the chunk cooks
+    at most every DRAG_INTERVAL, with the newest value: call this every tick regardless,
+    and a write that comes too soon waits for a timer (`scene.call_later`), replaced by any
+    later one. Once a cook in the drag takes longer than SLOW_COOK, the drag cooks only
+    when the handle has rested DRAG_REST, and on release: `stop_gizmo()` writes what is
+    still waiting before GIZMO_STOP goes out.
+
     Raises:
         ValueError: No chunk exists at the given path.
     """
@@ -1350,6 +1568,154 @@ def apply_bindings(chunk: core.ChunkBase, name: str, value: Any) -> None:
     if gizmo is None:
         raise ValueError(f"Chunk {chunk.name!r} declares no gizmo named {name!r}")
 
+    drag = _drags.get(id(chunk))
+    if drag is None or drag.chunk is not chunk:
+        _write(chunk, gizmo, value)  # no drag open: a script, a test, a one-off set
+        return
+    # A drag: cook at most every DRAG_INTERVAL, the newest value only. A write sooner
+    # than that waits for a timer, and a later write replaces it before it fires.
+    drag.waiting[gizmo.name] = value
+    if drag.slow:
+        # Cooks too slow to follow the mouse: cook when the handle rests, or on release.
+        _cook_at_rest(drag)
+        return
+    if time.monotonic() - drag.last >= DRAG_INTERVAL:
+        # Due: write now, in this tick, whatever the timer is doing. A host timer can
+        # starve while input keeps coming -- on Windows a Qt timer fires only once the
+        # queue is free of mouse moves -- so while the mouse moves, the ticks themselves
+        # cook, and the timer is only for the value left when the mouse stops.
+        _write_waiting(drag)
+        return
+    if not drag.scheduled:
+        scene = chunk.get_scene()
+        if scene is None:
+            _write_waiting(drag)
+            return
+        drag.scheduled = True
+        delay = max(0.0, DRAG_INTERVAL - (time.monotonic() - drag.last))
+        cancel = scene.call_later(lambda: _write_later(drag), delay)
+        if drag.scheduled:  # a host with no event loop ran it already
+            drag.cancel = cancel
+
+
+#: Seconds between two cooks of one chunk while a handle is dragged on it: 30 a second,
+#: the slowest a dragged thing still feels stuck to the cursor. A cook takes what time it
+#: takes; the throttle stops mouse moves that arrived during it from each cooking in turn,
+#: which is what makes a slow chunk trail further and further behind the cursor.
+DRAG_INTERVAL = 1.0 / 30.0
+
+#: Seconds a cook may take and still run while the handle moves. A longer one blocks the
+#: viewport for that long, so the handle freezes on every cook; past it, the drag stops
+#: cooking and cooks once, where the handle is let go. The host keeps drawing its handle
+#: from the mouse meanwhile, so the handle follows and the result catches up on release.
+SLOW_COOK = 0.05
+
+#: Seconds a handle held still waits, in a drag too slow to cook live, before it cooks
+#: where it rests. Each tick starts the wait again, so moving the mouse never freezes it.
+DRAG_REST = 0.1
+
+
+@attrs.define(eq=False)
+class _Drag:
+    """One open drag on a chunk: start_gizmo() to stop_gizmo()."""
+
+    chunk: core.ChunkBase
+    #: When the last write finished cooking (time.monotonic).
+    last: float = -math.inf
+    #: The newest value per gizmo name not yet written.
+    waiting: dict = attrs.field(factory=dict)
+    #: Whether a timer is set to write `waiting`, and how to cancel it.
+    scheduled: bool = False
+    cancel: Any = None
+    #: Whether a write in this drag took longer than SLOW_COOK; it then waits for the release.
+    slow: bool = False
+
+
+#: The open drags, by id() of their chunk (a chunk is not hashable).
+_drags: dict[int, _Drag] = {}
+
+#: Whether a chunk's last drag found its cooks slow, by id(): (weakref to it, slow). The
+#: next drag starts from it, so only the first drag on a slow chunk freezes for one cook
+#: to find out; its release cook is timed again and keeps this up to date.
+_slow: dict[int, tuple] = {}
+
+
+def _was_slow(chunk: core.ChunkBase) -> bool:
+    ref, slow = _slow.get(id(chunk), (None, False))
+    return slow and ref is not None and ref() is chunk
+
+
+def _write_waiting(drag: _Drag) -> None:
+    """Write what the drag holds back, newest values only, and note when it finished."""
+    if drag.cancel is not None:
+        drag.cancel()
+    drag.scheduled, drag.cancel = False, None
+    waiting, drag.waiting = drag.waiting, {}
+    began = time.monotonic()
+    try:
+        for name, value in waiting.items():
+            gizmo = find_gizmo(drag.chunk, name)
+            if gizmo is not None:
+                _write(drag.chunk, gizmo, value)
+    finally:
+        drag.last = time.monotonic()
+        if drag.last - began > SLOW_COOK:
+            drag.slow = True
+
+
+def _cook_at_rest(drag: _Drag) -> None:
+    """(Re)start the wait for the handle to rest: the last tick's timer is cancelled.
+
+    A held-still mouse sends no events, so this timer is not starved the way a timer
+    during movement is (see apply_bindings).
+    """
+    if drag.cancel is not None:
+        drag.cancel()
+        drag.cancel = None
+    scene = drag.chunk.get_scene()
+    if scene is None:
+        return  # no loop to wait in: the release cooks it
+    drag.scheduled = True
+    cancel = scene.call_later(lambda: _write_later(drag), DRAG_REST)
+    if drag.scheduled:  # a host with no event loop ran it already
+        drag.cancel = cancel
+
+
+def _write_later(drag: _Drag) -> None:
+    """The throttle's timer: write unless the drag has ended or the chunk is gone."""
+    drag.cancel = None
+    if not drag.scheduled or _drags.get(id(drag.chunk)) is not drag or drag.chunk.is_deleting():
+        drag.scheduled = False
+        return
+    try:
+        _write_waiting(drag)
+    except Exception:
+        # Out of the host's timer, where nobody would see it raise.
+        logger.exception("gizmo write on %s failed", drag.chunk.name)
+
+
+def _drag_started(chunk: core.ChunkBase) -> None:
+    _drags[id(chunk)] = _Drag(chunk, slow=_was_slow(chunk))
+
+
+def _drag_stopped(chunk: core.ChunkBase) -> None:
+    """The handle let go: write where it was let go, now, before GIZMO_STOP goes out."""
+    drag = _drags.pop(id(chunk), None)
+    if drag is None or drag.chunk is not chunk:
+        return
+    if drag.waiting:
+        drag.slow = False  # timed afresh: the release cook says how slow it is now
+        _write_waiting(drag)
+    _slow[id(chunk)] = (weakref.ref(chunk), drag.slow)
+
+
+core.GIZMO_START_HOOKS.append(_drag_started)
+core.GIZMO_STOP_HOOKS.append(_drag_stopped)
+
+
+def _write(chunk: core.ChunkBase, gizmo, value: Any) -> None:
+    """apply_bindings' write: through a solve hook, or into the driver params."""
+    name = gizmo.name
     if _dispatch_solve_hook(chunk, name, value):
         chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, name)
         return
@@ -1365,7 +1731,7 @@ def apply_bindings(chunk: core.ChunkBase, name: str, value: Any) -> None:
         # the entire reason this goes through params instead of writing prims.
         param.value = item
 
-    # One per tick, inside the START/STOP bracket. Deliberately after the writes, so a
+    # One per write (per cook in a drag), inside the START/STOP bracket. Deliberately after the writes, so a
     # listener seeing CHANGED can read the new values straight off the params.
     chunk.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_CHANGED, gizmo.name)
 
@@ -2025,6 +2391,16 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     stage = prim.GetStage()
     scene = getattr(ChunkRegistry(), "scene", None)
     depths: dict = {}
+    # Shared by every walk below: in a chain of Transforms on one prim each owner sits one
+    # hop below the last, and a fresh walk per owner made one cook cost the chain's length
+    # squared (0.26 s per Transform cook at 100 deep). Kept between cooks too, until an exec
+    # wire changes: read from the scene's stage, where the chunk prims are, so that a cook
+    # stage's answers never go into it.
+    depth_stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
+    if depth_stage:
+        memo = chunk_topology.exec_depth_memo(depth_stage)
+    else:
+        depth_stage, memo = stage, {}
     # Only an op already on the prim can join the order, so with no other chunk op there,
     # there is no one to look for -- the usual case, and asking every chunk in a big scene
     # made each Transform cook cost the size of the scene. A cook sees only what is above it,
@@ -2051,10 +2427,10 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
         owner_prim = _chunk_prim(stage, owner)
         if owner_prim is None:
             continue
-        depths[op_name] = _exec_depth(stage, owner_prim.GetPath())
+        depths[op_name] = _exec_depth(depth_stage, owner_prim.GetPath(), memo)
     # Depth only orders this op against others; alone, it sorts the same at any depth, and
     # measuring it walks the whole exec chain above this chunk.
-    depths[my_op] = _exec_depth(stage, _own_prim_path(stage, node)) if depths else 0
+    depths[my_op] = _exec_depth(depth_stage, _own_prim_path(stage, node), memo) if depths else 0
 
     # The prim's own ops keep their place at the front. Anything a chunk owns is dropped and
     # re-added below, so an op does not appear twice when a chunk's position changes.

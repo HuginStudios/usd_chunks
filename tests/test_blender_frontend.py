@@ -17,6 +17,7 @@ optional extra rather than a dependency.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import threading
 
@@ -271,27 +272,90 @@ def test_no_active_view_reads_as_zero(view):
 # registration
 # ---------------------------------------------------------------------------
 
-def test_a_node_class_is_generated_per_chunk_type():
-    """Registration loads the whole library, because Blender needs a class registered
-    before a node of that type can exist -- there is no lazy path."""
-    assert len(bg._generated) > 10
+def test_a_node_class_is_generated_per_chunk_type(view):
+    """A class per chunk type, built when a node of it is first made: the view's own
+    Reference and Transform have one, and an unused type gets one when asked."""
+    assert {"reference", "transform"} <= set(bg._generated)
+    cls = bg.ensure_chunk_type("prim")
+    assert cls is not None and cls.bl_idname == bg.node_class_id("prim")
+    assert bg.ensure_chunk_type("prim") is cls
+
+
+def test_opening_a_network_builds_only_the_types_it_uses(view, monkeypatch):
+    """Opening the house network loaded all 115 modules to build every class (~5.6 s of
+    6.8); now a rebuild asks only for the types on the graph."""
+    asked = []
+    real = bg.ensure_chunk_type
+    monkeypatch.setattr(bg, "ensure_chunk_type", lambda name: asked.append(name) or real(name))
+    view.reload()
+    assert set(asked) == {chunk_graph.node_kind(p) for p in view.prims.values()}
+
+
+def test_the_add_menu_needs_no_node_class(view):
+    """Shift+A lists the library from the registry's configs, before any class exists."""
+    assert bg.build_add_menu() > 50
+
+
+def test_a_type_that_cannot_build_is_not_retried_on_every_rebuild(view, monkeypatch):
+    calls = []
+    module = chunk_registry.ChunkRegistry().get_chunk_module("custom_widget")
+    monkeypatch.setattr(bg, "_build_chunk_type", lambda m: calls.append(m) or None)
+    bg._failed.discard("custom_widget")
+    assert bg.ensure_chunk_type("custom_widget") is None
+    assert bg.ensure_chunk_type("custom_widget") is None
+    assert len(calls) == 1 and calls[0] is module
+    bg._failed.discard("custom_widget")
+
+
+def test_drawing_asks_the_stage_once_until_it_changes(view):
+    """Drawing asked the stage whether each param was held or overridden ~180 times a frame
+    on a dozen nodes. The answer is kept until the network's stage changes."""
+    param = _node(view, "Move").get_chunk().get_param("tz")
+    asked = []
+    chunk_blender.clear_draw_cache()
+    for _frame in range(3):
+        chunk_blender._cached("held", param, lambda p: asked.append(p) or None)
+    assert len(asked) == 1
+    view.stage.DefinePrim("/Poke")  # any change to the stage
+    chunk_blender._cached("held", param, lambda p: asked.append(p) or None)
+    assert len(asked) == 2
+
+
+def test_quitting_does_not_run_chunks_never_used(tmp_path):
+    """A discovered chunk module sits in sys.modules as a lazy module. Blender's quit reads
+    `__dict__` off every module there, which ran each chunk the session never used --
+    display_modes, wanting usdview, printed a traceback on every quit."""
+    source = tmp_path / "never_used_chunk.py"
+    source.write_text("raise RuntimeError('a chunk nobody used ran on quit')\n")
+    spec = importlib.util.spec_from_file_location("never_used_chunk", source)
+    spec.loader = importlib.util.LazyLoader(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # A mapping of its own: the session's real lazy chunk modules must stay for later tests.
+    modules = {"never_used_chunk": module, "sys": sys}
+    assert addon.forget_unloaded_modules(modules=modules) == 1
+    assert modules == {"sys": sys}
+
+
+def test_the_quit_hook_is_registered(addon_on):
+    assert addon.forget_unloaded_modules in bpy.app.handlers.exit_pre
 
 
 def test_qt_only_chunks_are_skipped_not_fatal():
     """A chunk that imports PySide6 at module level cannot load in Blender (the
     custom_widget example still does). The registry skips a module whose import fails,
     so the add-on degrades rather than refusing to start."""
-    assert "custom_widget" not in bg._generated
+    assert bg.ensure_chunk_type("custom_widget") is None
 
 
 def test_uv_checker_loads_without_qt():
     """uv_checker imported Qt for one error popup; Qt is optional there now."""
-    assert "uv_checker" in bg._generated
+    assert bg.ensure_chunk_type("uv_checker") is not None
 
 
 def test_a_chunk_that_only_waited_with_qt_now_loads():
     """rbd_solver imported Qt for one debounce timer; it waits through call_later now."""
-    assert "rbd_solver" in bg._generated
+    assert bg.ensure_chunk_type("rbd_solver") is not None
 
 
 def test_call_later_from_a_worker_runs_on_the_main_thread():
@@ -309,7 +373,7 @@ def test_call_later_from_a_worker_runs_on_the_main_thread():
 def test_the_material_library_loads_without_qt():
     """AMDMaterialXLibrary's thumbnail grid is Qt, but the chunk is not: without the import
     guard its nodes were missing from a loaded network, and every wire through them too."""
-    assert "AMDMaterialXLibrary" in bg._generated
+    assert bg.ensure_chunk_type("AMDMaterialXLibrary") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +491,82 @@ def test_a_cut_wire_does_not_heal_the_chain(view):
     view.tree.update()
     after = list(view.prims[view_path].GetAttribute("inputs:chunk").GetConnections())
     assert after == before
+
+
+@pytest.fixture
+def loose(view):
+    """The view plus X, a Prim chunk with no wires: a node to drop on Ref -> Move."""
+    x = _make(chunk_registry.ChunkRegistry().get_chunk_module("prim"))
+    x.name = "X"
+    view.scene.add_chunk(x)
+    x.get_param("primpath_location").value = "/X"
+    x.execute()
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.reload()
+    for link in [lk for lk in view.tree.links if "X" in (lk.from_node.label, lk.to_node.label)]:
+        view.tree.links.remove(link)
+        view.tree.update()
+    view.reload()
+    assert not any("X" in (lk.from_node.label, lk.to_node.label) for lk in view.tree.links)
+    return view
+
+
+def _drop_on_wire(view, monkeypatch, label="X", src="Ref", dst="Move"):
+    """What Blender's own drop of a node on a wire does: A -> B becomes A -> X -> B, made
+    in C and reported to update() once (so the links change here with update() held off)."""
+    node, wire = _node(view, label), _wire(view, src, dst)
+    a_out, b_in = wire.from_socket, wire.to_socket
+    monkeypatch.setattr(bg, "_rebuilding", True)
+    view.tree.links.remove(wire)
+    view.tree.links.new(a_out, node.inputs["chunk"])
+    view.tree.links.new(node.outputs["chunk"], b_in)
+    monkeypatch.setattr(bg, "_rebuilding", False)
+    view.tree.update()
+
+
+def _sources(prim, attr="inputs:chunk"):
+    return [str(c.GetPrimPath()).rsplit("/", 1)[-1] for c in prim.GetAttribute(attr).GetConnections()]
+
+
+def test_a_node_dropped_on_a_wire_joins_it_through_a_merge(loose, monkeypatch):
+    """Blender's drop chained the node into the wire (Ref -> X -> Move). It merges, as the
+    Qt graph does: Ref and X -> Merge -> Move, X in the slot that wins."""
+    view = loose
+    _drop_on_wire(view, monkeypatch)
+    move = view.prims[_node(view, "Move").name]
+    feeding = _sources(move)
+    assert len(feeding) == 1 and feeding[0] != "Ref" and feeding[0] != "X"
+    merge = view.stage.GetPrimAtPath(_exec_input(view, "Move").GetConnections()[0].GetPrimPath())
+    assert chunk_stage.is_merge_prim(merge)
+    slots = [(a.GetName(), _sources(merge, a.GetName())) for a in merge.GetAttributes()
+             if a.GetName().startswith("inputs:chunk") and a.GetConnections()]
+    assert sorted(s for _n, src in slots for s in src) == ["Ref", "X"]
+    assert [src for name, src in sorted(slots)][0] == ["X"], "X takes the strongest slot"
+
+
+def test_a_merged_drop_survives_another_update_before_the_reload(loose, monkeypatch):
+    """Blender may call update() again before the deferred reload; with the model stale it
+    saw Ref -> Move missing from the tree and cut Move's input, Merge and all."""
+    view = loose
+    _drop_on_wire(view, monkeypatch)
+    feeding = _sources(view.prims[_node(view, "Move").name])
+    view.tree.update()
+    view.tree.update()
+    assert _sources(view.prims[_node(view, "Move").name]) == feeding
+    view.reload()
+    merge_nodes = [n for n in view.tree.nodes if n.name.rsplit("/", 1)[-1] == feeding[0]]
+    assert merge_nodes, "the Merge is on the graph after the reload"
+    assert _wire(view, merge_nodes[0].label, "Move")
+
+
+def test_an_ordinary_new_link_is_still_just_a_link(loose):
+    """Only the drop's exact shape merges: wiring X into Move's input by hand connects."""
+    view = loose
+    view.tree.links.remove(_wire(view, "Ref", "Move"))
+    view.tree.update()
+    view.tree.links.new(_node(view, "X").outputs["chunk"], _node(view, "Move").inputs["chunk"])
+    view.tree.update()
+    assert _sources(view.prims[_node(view, "Move").name]) == ["X"]
 
 
 def test_update_with_nothing_changed_schedules_no_reload(view, monkeypatch):
@@ -927,6 +1067,9 @@ def driven(view):
     maker.name = "Maker"
     view.scene.add_chunk(maker)
     maker.get_param("prim_type").value = "Cube"
+    # Its own path: the view fixture's Move transform targets the default /prim, and two
+    # transform chunks on one prim put Move's handle first.
+    maker.get_param("primpath_location").value = "/Driven"
     maker.execute()
     target = maker.get_param("primpath_location").value
     xf = _make(registry.get_chunk_module("transform"))
@@ -1096,6 +1239,77 @@ def test_the_transform_keys_live_in_the_object_mode_keymap():
     """Blender checks "Object Mode" before "3D View", and its own G/R/S there took every
     press: bound in "3D View", G in the viewport never reached this operator."""
     assert gz._KEYMAP == ("Object Mode", "EMPTY")
+
+
+class _BoxDesc:
+    """A stand-in `box` record: what box_lines and pick_box read off a GizmoDesc."""
+
+    type = "box"
+    name = "box"
+    chunk_prim = Sdf.Path("/chunks/Box")
+    anchor = (Sdf.Path("/World/Box"),)
+    driver = ("px", "nx", "py", "ny", "pz", "nz")
+
+
+@pytest.fixture
+def one_box(monkeypatch):
+    """A 2 x 2 x 2 box about the origin, picked, with no stage behind it."""
+    desc = _BoxDesc()
+    monkeypatch.setattr(gz, "box_descs", lambda stage, view: [desc])
+    monkeypatch.setattr(gz, "box_values", lambda view, d: [1.0] * 6)
+    monkeypatch.setattr(gz, "box_world", lambda stage, d: Gf.Matrix4d(1.0))
+    gz._box_state.update(hover=None, drag=None)
+    yield desc
+    gz._box_state.update(hover=None, drag=None)
+
+
+def test_a_box_handle_draws_its_twelve_edges(one_box):
+    """A picked Blockout Box showed nothing: Blender drew the pivot dot only, and a `box`
+    handle -- whose faces are the handles -- was never drawn at all."""
+    lines = gz.box_lines(None, None)
+    assert len(lines) == 1
+    _colour, verts = lines[0]
+    assert len(verts) == 24
+    assert {tuple(abs(c) for c in v) for v in verts} == {(1.0, 1.0, 1.0)}
+
+
+def test_the_face_corners_lie_on_their_own_face(one_box):
+    corners = gz.box_corners([1.0] * 6, Gf.Matrix4d(1.0))
+    for face, (axis, sign) in enumerate(chunk_gizmo.BOX_FACES):
+        assert {corners[i][axis] for i in gz.FACE_CORNERS[face]} == {float(sign)}
+
+
+def test_the_face_under_the_mouse_is_picked_and_lit(one_box):
+    hit = gz.pick_box(None, None, (10.0, 0.0, 0.0), (-1.0, 0.0, 0.0))
+    assert hit is not None and hit[1] == 0  # +X
+    assert gz.pick_box(None, None, (0.0, 10.0, 0.0), (0.0, -1.0, 0.0))[1] == 2  # +Y
+    assert gz.pick_box(None, None, (10.0, 10.0, 0.0), (1.0, 0.0, 0.0)) is None
+    gz._box_state["hover"] = (gz.box_key(one_box), 0)
+    lit = gz.box_lines(None, None)[1:]
+    assert len(lit) == 1 and len(lit[0][1]) == 8
+    assert {v[0] for v in lit[0][1]} == {1.0}
+
+
+def test_a_box_drag_is_drawn_from_the_drag_not_the_params(one_box):
+    """The params cook at most every DRAG_INTERVAL; the box in the hand runs ahead of them."""
+    gz._box_state["drag"] = {"key": gz.box_key(one_box), "face": 0,
+                             "values": [3.0, 1.0, 1.0, 1.0, 1.0, 1.0]}
+    edges = gz.box_lines(None, None)[0][1]
+    assert max(v[0] for v in edges) == 3.0
+
+
+def test_the_box_operators_register_with_their_mouse_keys():
+    assert {gz.USDCHUNKS_OT_box_hover, gz.USDCHUNKS_OT_box_drag} <= set(gz._CLASSES)
+    assert {(op.bl_idname, key) for op, key, _value in gz._BOX_KEYS} == {
+        ("usd_chunks.box_hover", "MOUSEMOVE"), ("usd_chunks.box_drag", "LEFTMOUSE")}
+def test_a_param_named_like_a_node_builtin_is_not_a_node_field():
+    """Exterior Walls' `color` param took over Node.color, the header colour: painting the
+    header grey wrote grey into the chunk, and the walls cooked grey in Blender only."""
+    c = chunk.Chunk("Walls")
+    c.add_param(chunk.ColorPicker("color", "Stucco", default_value=(0.86, 0.54, 0.24)))
+    props, _buttons, _skipped = chunk_blender.annotations_for(c)
+    assert "color" in chunk_blender.node_builtins()
+    assert "color" not in props
 
 
 def test_the_pivot_dot_follows_the_driven_anchor(driven):
@@ -1310,6 +1524,8 @@ def cam_state():
 def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
     """The Camera chunk's "Set as Viewport Camera" had nothing to land on in Blender."""
     stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)  # Blender's own space: no turn
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)  # an in-memory stage is centimetres
     prim = _camera_prim(stage, focal=50.0)
     addon.BlenderScene(prim.GetStage()).set_viewport_camera(prim)
     obj = bpy.context.scene.camera
@@ -1318,6 +1534,41 @@ def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
     assert obj.data.sensor_width == pytest.approx(36.0)
     assert obj.data.clip_start == pytest.approx(0.5)
     assert tuple(obj.matrix_world.translation) == pytest.approx((1, 2, 3))
+
+
+def test_a_y_up_camera_stands_up_in_blender(cam_state):
+    """A Y-up stage is turned +90 about X into Z-up Blender, so its camera is too."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    addon.camera.set_viewport_camera(_camera_prim(stage))
+    assert tuple(bpy.context.scene.camera.matrix_world.translation) == pytest.approx((1, -3, 2))
+
+
+def test_a_y_up_stage_is_turned_to_stand_up_in_blender():
+    """The house of a Y-up network lay on its side: the Hydra view drew stage space as
+    Blender's, with no up-axis conversion."""
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    assert tuple(vp.to_blender(stage, (0, 1, 0))) == pytest.approx((0, 0, 1), abs=1e-6)
+    assert tuple(vp.to_blender(stage, (0, 0, 1))) == pytest.approx((0, -1, 0), abs=1e-6)
+    assert tuple(vp.to_stage(stage, (0, 0, 1))) == pytest.approx((0, 1, 0), abs=1e-6)
+    assert tuple(vp.direction_to_stage(stage, (0, 0, -2))) == pytest.approx((0, -1, 0), abs=1e-6)
+
+
+def test_a_z_up_stage_in_metres_is_left_as_it_is():
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    assert vp.stage_to_blender(stage) == Matrix.Identity(4)
+
+
+def test_a_centimetre_stage_is_scaled_to_blenders_units():
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    assert tuple(vp.to_blender(stage, (100, 0, 0))) == pytest.approx((1, 0, 0))
 
 
 def test_release_hands_back_the_camera_the_mirror_replaced(cam_state):
@@ -1414,6 +1665,50 @@ def test_a_new_network_saves_in_blenders_space(tmp_path, addon_on):
     saved = Usd.Stage.Open(str(out))
     assert UsdGeom.GetStageUpAxis(saved) == UsdGeom.Tokens.z
     assert UsdGeom.GetStageMetersPerUnit(saved) == pytest.approx(0.5)
+
+
+def test_a_chunk_with_no_module_still_shows_and_says_why(tmp_path, addon_on):
+    """A chunk type no module registers (its folder not on USD_CHUNK_DIRS) once vanished
+    from the graph: registering the generated node classes as subclasses of the fallback
+    broke the fallback, nodes.new raised, and the node was dropped at debug level."""
+    path, context = make_network(tmp_path / "missing.usda")
+    layer = Sdf.Layer.FindOrOpen(path)
+    stray = Sdf.CreatePrimInLayer(layer, f"{context}/Stray")
+    stray.specifier = Sdf.SpecifierDef
+    stray.typeName = chunk_graph.CHUNK_TYPENAME
+    Sdf.AttributeSpec(stray, "info:chunkType", Sdf.ValueTypeNames.Token).default = "no_such_chunk"
+    layer.Save()
+    tree = bpy.data.node_groups.new("missing", bg.TREE_ID)
+    addon._open_stage(Usd.Stage.Open(path), context_path=context, tree=tree)
+    view = addon.get_view()
+    node = view.tree.nodes.get(f"{context}/Stray")
+    assert node is not None
+    assert node.missing_module == "no_such_chunk"
+    assert tuple(node.color) == pytest.approx(bg._FAILED_HEADER_COLOR)
+    assert view.missing_types == {"no_such_chunk": [f"{context}/Stray"]}
+    assert "no_such_chunk" in addon.missing_types_message(view)
+    # The chunks that do have modules are unaffected.
+    assert all(not getattr(n, "missing_module", "") for n in view.tree.nodes if n != node)
+
+
+def test_usd_import_opens_the_network_in_the_node_editor(tmp_path, addon_on):
+    """File > Import > USD made objects from the prims and ignored /chunks: no graph."""
+    path, _context = make_network(tmp_path / "imported.usda")
+    bpy.ops.wm.usd_import(filepath=path)
+    assert addon._pending_imports == [Sdf.Layer.FindOrOpen(path).realPath]
+    addon._open_pending_imports()  # the timer; timers do not run under a test
+    tree = bpy.data.node_groups.get("imported")
+    assert tree is not None and tree.bl_idname == bg.TREE_ID
+    assert addon.get_view().tree == tree
+    assert len(tree.nodes) > 0
+
+
+def test_usd_import_of_a_plain_file_opens_no_network(tmp_path, addon_on):
+    stage = Usd.Stage.CreateNew(str(tmp_path / "plain.usda"))
+    UsdGeom.Cube.Define(stage, "/Cube")
+    stage.Save()
+    bpy.ops.wm.usd_import(filepath=str(tmp_path / "plain.usda"))
+    assert addon._pending_imports == []
 
 
 def test_an_opened_network_keeps_the_space_it_was_authored_in(tmp_path, addon_on):
@@ -1681,16 +1976,25 @@ def painted(view):
     painter.get_param("strength").value = 1.0
     painter.execute()
     view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
-    view.selected_nodes = set()
+    view.reload()
+    view.set_selection(set())
     bg.set_picked_prim_paths([])
     yield view, painter
     bg.set_picked_prim_paths([])
 
 
+def _click_node(view, chunk_obj):
+    """Select a node the way a click in the editor does: on the tree only, not through
+    the view, whose selected_nodes lags until an add-on operator runs."""
+    path = chunk_stage.get_chunk_prim_path(chunk_obj)
+    for node in view.tree.nodes:
+        node.select = node.name == path
+
+
 def test_a_brush_selected_in_the_graph_is_the_one_to_paint_with(painted):
     view, painter = painted
     assert br.brush_desc(view.stage, view) is None
-    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    _click_node(view, painter)
     desc = br.brush_desc(view.stage, view)
     assert desc is not None and desc.type == "brush"
     assert str(desc.chunk_prim) == chunk_stage.get_chunk_prim_path(painter)
@@ -1736,7 +2040,7 @@ def test_a_surface_with_no_mesh_has_nothing_to_hit(view):
 def test_a_hit_sent_as_a_stroke_paints_the_floor(painted):
     """The whole path but the mouse: ray, hit, sample, field."""
     view, painter = painted
-    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    _click_node(view, painter)
     desc = br.brush_desc(view.stage, view)
     point, normal = br.Surface(view.stage, desc.anchor).hit((5.0, 5.0, 10.0), (0.0, 0.0, -1.0))
     painter.start_gizmo()
@@ -1752,7 +2056,7 @@ def test_a_hit_sent_as_a_stroke_paints_the_floor(painted):
 
 def test_the_ring_is_sized_from_the_chunks_radius(painted):
     view, painter = painted
-    view.selected_nodes = {chunk_stage.get_chunk_prim_path(painter)}
+    _click_node(view, painter)
     desc = br.brush_desc(view.stage, view)
     assert br.brush_radius(painter, desc, default=0.5) == pytest.approx(2.0)
     painter.get_param("radius").value = 0.0
@@ -1990,7 +2294,7 @@ def test_a_chunk_with_private_params_still_gets_a_node(view):
     """Blender refuses an RNA property whose name starts with "_", and one refused property
     failed the whole class: Layer (with its _new_layer_id bookkeeping) had no node at all,
     so it never showed in the Add menu or in a graph."""
-    assert "layer" in bg._generated
+    assert bg.ensure_chunk_type("layer") is not None
     layer = _make(chunk_registry.ChunkRegistry().get_chunk_module("layer"))
     layer.name = "Lookdev"
     view.scene.add_chunk(layer)
@@ -2005,7 +2309,7 @@ def test_every_chunk_that_builds_gets_a_node_class(view):
     missing = []
     for module in chunk_registry.ChunkRegistry().get_chunk_modules():
         name = getattr(module, "module_name", None)
-        if not name or name in bg._generated:
+        if not name or bg.ensure_chunk_type(name) is not None:
             continue
         try:
             built = module.create() if module.loaded else module.load()

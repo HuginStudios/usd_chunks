@@ -45,6 +45,7 @@ import time
 import uuid
 
 import bpy
+from pxr import Tf, Usd
 from usd_chunks import chunk_core as core
 from usd_chunks import chunk_registry
 from usd_chunks.chunk_flags import ChunkFlags
@@ -213,6 +214,11 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
             self.links.remove(link)
             if a is not None and b is not None:
                 bpy.app.timers.register(lambda a=a, b=b: _join_later(view, a, b), first_interval=0.0)
+        # Refused or not, the tree no longer matches USD (Blender took A -> B out), and
+        # the reload is what puts it back.
+        if _merge_dropped_on_wire(view, self) is not None:
+            bpy.app.timers.register(lambda: _reload_after_connect(view), first_interval=0.0)
+            return
         changed = False
         present = {(link.from_node.name, link.from_socket.name,
                     link.to_node.name, link.to_socket.name) for link in self.links}
@@ -247,6 +253,72 @@ class UsdChunksNodeTree(bpy.types.NodeTree):
                 changed = True
         if changed:
             bpy.app.timers.register(lambda: _reload_after_connect(view), first_interval=0.0)
+
+
+def _link_key(link) -> tuple:
+    return (link.from_node.name, link.from_socket.name, link.to_node.name, link.to_socket.name)
+
+
+def _edge_key(edge) -> tuple:
+    return (edge.src_node_path, _port_name(edge.src_attr_path),
+            edge.dst_node_path, _port_name(edge.dst_attr_path))
+
+
+def _merge_dropped_on_wire(view, tree):
+    """A node dropped on an exec wire joins it through a Merge, as in the Qt graph.
+
+    Blender's own drop inserts the node into the wire: A -> X -> B. update() sees that as
+    exactly one exec wire gone (A -> B) and two links new (A -> X, X -> B) on a node that
+    had no wires, all in one call, since Blender makes the change in C and reports it once.
+    That shape is turned into chunk_graph.merge_into_wire instead: A and X -> Merge -> B,
+    X in the slot below A so it wins, the way the Qt graph does it. A wire that already
+    enters a Merge takes X there rather than getting a second Merge.
+
+    Returns:
+        None when the change is not a node dropped on a wire (update() carries on as
+        usual); True when it was merged; False when merge_into_wire refused (a loop, say),
+        with Blender's two links taken back out and the wire left as it was in USD.
+    """
+    present = {_link_key(link): link for link in tree.links}
+    edges = {_edge_key(edge): edge for edge in view.edges}
+    gone = [edge for key, edge in edges.items() if key not in present]
+    new = [link for key, link in present.items() if key not in edges]
+    if len(gone) != 1 or len(new) != 2 or not gone[0].is_exec:
+        return None
+    wire = gone[0]
+    into = next((lk for lk in new if lk.from_node.name == wire.src_node_path), None)
+    out = next((lk for lk in new if lk.to_node.name == wire.dst_node_path), None)
+    if into is None or out is None or into.to_node != out.from_node:
+        return None
+    node = into.to_node
+    dropped = node.name
+    if (dropped in (wire.src_node_path, wire.dst_node_path)
+            or getattr(into.to_socket, "port_type", "") != chunk_graph.PORT_EXEC
+            or getattr(out.from_socket, "port_type", "") != chunk_graph.PORT_EXEC
+            or any(dropped in (e.src_node_path, e.dst_node_path) for e in view.edges)):
+        return None
+    # Beside the dropped node, towards B: where the Merge's node will be drawn.
+    usd_pos = ((node.location.x + node.dimensions.x + 60.0) / _SCALE, node.location.y / _SCALE)
+    global _rebuilding
+    _rebuilding = True  # links.remove calls update() again, mid-change; it must not act
+    try:
+        tree.links.remove(into)
+        tree.links.remove(out)
+    finally:
+        _rebuilding = False
+    change, error = chunk_graph.merge_into_wire(
+        view.stage, view.scene, wire, dropped, usd_pos,
+        chunk_graph.nest_target(chunk_graph.context_chunk(view.scene, view.chunks, view.context)))
+    # The model as USD now has it, before the deferred reload: a further update() would
+    # otherwise see A -> B missing from the tree and cut B's input, Merge and all.
+    view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
+    view.prims, view.ports, view.edges = chunk_graph.read_graph(view.stage, view.context, view.chunks)
+    if change is None:
+        view.status = f"not merged: {error}"
+        logger.warning("usd_chunks: %s", view.status)
+        return False
+    view.status = "merged into the wire"
+    return True
 
 
 def socket_param(socket, node):
@@ -398,18 +470,16 @@ class UsdChunksSocket(bpy.types.NodeSocket):
         return _PORT_COLOURS.get(self.port_type, _DEFAULT_COLOUR)
 
 
-class UsdChunksNodeBase(bpy.types.Node):
-    """Shared behaviour for every generated chunk node.
+class _ChunkNodeMixin:
+    """Shared behaviour for every chunk node: the generated ones and the fallback.
 
-    Subclasses are built at registration time by `register_chunk_types`, one per chunk
-    module, carrying that chunk's params as RNA properties.
+    A plain mixin, not a registered `bpy.types.Node`. The generated classes once subclassed
+    the registered fallback, and registering a subclass of a registered class makes Blender
+    lose the parent's Python class ("unable to get Python class for RNA struct
+    'UsdChunksNode'"). Its poll then failed, `nodes.new` raised, and every node whose
+    module was missing vanished from the graph without a word. The fallback and the
+    generated classes are siblings instead.
     """
-
-    # Registered and usable in its own right, not merely a base: a chunk whose module
-    # failed to load has no generated class, and _rebuild_tree falls back to this so the
-    # node still appears with its ports and wires rather than vanishing from the graph.
-    bl_idname = "UsdChunksNode"
-    bl_label = "Chunk"
 
     chunk_path: bpy.props.StringProperty(name="Chunk", default="")
 
@@ -442,6 +512,13 @@ class UsdChunksNodeBase(bpy.types.Node):
         self.chunk_path = ""
 
     def draw_buttons(self, context, layout):
+        missing = getattr(self, "missing_module", "")
+        if missing:
+            # The header is red too (see apply_node_state); this says why and what to do.
+            col = layout.column(align=True)
+            col.alert = True
+            col.label(text=f"Missing chunk type '{missing}'", icon="ERROR")
+            col.label(text="Not on USD_CHUNK_DIRS? Params kept in the file.")
         chunk = self.get_chunk()
         if chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
             # The header is red (see apply_node_state); this says why.
@@ -459,6 +536,43 @@ class UsdChunksNodeBase(bpy.types.Node):
                          emboss=False).node_path = self.name
         # Params with an input socket are drawn by that socket instead, beside their port.
         chunk_blender.draw_params(self, layout, chunk, skip=socket_drawn_params(self))
+
+
+class UsdChunksNodeBase(_ChunkNodeMixin, bpy.types.Node):
+    """The fallback node: a chunk prim whose module has no generated class.
+
+    Registered and usable in its own right: a chunk whose module is missing or failed to
+    load has no generated class, and _rebuild_tree falls back to this so the node still
+    appears with its ports and wires, flagged red, rather than vanishing from the graph.
+    """
+
+    bl_idname = "UsdChunksNode"
+    bl_label = "Chunk"
+    bl_width_default = 240
+
+    chunk_path: bpy.props.StringProperty(name="Chunk", default="")
+    #: The chunk type the prim asks for when no module registers it; empty otherwise.
+    missing_module: bpy.props.StringProperty(name="Missing Chunk Type", default="")
+
+
+def missing_chunk_types(stage) -> dict:
+    """{chunk type: [prim paths]} for every chunk prim on `stage` that no module registers.
+
+    Read from the whole stage, not the graph on screen: the chunks that went missing are
+    usually inside a group the user has not dived into yet.
+    """
+    registry = chunk_registry.ChunkRegistry()
+    missing: dict = {}
+    root = stage.GetPrimAtPath(chunk_graph.CHUNKS_ROOT) if stage is not None else None
+    if not root:
+        return missing
+    for prim in Usd.PrimRange(root, Usd.TraverseInstanceProxies(Usd.PrimAllPrimsPredicate)):
+        if prim.GetTypeName() != chunk_graph.CHUNK_TYPENAME:
+            continue
+        kind = chunk_graph.node_kind(prim)
+        if kind and not registry.get_chunk_module(kind):
+            missing.setdefault(kind, []).append(str(prim.GetPath()))
+    return missing
 
 
 class USDCHUNKS_OT_param_button(bpy.types.Operator):
@@ -778,6 +892,24 @@ class USDCHUNKS_OT_list_resize(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def tree_selection(view) -> list:
+    """The chunk prim paths selected in the node editor, read off the tree itself.
+
+    Not `view.selected_nodes`: that is only brought up to date when one of the add-on's
+    operators runs (pull_selection_from_tree), while a click in the editor sets
+    `node.select` at once. The viewport tools -- a box handle, the brush -- answer to the
+    click, so they read this.
+    """
+    tree = getattr(view, "tree", None)
+    if tree is None:
+        return []
+    try:
+        return [n.name for n in tree.nodes if n.select]
+    except ReferenceError:  # the tree was removed under the view
+        return []
+
+
+
 # ---------------------------------------------------------------------------
 # Generated node classes
 # ---------------------------------------------------------------------------
@@ -789,59 +921,99 @@ def node_class_id(module_name: str) -> str:
     return "UsdChunksNode_" + module_name.replace(".", "_").replace("-", "_")
 
 
-def register_chunk_types(scene=None) -> list:
-    """Build and register one Node subclass per chunk module in the registry.
+#: Modules whose node class could not be built (main() raised: a missing dependency), so a
+#: rebuild does not pay their failed load again on every reload. Cleared by
+#: register_chunk_types, which an install of the missing packages calls.
+_failed: set = set()
 
-    Done from `main()` rather than from a live chunk because registration happens once, at
-    add-on load, before any graph exists. A chunk whose `main()` raises -- an example that
-    imports a missing dependency, say -- is skipped with a note rather than taking the
-    whole add-on down with it, which mirrors what the registry itself does on discovery.
+
+def ensure_chunk_type(name: str):
+    """The node class for chunk module `name`, built and registered on first use, or None.
+
+    **Lazy, per type.** Blender needs a class registered before a node of that type can
+    exist, and building one runs the module's `main()`, so the add-on once loaded the whole
+    library when a network opened: 115 modules and their imports, ~5.6 of the 6.8 s it took
+    to open a 14-chunk house. Now a type is built the first time a node of it is made --
+    the network's own types as its tree is built, any other when Shift+A adds one. The Add
+    menu needs no class: it reads the registry's configs, which loads nothing.
     """
+    cls = _generated.get(name)
+    if cls is not None or not name or name in _failed:
+        return cls
+    module = chunk_registry.ChunkRegistry().get_chunk_module(name)
+    if module is None:
+        return None
+    cls = _build_chunk_type(module)
+    if cls is None:
+        _failed.add(name)
+    return cls
+
+
+def _build_chunk_type(module):
+    """Build and register one Node subclass for a registry module. None if it can't be.
+
+    Built from `main()` rather than from a live chunk because a class is needed before any
+    chunk of the type exists. A chunk whose `main()` raises -- an example that imports a
+    missing dependency, say -- is skipped with a note rather than taking the add-on down
+    with it, which mirrors what the registry itself does on discovery.
+    """
+    name = getattr(module, "module_name", None)
+    try:
+        # load() rather than reading module.func: a discovered-but-unloaded module has
+        # func=None, so reading it skipped every chunk and generated nothing at all.
+        chunks = module.create() if module.loaded else module.load()
+        if not chunks:
+            return None
+        props, buttons, skipped = chunk_blender.annotations_for(chunks[0])
+    except Exception:
+        logger.debug("skipping %s: main() did not build", name)
+        return None
+
+    if skipped:
+        logger.debug("%s: no Blender control for %s", name, skipped)
+
+    cls = type(node_class_id(name), (_ChunkNodeMixin, bpy.types.Node), {
+        "bl_idname": node_class_id(name),
+        "bl_label": name.rsplit(".", 1)[-1],
+        "chunk_module": name,
+        # Blender's 140 default assumes a socket row holds a name and nothing else.
+        # These rows hold a label AND the param's field, so at 140 every label
+        # truncated -- "Prim Path" drew as "Prim ...", which is worse than useless on
+        # a node whose two string params then look identical.
+        "bl_width_default": NODE_WIDTH,
+        "__annotations__": dict(props, **_ChunkNodeMixin.__annotations__),
+    })
+    try:
+        _register_once(cls)
+    except Exception:
+        # A warning, not debug: the chunk is missing from every graph that uses it, and
+        # nothing else says why.
+        logger.warning("could not register a node class for %s", name, exc_info=True)
+        return None
+    _generated[name] = cls
+    return cls
+
+
+def register_chunk_types(scene=None, names=None) -> list:
+    """Register node classes for `names`, or for the whole library when None.
+
+    Opening a network does not call this (see ensure_chunk_type). It is for an install of
+    a chunk's missing packages, which wants the types that failed before to be tried
+    again, and for anything that needs every class at once. Rebuilds the Add menu.
+    """
+    _failed.clear()
     registry = chunk_registry.ChunkRegistry()
-    made = []
-    for module in registry.get_chunk_modules():
-        name = getattr(module, "module_name", None)
-        if not name or name in _generated:
-            continue
-        try:
-            # load() rather than reading module.func: a discovered-but-unloaded module has
-            # func=None, so reading it skipped every chunk and generated nothing at all.
-            # Registration therefore pays the load cost for the whole library once, at
-            # add-on startup, because Blender needs a class registered before a node of
-            # that type can be created -- there is no lazy path.
-            chunks = module.create() if module.loaded else module.load()
-            if not chunks:
-                continue
-            props, buttons, skipped = chunk_blender.annotations_for(chunks[0])
-        except Exception:
-            logger.debug("skipping %s: main() did not build", name)
-            continue
-
-        if skipped:
-            logger.debug("%s: no Blender control for %s", name, skipped)
-
-        cls = type(node_class_id(name), (UsdChunksNodeBase,), {
-            "bl_idname": node_class_id(name),
-            "bl_label": name.rsplit(".", 1)[-1],
-            "chunk_module": name,
-            # Blender's 140 default assumes a socket row holds a name and nothing else.
-            # These rows hold a label AND the param's field, so at 140 every label
-            # truncated -- "Prim Path" drew as "Prim ...", which is worse than useless on
-            # a node whose two string params then look identical.
-            "bl_width_default": NODE_WIDTH,
-            "__annotations__": dict(props, **UsdChunksNodeBase.__annotations__),
-        })
-        try:
-            _register_once(cls)
-        except Exception:
-            # A warning, not debug: the chunk is missing from the Add menu and from every
-            # graph that uses it, and nothing else says why.
-            logger.warning("could not register a node class for %s", name, exc_info=True)
-            continue
-        _generated[name] = cls
-        made.append(name)
+    wanted = (list(names) if names is not None
+              else [getattr(m, "module_name", None) for m in registry.get_chunk_modules()])
+    made = [name for name in wanted
+            if name and name not in _generated and ensure_chunk_type(name) is not None]
     build_add_menu()
     return made
+
+
+def retry_failed_chunk_types() -> list:
+    """Try again the types whose class could not be built: after their packages install."""
+    return register_chunk_types(names=sorted(_failed))
 
 
 def unregister_chunk_types() -> None:
@@ -851,6 +1023,7 @@ def unregister_chunk_types() -> None:
         except Exception:  # pragma: no cover - already gone
             pass
     _generated.clear()
+    _failed.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1043,6 +1216,13 @@ class BlenderGraphView:
         #: they stay put and are routed around.
         self.locked: set = set()
         self.status = ""
+        #: {chunk type: [prim paths]} no module registers; set by the add-on on open.
+        self.missing_types: dict = {}
+        #: Drawing caches what it asks of the stage (factory._draw_cache); any change to the
+        #: stage forgets it. Held here: a Tf listener nobody holds stops listening.
+        self._draw_cache_listener = (
+            Tf.Notice.Register(Usd.Notice.ObjectsChanged, chunk_blender.clear_draw_cache, stage)
+            if stage is not None else None)
         #: A link that met a collapsed node's "+", waiting on a param to be picked:
         #: (the choices, what the pick joins). See join and choose; the popup only shows it.
         self.pending_pick: tuple[list, object] | None = None
@@ -1158,6 +1338,9 @@ class BlenderGraphView:
 
     def reload(self) -> None:
         """Rebuild the tree from USD. The tree is a view; this is the only writer of it."""
+        # Chunks may have been made or rebuilt without the stage changing (a reload after
+        # a module edit): what drawing cached about their params goes with them.
+        chunk_blender.clear_draw_cache()
         # Blender owns dragging, so a moved node's new position lives ONLY in
         # node.location until something writes it back -- and _rebuild_tree below
         # unconditionally clears and recreates every node from USD. Without this, any
@@ -1214,12 +1397,18 @@ class BlenderGraphView:
         for path, prim in self.prims.items():
             chunk = self.chunks.get(path)
             module = chunk_graph.node_kind(prim) or ""
-            cls = _generated.get(module, UsdChunksNodeBase)
+            # Built on first use (ensure_chunk_type); the fallback when it can't be.
+            cls = ensure_chunk_type(module) or UsdChunksNodeBase
             try:
                 node = self.tree.nodes.new(cls.bl_idname)
             except RuntimeError:
-                logger.debug("no registered node class for %s", module)
+                # A warning, not debug: the node is gone from the graph, wires and all,
+                # and this is the only place that knows.
+                logger.warning("no node could be made for %s (chunk type %r)", path, module,
+                               exc_info=True)
                 continue
+            if cls is UsdChunksNodeBase and chunk is None:
+                node.missing_module = module
             node.name = path
             node.label = chunk_graph.node_label(prim)
             node.chunk_path = path
@@ -1299,7 +1488,9 @@ class BlenderGraphView:
             colour = _LOCKED_HEADER_COLOR
         else:
             colour = _NODE_HEADER_COLOR
-        if chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
+        if getattr(node, "missing_module", ""):
+            colour = _FAILED_HEADER_COLOR
+        elif chunk is not None and chunk.has_state(ChunkFlags.State.FAILED):
             colour = _FAILED_HEADER_COLOR
         elif chunk is not None and chunk.has_state(ChunkFlags.State.STALE):
             colour = _STALE_HEADER_COLOR
@@ -1991,8 +2182,8 @@ def register() -> None:
     for cls in _CLASSES:
         _register_once(cls)
     _register_once(UsdChunksNodeBase)
-    made = register_chunk_types()
-    logger.info("usd_chunks: %d chunk node type(s) registered", len(made))
+    # Node classes are made on first use (ensure_chunk_type); the menu loads nothing.
+    build_add_menu()
     bpy.types.NODE_MT_add.append(_draw_add_menu)
 
 

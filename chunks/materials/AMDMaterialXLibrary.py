@@ -442,7 +442,9 @@ def _download_and_apply(node, title: str) -> str:
     # logic picks it up correctly with Reference upstream of it, without this module
     # needing to know anything about views itself.
     if ref_chunk and bind_chunk:
-        stage = node.get_stage()
+        # The scene's stage: a wire is the scene's bookkeeping. A cook's own stage composes a
+        # copy of the session layer, and the wire authored there never reached the scene.
+        stage = node.get_scene_stage()
         if stage:
             connect_exec(
                 stage,

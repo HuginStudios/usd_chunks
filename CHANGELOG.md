@@ -18,6 +18,63 @@ The first release candidate.
 - Releases: pushing a version tag such as `v1.0.0` publishes that version's docs to
   GitHub Pages and makes a GitHub Release with its changelog section and the wheel. See
   "Making a release" in `CONTRIBUTING.md`.
+- **Opening a saved network reads results back instead of cooking.** Saving keeps each
+  chunk's result in the cook cache folder; opening reads it back while nothing the chunk
+  depends on has changed (its params and the files they name, its code, the chunks above it,
+  and the network file's own content and sublayers). Anything else cooks as before. In
+  usdview a 300-chunk village is ready in 10 s instead of 14 s, a 300-Transform chain in 8 s
+  instead of 18 s. A chunk does work once it really cooks (a first import, a first scatter),
+  so the first edit that reaches it can take longer than it did. A chunk that writes
+  outside its own layer (MaterialX Shader) still cooks on open. A module that must always
+  cook sets `cook_on_open=True`; `USD_CHUNKS_OPEN_CACHE=0` turns it off.
+- `chunk.TextEdit(..., wrap=True)` makes a prose field: in the Qt params panel its lines wrap
+  at the field's edge, in the UI's own font, so a paragraph is not one long line scrolled
+  sideways. Without it a `TextEdit` stays a code field (fixed-width font, no wrapping).
+- Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
+  box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
+  drag one face at a time, and a translate gizmo is a move handle. Drags go through the
+  chunk's own hooks (snapping, landing on the roof) and undo as one step.
+- **Which chunk made this prim?** Select a prim in the viewport and the node graph rings
+  the chunk that made it (*made*), each chunk that changed it (numbered in the order the
+  changes apply) and, for a prim inside a referenced asset, the chunk that brought it in.
+  A line at the foot of the graph names them, with links that jump to each node. A node's
+  right-click menu has **Select Its Prims** for the other direction. Scripts ask the same with
+  `scene.get_chunk_stack(path)` (the chunks, strongest first, like `GetPrimStack()`),
+  `scene.trace_prim(path)` and `scene.get_chunk_prims(chunk)`. Both read each chunk's own layer,
+  and the graph asks only when the selection changes.
+- Blender: **other Hydra renderers in the live view.** Add-on preference **Hydra Delegate
+  Folders** (or `USD_CHUNKS_HYDRA_DELEGATES`) makes a render delegate built against
+  Blender's USD appear in the sidebar's **Renderer** menu, next to Storm. The live view
+  renders with the stage's RenderSettings prim (a path tracer's samples, denoising, ...),
+  and a progressive renderer keeps refining until it is done.
+- `scene.connect(upstream, downstream, slot=None)` wires chunks that already exist. Into a
+  Merge the new branch is the strongest, as a wire dropped on the Merge in the graph is,
+  unless you give a slot. `scene.get_inputs(chunk)` lists what is wired in, strongest first.
+- Blender: drag a node with no wires onto a wire and it joins the wire through a Merge, as
+  in the Qt graph: A and the node into a new Merge feeding B, the dropped node winning. A
+  wire into a Merge takes the node into that Merge instead.
+- Blender: **box handles** (Blockout Box, Blocking Volume) in the 3D viewport. Pick the
+  prim, or select its chunk in the node editor, and a wire box shows; hover a face to light
+  it and drag it to move that face. Esc puts it back.
+- Blender: **File > Import > USD** of a network file opens its chunk network in the
+  USDChunks Editor, in a node tree of its own.
+- **One-file Blender add-on.** Each release (a `v*` tag) carries
+  `usd_chunks_blender-<version>.zip`: install it with Install from Disk and it works, with
+  usd_chunks and its chunks inside. No pip, no `--target`, no `USD_CHUNK_DIRS`. Built by
+  `tools/build_blender_addon.py`; the steps from a clone still work.
+- **Frames to Movie** chunk: makes an H.264 `.mp4` or ProRes `.mov` from a rendered image
+  sequence (`render.####.png`, or wire in a Render chunk's Output) with ffmpeg from
+  `imageio-ffmpeg`. It runs on Make Movie and on every `usdchunks run`; odd image sizes
+  and gaps in the frames work.
+- Render chunk: **Run in Background**. Render Now saves the scene to a file and renders it
+  in its own process through Render Command (usdrecord with the chosen Renderer), so you
+  keep working while it renders. **Stop Render** ends it and every process it started,
+  and a status line shows Rendering, Done, Stopped or Failed. Render on Commit
+  (`usdchunks run`) still waits for the render to finish.
+- **Points to Instancer** chunk: turns an animated Points prim into a PointInstancer of a
+  low-poly mesh sphere (or a prototype you pick), one instance per point on every frame.
+  For renderers that draw no Points (Aurora) or draw each as one pixel (V-Ray). Instances
+  can shrink with each point's opacity, so fading points still vanish.
 - `examples/scripts/shot_departments.py`: a shot on a set file, in layout, lighting and
   camera layers side by side, exported as `shot.usda` plus one file per department. A test
   runs it as written, from another directory.
@@ -35,6 +92,16 @@ The first release candidate.
 - One row's param of a list lofts onto a group (`Scatter_proto_path`, Scatter's first
   prototype). It warned "has no USD attribute bound" and lofted nothing: a list keeps each
   column in one array, so the group's attribute now records the row it drives.
+- Gizmos per list row: a chunk module's `gizmos(node)` hook returns handles worked out
+  from the chunk as it is, and a driver entry can name one row of a list, `doors.u[2]`.
+  A row added gets its handle and a row removed loses it, so a list of placements can
+  each have their own handle in the viewport. A gizmo's `anchor` can be a literal prim
+  path (`/Building/Doors/door_2`), so a row's handle hangs off the prim made for that row
+  and is offered on that prim only.
+- A `box` gizmo type: a box whose faces are the handles. A host picks the face under the
+  mouse and pulls it along its normal, and only that face moves. It drives six params, the
+  distance to each face. `gizmo.runtime.pick_box_face` and `drag_box_face` do the picking
+  and the drag for every host, against the box itself, never the geometry inside it.
 - Scatter Points: a prototype row takes a collection, `%trees`, for one prototype per member of
   the collection named trees. Deactivated library entries count, and the meshes under a member
   are not prototypes of their own. Variant selections work on it too: `%trees{season=*}`.
@@ -203,6 +270,21 @@ The first release candidate.
 
 ### Changed
 
+- Houdini: Tab > usdchunks > **Import Network...** is now **Chunk Import...**.
+- RBD Solver simulates every prim its Target Prim selects (a viewport selection, a list or
+  a glob), not just the first. The selected rigid bodies share one solve, so they land on
+  and knock into each other; each keeps its own authored mass, friction and collider
+  shape. A PointInstancer or an articulated asset among them is still solved on its own.
+- Houdini: a chunk node's chunk is named after the node, and renamed with it. Log lines,
+  `USD_CHUNKS_TIMINGS` and error messages say "Grass" rather than "ScatterPoints1".
+- Scatter Points' Tiles sampling builds its tile 5x to 27x faster, the same tile: a birch
+  forest's 0.8-1.6 scales from 3.7 s to 0.3 s, 0.5-2.5 from 59 s to 2.2 s. Candidates are
+  tested against the points already kept instead of against each other.
+- Blender: opening a network is about 4.7x faster (a 14-chunk house: 6.8 s to 1.45 s).
+  Node classes are built per chunk type when a node of it is first made, instead of
+  loading the whole library on open, so a chunk's missing packages are asked for when it
+  is used. Drawing the node editor is about a third faster: what it asks of the stage per
+  param is kept until the stage changes.
 - **Breaking:** URDF Import gives a welded link with no collision geometry (a camera mount,
   a tool tip) no rigid body and no fixed joint: it is nested under its parent, which is the
   weld. As a body it was simulated apart from its parent and fell away. A script that read
@@ -212,6 +294,31 @@ The first release candidate.
   `usdchunks show` can't list). Pose Articulation's description says how its sliders are
   named and set, URDF Import's points to it, the build-network skill has a row for importing
   and posing a robot, and the write-chunk skill starts by checking that no chunk does the job.
+- Dragging a gizmo stays on the cursor when the chunk cooks slowly. During a drag a chunk
+  cooks at most 30 times a second, with the newest handle value, so mouse moves that arrive
+  during a cook no longer queue up behind it. Once a cook takes longer than 50 ms, the drag
+  stops cooking while the handle moves, instead of freezing the viewport on every cook, and
+  cooks where the handle is held still for a tenth of a second and where it is let go.
+  Hosts still call `apply_bindings` every tick. In Blender, the pivot dot now follows the
+  mouse instead of the last cook.
+- **Breaking:** a recook changes only what changed in the chunk's layer (diff cook). The cook
+  writes into a scratch layer, on a stage of only the layers upstream of the chunk, and its
+  result is reconciled into the chunk's layer: an unchanged prim sends no notice and a
+  changed value is set in place, so the viewport updates it instead of rebuilding it (an
+  instance's prototype too). Dragging the house example's box face: the frame after each
+  tick 0.30 → 0.19 s; posing a SimReady fridge's door: 0 resyncs where it was ~30, the frame
+  ~100 → 37 ms. The composed result is the same as before. A chunk that changes the layer
+  stack or what is muted (Edit Target, Layer, a gate), sublayers its own layer, or writes
+  onto chunk prims (Override Chunk Prim) is still cleared and rewritten.
+  `USD_CHUNKS_DIFF_COOK=0` turns it off. What to change in a chunk module of your own:
+  inside `execute()`, read and write through `node.get_stage()` and
+  `node.get_edit_context()`, not the scene's stage (`node.get_scene_stage()`,
+  `scene.get_stage()`), which no longer holds the layer the cook writes into; keep
+  `get_scene_stage()` for the scene's bookkeeping (wiring chunk prims, layer menus). A cache
+  kept between cooks is keyed on `node.get_layer_identifier()`, not the edit layer's
+  identifier, which changes.
+- Pose Articulation writes its op on every link a joint can move, the identity while the
+  joint is at rest, so its layer holds the links whatever the pose.
 - **Breaking:** a new script Scene (`Scene()`, `Scene.new()`) is in metres: its stage authors
   `metersPerUnit` 1, where it said nothing and USD read centimetres. What a script exports is
   stamped in metres, and chunks that read the units (RBD gravity, unit warnings) follow. To
@@ -327,6 +434,124 @@ The first release candidate.
 
 ### Fixed
 
+- A network saved before a chunk changed its viewport handles (a `gizmos(node)` hook whose
+  handle moved to another anchor, or became a flat box) opened with the old handles: the
+  records it was saved with were only brought up to date when an anchor param changed or a
+  list was resized. Now each such chunk's handle records are brought in line with what it
+  declares after its first cook.
+
+- A network with a chain of about a thousand chunks can be built and opened. Ordering
+  its chunks recursed once per chunk and stopped with a RecursionError.
+- MaterialX Shader keeps a name you give it (`name="Bark"` in a script, or a rename),
+  and copies are numbered `constant_color3_1`, `_2` instead of starting at `constant_color3_`.
+- A reopened MaterialX network cooks each shader at most twice. The Surface at the
+  bottom of a shader tree cooked once per node above it: 50 times in a 100-node network.
+- Big MaterialX networks open faster. Each shader asked which layer to write to once per
+  input, and during a cook every ask walked the whole graph above it; now a cook asks once.
+  Opening a 100-node shader network: 40% less time.
+- Editing a long chain of Transforms on one prim is faster. Each Transform worked out how
+  far down the chain every other one sits, on every cook; now those depths are kept until a
+  wire in the chain changes. A root edit of a 300-Transform chain: 14.2 s → 9.7 s.
+- A cook in a long chain sets up its stage faster. Working out which chunk prims it may
+  read walked every ancestor of every chunk wired to it; now it asks once per parent. A
+  root edit of a 300-Transform chain: 14.2 s → 12.6 s.
+- Recooking a big network walks the session layer once per edit, not once per cook. The
+  cooks of one edit share a copy of it, and that copy was compared with the session layer
+  before each cook and after it, spec by spec, though between two cooks it almost never
+  changes. Building a 300-node MaterialX network: 29.9 s → 25.2 s.
+- Each cook in a big network spends less time setting up the stage it cooks on. Reading
+  the time offsets of the chunk layers took about 20 µs per layer at 300 chunks and 60 µs
+  at 1000, once per cook; now it reads them all at once. A root edit of a 300-Transform
+  chain: 14.4 s → 13.4 s.
+- Big MaterialX networks build and open faster. To find the Material it belongs under, each
+  shader read the inputs of every chunk in the network, once per node between it and the
+  Material, on every cook. Now it looks the wire up in an index kept in step with the stage.
+  A 300-node shader network: opening 34 s → 15 s, building 33 s → 25 s.
+- Many Transforms chained on one prim no longer slow down as the chain grows. Each cook
+  walked the chain once per Transform above it; now it walks it once. One cook at the end of
+  a 100-Transform chain: 0.29 s → 0.03 s.
+- Scatter Points with Max Slope over 90 now covers faces that point down, such as the
+  underside of a sphere. New scatters sample with Tiles, which only drops points from
+  above, so they stayed on the top half. Over 90, Darts is used instead.
+- A Camera made with a prim selected put that prim in Aim At, so it kept turning toward it
+  after Aim At Point was unchecked. Aim At no longer fills from the selection.
+- You can type into a node's fields again while it has the "made" or "changed" ring.
+  The ring took every click on the node, so the fields never got the keys.
+- Undoing a chunk's delete left it blocked ("isn't wired above") though its wire was drawn,
+  and the chunk below it too. Deleting a chunk in the middle of a chain did the same to
+  the chunk below it. Both keep their wires now.
+- The first edit of a param writes its attribute and value in one stage change. It made
+  the attribute, then set it, so anything listening to the stage first saw an attribute
+  holding nothing, and in usdview the set once raised "Accessed invalid attribute ... on
+  expired 'Chunk' prim".
+- Undo after a gizmo drag left the prim moved: the auto-made Transform chunk left the
+  graph, but stayed in `scene.get_chunks()` with its layer still in the stack. The same
+  happened to any chunk whose creation was undone, or whose delete was redone. Now the
+  chunk goes too.
+- The rings on the nodes that made or changed the selected prim come back when the prim does.
+  Switching the view away hid the prim and took the rings off; switching back left them off
+  until the selection changed.
+- A script building inside `chunk.change_block()` no longer gets "no prim at ..." warnings for
+  prims that exist by the end of the block (a material binding copies a Duplicate Prim makes).
+  The warning now comes from the block's closing cook, only for a path still missing then.
+- The ring and "made" / number tag on a node that made or changed the selected prim follow
+  the node when it collapses, expands or is resized. The ring kept the size the node had when
+  the prim was selected.
+- Scatter Points: an Instancer Path under a moved, turned or scaled prim placed the instances
+  off the surface, that prim's transform applied twice (flowers on an urn at x = -10 landed at
+  x = -20). The instances are now written in the parent's space.
+- Duplicate Prim: a copy's relationships and connections into its own subtree now point at the
+  copy, not the source. Copies of a prim with a scatter under it kept their instancer aimed at
+  the source's prototypes, so pruning the source emptied them; a copied material also lost the
+  wiring between its shaders.
+- A text field holding megabytes (an Inline USD chunk with a whole terrain pasted in) froze
+  the params panel for seconds at every scroll or repaint. Past 256 KB, or a line longer than
+  20 000 characters, it now shows a short read-only preview and keeps the text as it was.
+  Keep text that big in a file and bring it in with a Reference chunk.
+- Override Chunk Prim showed none of its target's params in Houdini: the target is set
+  between cooks, when there is no stage to read them from, and the cook then took them as
+  built. The cook builds them now.
+- Houdini: an imported chunkgroup's own nodes (`space_in`, `space_out` and its output)
+  sit by its chunks, a row above and below them, instead of far away where Houdini puts a
+  new node. A network drawn so it doesn't read top to bottom (an Output chunk beside the
+  chain's head, its wire running back up) is laid out by Houdini as one chain instead.
+- Houdini: a pip install of usd_chunks now includes the viewport handles'
+  `viewer_states` folder.
+- Houdini: a box handle shrank to a point at the origin when the chunkgroup had an input,
+  such as a Sublayer. Reading the input's stage swapped out the node's stage before the
+  handle was placed on it.
+- Houdini: changing a parm upstream in a building network (a Blockout Box face) made the
+  nodes below it fail with "xformOp:translate already exists". A chunk that cooked before
+  the prim it reads existed was cooked again inside a later node's cook, on that node's
+  stage; Houdini now recooks it itself.
+- `scene.set()` with several params cooks the chunk once, with all of them. It cooked once
+  per param, the first times with only part of the edit: three for `set(move, tx=1, ty=2,
+  tz=3)`.
+- Blender: quitting ran every chunk module the session never used, and one that could not
+  import (PySide6, usdview) stopped Blender disabling the add-ons after it, with a
+  traceback. Unused chunks are left alone on quit.
+- Blender: Ctrl+click on part of a `component` (a car's wheel) picks the component again
+  when its parents carry no `group` or `assembly` kind, which is most real files.
+- A relative `USD_CHUNK_DIRS` folder (`chunks`, as CI sets it) is resolved once, when the
+  chunks are found. A chunk first used after the working directory changed (a script's
+  `os.chdir`) could not be loaded, and making it failed with "not enough values to
+  unpack". The same folder was also found twice, under its relative and absolute paths.
+- Blender: B (brush) did nothing on a brush chunk just selected in the node editor. The
+  viewport tools read the editor's selection as it is now.
+- Blender: a Y-up network (usdview's default) lay on its side in the 3D viewport, below the
+  ground. The live view now stands it up, as Blender's USD importer does, and scales it by
+  `metersPerUnit`. Picking, the pivot, G/R/S, the brush and the camera mirror go through
+  the same turn. X, Y and Z after G, R or S name Blender's axes, so R Z turns a prim about
+  the up axis on any stage.
+- Blender: a chunk param named like one of a node's own properties (`color`, `name`,
+  `location`, `width`, ...) was overwritten by the node. Exterior Walls' `color` took the
+  node's header grey, so its walls cooked grey in Blender only.
+- Blender: a network whose chunks are not on `USD_CHUNK_DIRS` opened as an empty graph
+  with only its Output node; the missing chunks were dropped without a word. Each one now
+  shows as a red node that names its chunk type, with its wires kept. Open Chunk Network
+  warns, and the USDChunks sidebar lists the missing types until they are found.
+- Blender: an opened network is framed in the node editor. Its saved positions could be far
+  from where the editor starts, so the graph looked empty until Home was pressed.
 - Export USD's relative Output Directory or Output File is from the network's folder, like
   every other file path in a param. It was from the working directory, so `output_dir="."`
   wrote a shot wherever a script or `usdchunks run` was started.

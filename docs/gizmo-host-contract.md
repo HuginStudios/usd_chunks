@@ -191,6 +191,7 @@ payload map — reading the type answers the whole question.
 | `rotate` | `Gf.Vec3d`, Euler XYZ, **degrees** | as above |
 | `scale` | `Gf.Vec3d` | as above |
 | `cube`, `sphere` | a single number | One param |
+| `box` | six numbers | Six params: the +X, -X, +Y, -Y, +Z, -Z faces, in that order |
 
 **`transform` is the whole-chunk handle** — in effect *"run your native transform
 manipulator and give me the result"*. Build your own TRS handle, let the user drag it, and
@@ -201,6 +202,28 @@ every host.
 **Shape types are one-dimensional handles.** A shape plus an `axis` *is* a linear handle:
 map it onto your native linear-handle primitive and ignore the shape name entirely.
 `usd-guides` draws the shape literally; Houdini and Blender should not.
+
+**`box` is a box whose faces are the handles.** Draw no handle of your own. Each driven
+param is the distance from the anchor's origin to one face, in the anchor's local space, so
+the six values *are* the box. The user hovers a face, it highlights, they grab it and pull
+it along its normal; only that face moves. Two pure helpers do the maths, in the anchor's
+space (apply the inverse of its world transform to the mouse ray first):
+
+```python
+hit = chunk_gizmo.pick_box_face(values, origin, direction)  # on hover and press
+if hit:
+    face, t = hit
+    start, grab = values, origin + direction * t            # keep both for the drag
+...
+new = chunk_gizmo.drag_box_face(start, face, grab, origin, direction)  # every tick
+chunk_gizmo.apply_bindings(desc.chunk_prim, desc.name, new)
+```
+
+**Pick against the box, never the scene.** `pick_box_face` tests the box the six values
+describe, so a mesh inside the volume can never be what is grabbed. Test it before your
+own pick and let a hit win. `drag_box_face` always starts from the press's values and grab
+point, not the last tick's, so a long drag does not drift. Snapping is the chunk's
+(`gizmo_changed`), not yours.
 
 **Unknown types.** The set will grow. Skip a `type` you do not recognise rather than
 guessing — a *custom* type is one only the `usd-guides` render path understands, and
@@ -255,8 +278,8 @@ a host that only ever holds `GizmoDesc` needs no lookup of its own.
 
 ### Do not write the prim directly
 
-It will be erased. A chunk like `transform.py` clears its own layer and re-authors
-`xformOp:transform` on **every cook**, so a direct write survives until the next execute
+It will be erased. A chunk like `transform.py` rewrites its whole layer, its
+`xformOp:transform` included, on **every cook**, so a direct write survives until the next execute
 and then vanishes. Nor should you write the `inputs:` attributes in `driver` yourself —
 those are param storage, and going around the param system skips the propagation that
 makes downstream chunks update.
@@ -266,16 +289,41 @@ prim. That is the whole reason this boundary exists.
 
 ### Write on every tick
 
-> **Never batch writes to `stop_gizmo()`.**
+> **Never batch writes to `stop_gizmo()` yourself.** Call `apply_bindings` every tick;
+> `usd_chunks` decides when to cook.
 
-This is the tempting optimisation the first time a heavy chunk cooks slowly, and it is
-exactly what makes a handle feel dead — the object stops following the cursor and jumps at
-the end. Writing per tick is already how sliders behave. If a chunk is too slow to drag,
-fix the cook.
+Batching in the host is the tempting optimisation the first time a heavy chunk cooks
+slowly, and for a chunk that cooks fast it is exactly what makes a handle feel dead: the
+object stops following the cursor and jumps at the end. Writing per tick is already how
+sliders behave.
+
+Inside the `start_gizmo()`/`stop_gizmo()` bracket, `usd_chunks` paces the cooks:
+
+- **At most every `chunk_gizmo.DRAG_INTERVAL` (1/30 s), the newest value only.** A write
+  that comes sooner waits on a `scene.call_later` timer and is replaced by any later one,
+  so mouse moves that arrive during a cook collapse into one cook instead of queueing
+  behind it. A tick that arrives once the interval is up cooks then and there, so the drag
+  keeps cooking even where a host's timers starve while input keeps coming (Qt's on
+  Windows do); the timer only cooks the value left when the mouse stops.
+- **Once a cook takes longer than `chunk_gizmo.SLOW_COOK` (50 ms), not until release.** A
+  cook that long blocks the viewport, so the handle would freeze on every one. While the
+  handle moves the rest of the drag cooks nothing; it cooks where the handle rests (held
+  still for `chunk_gizmo.DRAG_REST`, 0.1 s; each tick starts the wait again) and where it
+  is let go. That release
+  cook is timed too, and the chunk's next drag starts from it: still slow, it waits from
+  the first tick; fast again, it drags live.
+
+`stop_gizmo()` cooks the write still waiting before `GIZMO_STOP` goes out. Outside a
+bracket, every write cooks at once.
+
+Draw your handle from the mouse every frame, not from the cooked prim: it would trail the
+cursor by up to one interval plus a cook, and on a slow chunk stand still until release.
+Your `call_later` must honour its `delay`, and your viewport must redraw after a cook that
+a timer ran, not only on mouse moves.
 
 ### Notices
 
-`GIZMO_START` → `GIZMO_CHANGED` (one per tick, after the write) → `GIZMO_STOP`.
+`GIZMO_START` → `GIZMO_CHANGED` (one per cook, after the write) → `GIZMO_STOP`.
 
 If your host has its own undo stack, open a block on START and close it on STOP. usdview
 needs none of this: `chunk_undo.UndoStack` (fed by `frontends/qt/undo.py`) makes one step

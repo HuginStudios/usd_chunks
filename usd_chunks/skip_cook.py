@@ -50,9 +50,9 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from pxr import Ar, Sdf, Usd
+from pxr import Ar, Sdf, Tf, Usd
 
-from usd_chunks import chunk_scheduler, layer_arcs
+from usd_chunks import chunk_scheduler, layer_arcs, layer_reconcile
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_naming import CHUNKS_ROOT
 from usd_chunks.cook_errors import CookBlocked, CookCancelled
@@ -100,6 +100,9 @@ class CookRecord:
     #: Whether what its last cook changed is everything: it changed the scene outside its
     #: layer, or nothing is known of what it read.
     everything: bool = True
+    #: A diff cook it gave up changed the scene (changed_scene): its next finish() hands
+    #: down everything, whatever the cook run again after it found.
+    scene_changed: bool = False
     #: It cannot cook on its inputs alone, and cooks on the whole stage from now on.
     unmaskable: bool = False
     #: The names of the siblings it read without being wired to them, already warned about.
@@ -172,9 +175,106 @@ def sharing() -> Iterator[None]:
 
 
 def release_cook_stage() -> None:
-    """Drop the shared cook stage, and with it its hold on the scene's layers."""
-    global _kept
+    """Drop the shared cook stages, and with them their hold on the scene's layers."""
+    global _kept, _kept_diff
     _kept = None
+    _kept_diff = None
+
+
+#: The cook stage the diff cooks of one solve share (sharing): (the scene's stage, weakly;
+#: the cook stage; its copy of the session layer; the slot layer on top of that copy; the
+#: _SessionSync that says when the copy needs bringing up to date).
+_kept_diff: tuple | None = None
+
+
+class _EditCount:
+    """How many change rounds have edited one layer since this started counting.
+
+    Sdf sends nothing for a write that leaves a value as it was, so a count that has not
+    moved means the layer holds what it did.
+    """
+
+    def __init__(self, layer: Sdf.Layer):
+        self.count = 0
+        self._key = Tf.Notice.Register(Sdf.Notice.LayersDidChangeSentPerLayer, self._heard, layer)
+
+    def _heard(self, _notice, _sender) -> None:
+        self.count += 1
+
+
+class _SessionSync:
+    """Whether the shared diff stage's copy of the session layer still holds what it does.
+
+    Bringing the copy up to date walks every spec in the session layer, which holds the
+    bookkeeping of every chunk prim, and it ran before every diff cook: a cook cost the size
+    of the network. Between two cooks the session layer rarely changes, so the walk runs
+    only when it, or the copy, has been edited since the last one. The snapshot a cook
+    compares its writes against is kept while the copy is unchanged, for the same reason.
+    """
+
+    def __init__(self, session: Sdf.Layer, copy: Sdf.Layer):
+        self.session_edits = _EditCount(session)
+        self.copy_edits = _EditCount(copy)
+        self._mark: tuple[int, int] | None = None
+        self._snapshot: tuple[int, Sdf.Layer] | None = None
+
+    def bring_up_to_date(self, session: Sdf.Layer, copy: Sdf.Layer, slot: Sdf.Layer) -> None:
+        """Reconcile session into copy, unless neither changed since the last time."""
+        if self._mark == (self.session_edits.count, self.copy_edits.count):
+            return
+        layer_reconcile.reconcile(session, copy, _with_slot(session, slot))
+        self._mark = (self.session_edits.count, self.copy_edits.count)
+
+    def snapshot(self, copy: Sdf.Layer) -> Sdf.Layer:
+        """A snapshot of copy as it is now, the last one again if copy has not changed."""
+        if self._snapshot is None or self._snapshot[0] != self.copy_edits.count:
+            self._snapshot = (self.copy_edits.count, snapshot(copy))
+        return self._snapshot[1]
+
+
+def _with_slot(session: Sdf.Layer, slot: Sdf.Layer) -> list[tuple[str, Sdf.LayerOffset]]:
+    offsets = session.subLayerOffsets.copy()
+    return [(slot.identifier, Sdf.LayerOffset()),
+            *((path, offsets[i]) for i, path in enumerate(session.subLayerPaths))]
+
+
+def _shared_diff_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
+                       muted: tuple[str, ...]) -> tuple[Usd.Stage, _StandIn]:
+    """The cook stage diff cooks share, made ready for one that writes into layer.
+
+    Opened once per solve, on a copy of the session layer with a slot layer on top: a diff
+    cook's scratch layer is put in the slot, the copy brought up to date with the session
+    layer (layer_reconcile: little changes between two cooks), and the stage re-masked and
+    muted as this cook wants, its chunk's own layer among the muted. Every diff cook opening
+    a stage of its own was most of what diff cooking cost over clearing.
+    """
+    global _kept_diff
+    session = main.GetSessionLayer()
+    entry = _kept_diff
+    if entry is not None:
+        owner = entry[0]()
+        if owner is None or owner != main:
+            entry = _kept_diff = None
+    if entry is None:
+        copy = Sdf.Layer.CreateAnonymous("cook_session")
+        slot = Sdf.Layer.CreateAnonymous("cook_slot")
+        slot.subLayerPaths = [layer.identifier]
+        sync = _SessionSync(session, copy)
+        sync.bring_up_to_date(session, copy, slot)
+        stand_in = _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits)
+        try:
+            stage = _open_cook_stage(main, mask, muted, _opening, stand_in)
+        finally:
+            _opening.clear()
+        _kept_diff = (weakref.ref(main), stage, copy, slot, sync)
+        return stage, stand_in
+    _, stage, copy, slot, sync = entry
+    # Its layers changed while nothing is populated, then populated at mask (_remask).
+    if list(slot.subLayerPaths) != [layer.identifier]:
+        slot.subLayerPaths = [layer.identifier]
+    sync.bring_up_to_date(session, copy, slot)
+    _remask(stage, main, mask, muted)
+    return stage, _StandIn(session, copy, sync.snapshot(copy), [slot], set(), sync.copy_edits)
 
 
 def _kept_for(main: Usd.Stage) -> Usd.Stage | None:
@@ -240,6 +340,8 @@ def is_cook_stage(stage: Usd.Stage | None) -> bool:
         return True
     if _kept is not None and stage == _kept[1]:
         return True
+    if _kept_diff is not None and stage == _kept_diff[1]:
+        return True
     return any(stage == watched for watch in _watches if not watch.scene for watched in watch.stages)
 
 
@@ -302,7 +404,7 @@ class _StandIn:
     """
 
     def __init__(self, session: Sdf.Layer, layer: Sdf.Layer, before: Sdf.Layer | None,
-                 held: list[Sdf.Layer], dropped: set[str]):
+                 held: list[Sdf.Layer], dropped: set[str], edits: _EditCount | None = None):
         self.session = session
         self.layer = layer
         #: The stand-in as the cook found it, when the session layer had content to copy.
@@ -312,13 +414,24 @@ class _StandIn:
         self.held = held
         #: The hidden layers it leaves out, so not muted.
         self.dropped = dropped
+        self._edits = edits
+        self._edits_at_start: int | None = None
+
+    def watch_edits(self) -> None:
+        """Start counting edits to the stand-in: called as the cook starts."""
+        if self._edits is None:
+            self._edits = _EditCount(self.layer)
+        self._edits_at_start = self._edits.count
 
     def copy_back(self) -> None:
         """Copy what the cook authored into the stand-in to the scene's session layer.
 
         Each prim it changed is copied whole, its children with it, and each it removed is
-        removed; its own metadata, but for the sublayers, is set where it changed.
+        removed; its own metadata, but for the sublayers, is set where it changed. Nothing
+        to do when the cook did not edit it, which is found without comparing every spec.
         """
+        if self._edits_at_start is not None and self._edits.count == self._edits_at_start:
+            return
         after = self.layer
         if self.before is None and not _has_content(after):
             return
@@ -331,7 +444,8 @@ class _StandIn:
             for key, value in new_info.items():
                 if old_info.get(key) != value:
                     session.pseudoRoot.SetInfo(key, value)
-            changed = {path if path.IsPrimOrPrimVariantSelectionPath() else path.GetPrimOrPrimVariantSelectionPath()
+            changed = {path if path.IsPrimPath() or path.IsPrimVariantSelectionPath()
+                       else path.GetPrimOrPrimVariantSelectionPath()
                        for path in _spec_paths(before) | _spec_paths(after)
                        if not _same_spec(before, after, path)}
             copied: list[Sdf.Path] = []
@@ -374,6 +488,15 @@ def _stand_in(main: Usd.Stage, hidden: Iterable[str]) -> _StandIn | None:
     return _StandIn(session, layer, before, held, dropped)
 
 
+def _session_copy(main: Usd.Stage) -> _StandIn:
+    """A stand-in session layer that leaves nothing out: room for a diff cook's scratch layer."""
+    session = main.GetSessionLayer()
+    layer = Sdf.Layer.CreateAnonymous("cook_session")
+    layer.TransferContent(session)
+    before = snapshot(layer) if _has_content(session) else None
+    return _StandIn(session, layer, before, [], set())
+
+
 def _stood_in(layer: Sdf.Layer, removed: set[str], dropped: set[str], held: list[Sdf.Layer],
               kept: list[int]) -> list[tuple[str, Sdf.LayerOffset]] | None:
     """layer's sublayers less removed, with a stand-in for each that holds removed ones.
@@ -384,8 +507,9 @@ def _stood_in(layer: Sdf.Layer, removed: set[str], dropped: set[str], held: list
     paths = list(layer.subLayerPaths)
     if not paths:
         return None
-    # By index: the whole list of a 900-sublayer layer's offsets took 50 ms to read.
-    offsets = layer.subLayerOffsets
+    # Read once with copy(): the proxy builds the whole list again for each index or item
+    # read, so reading a 900-sublayer layer's offsets one by one took 50 ms, every cook.
+    offsets = layer.subLayerOffsets.copy()
     subs: list[tuple[str, Sdf.LayerOffset]] = []
     left_out: set[str] = set()
     for i, path in enumerate(paths):
@@ -549,7 +673,7 @@ def _install_watching() -> None:
 
 @contextmanager
 def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
-               hidden: Iterable[str] = ()) -> Iterator[_Watch]:
+               hidden: Iterable[str] = (), swap: Sdf.Layer | None = None) -> Iterator[_Watch]:
     """The stage one cook runs on: main's layers, populated only at mask, authoring into layer.
 
     Muted as main is, so a disabled chunk's layer is as absent here as there, and muted at
@@ -560,23 +684,44 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
     more than it keeps (_StandIn): its own stage for the one cook, which costs less than
     re-masking the shared one. What the cook authored into the session layer is copied
     back as it ends.
+
+    Given swap -- the chunk's layer, when layer is the scratch layer a diff cook writes into
+    (chunk_cook) -- swap is muted on the cook stage and layer sublayered at the top of its
+    session stand-in, so the cook reads what it writes and never its last result.
     """
     global _kept
     _install_watching()
-    stand_in = _stand_in(main, hidden)
+    muted: tuple[str, ...] = tuple(hidden)
+    shared = False
+    stage = None
     # A cook inside another's cannot share its stage: they want different masks at once.
-    shared = _sharing > 0 and all(watch.scene for watch in _watches) and stand_in is None
-    stage = _kept_for(main) if shared else None
-    if stage is not None:
-        _remask(stage, main, mask, hidden)
-    else:
-        try:
-            stage = _open_cook_stage(main, mask, hidden, _opening, stand_in)
-        finally:
-            _opening.clear()
-        if shared:
-            _kept = (weakref.ref(main), stage)
+    may_share = _sharing > 0 and all(watch.scene for watch in _watches)
+    # Left out by a stand-in when that leaves out more than it keeps, as muting them on a
+    # shared stage costs more then (_StandIn); a diff cook shares a stage only otherwise.
+    stand_in = _stand_in(main, hidden)
+    if swap is not None:
+        muted = (*muted, swap.identifier)
+        if may_share and stand_in is None:
+            stage, stand_in = _shared_diff_stage(main, layer, mask, muted)
+    if stage is None:
+        if swap is not None:
+            stand_in = stand_in or _session_copy(main)
+            stand_in.layer.subLayerPaths.insert(0, layer.identifier)
+        shared = may_share and stand_in is None
+        stage = _kept_for(main) if shared else None
+        if stage is not None:
+            _remask(stage, main, mask, hidden)
+        else:
+            try:
+                stage = _open_cook_stage(main, mask, muted, _opening, stand_in)
+            finally:
+                _opening.clear()
+            if shared:
+                _kept = (weakref.ref(main), stage)
+    kept_diff = _kept_diff is not None and _kept_diff[1] is stage
     watch = _Watch(stage, mask, hidden)
+    if stand_in is not None:
+        stand_in.watch_edits()
     _active.append(stage)
     _watches.append(watch)
     try:
@@ -588,7 +733,7 @@ def cook_stage(main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path],
         _active.pop()
         if stand_in is not None:
             stand_in.copy_back()
-        if shared and _kept is not None and _kept[1] is stage:
+        if (shared and _kept is not None and _kept[1] is stage) or kept_diff:
             # Nothing populated while no cook runs on it, so it composes -- and reports --
             # next to nothing as the scene changes in the meantime.
             stage.SetPopulationMask(Usd.StagePopulationMask())
@@ -723,6 +868,37 @@ def upstream_chunks(chunk) -> list:
     return list(found.values())
 
 
+def direct_upstream_chunks(chunk) -> list:
+    """The chunks one step above chunk: the first chunk on each path upstream_chunks walks.
+
+    upstream_chunks is these, the chunks one step above them, and so on. For keying a chunk
+    by its own inputs and the keys of the chunks feeding it (open_cache): a look at one
+    chunk's wires each, where a walk of everything above every chunk cost the square of the
+    network's size.
+    """
+    seed = chunk.get_dag_node()
+    found: dict[int, object] = {}
+    seen = {seed}
+    pending = [seed]
+    for group in _groups_of(chunk):
+        pending.extend(node for _key, node in group.get_dag_node().get_inputs())
+    while pending:
+        node = pending.pop()
+        owner = _chunk_of(node)
+        if owner is not None and owner is not chunk:
+            found.setdefault(id(owner), owner)
+            continue
+        nodes = list(node._connections.inputs.values())
+        if (owned := node._owned) is not None:
+            # Not into a chunk it holds (a chunkgroup's own): what a group holds is not its input.
+            nodes.extend(n for n in owned if not _is_chunk(n.propagator))
+        for nxt in nodes:
+            if nxt not in seen:
+                seen.add(nxt)
+                pending.append(nxt)
+    return list(found.values())
+
+
 def _groups_of(chunk) -> Iterator:
     """The context chunks (chunkgroups, then the tab) that hold chunk, innermost first."""
     # Containers sit between a chunk and its group, and the scene's own at the top.
@@ -731,6 +907,20 @@ def _groups_of(chunk) -> Iterator:
         if _is_chunk(owner) and owner.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             yield owner
         owner = owner.get_owner()
+
+
+def layers_below(chunk, layer_of: Callable) -> frozenset[str]:
+    """The identifiers of the layers of the chunks below chunk: what it never sees.
+
+    Args:
+        chunk: The chunk.
+        layer_of: The layer of a chunk, or None (ChunkLayerManager.get_layer).
+    """
+    below = _related(chunk)[1]
+    if not below:
+        return frozenset()
+    return frozenset(own.identifier for c in chunk.get_scene().get_chunks()
+                     if id(c) in below and (own := layer_of(c)) is not None)
 
 
 def _related(chunk) -> tuple[set[int], set[int]]:
@@ -793,8 +983,11 @@ def _chunk_prims(chunk) -> set[Sdf.Path]:
             return {_CHUNKS_ROOT}
         paths.add(Sdf.Path(path))
     # A group's prim that holds others of them is populated as their parent: masked, it
-    # would bring every chunk in the group along.
-    parents = {parent for path in paths for parent in _ancestors(path.GetParentPath())}
+    # would bring every chunk in the group along. Asked once per distinct parent: siblings
+    # share one, and asking per chunk walked every ancestor of every chunk on each cook.
+    parents = set()
+    for parent in {path.GetParentPath() for path in paths}:
+        parents.update(_ancestors(parent))
     return paths - parents
 
 
@@ -849,6 +1042,9 @@ def hidden_layers(chunk, layer: Sdf.Layer, layer_of: Callable,
         return id(other) in beside and id(other) not in below and place(other) < mine
 
     kept = {layer.identifier}
+    # A diff cook writes into a scratch layer: the chunk's own layer is swapped out, not hidden.
+    if (own := layer_of(chunk)) is not None:
+        kept.add(own.identifier)
     kept.update(own.identifier for c in chunks if seen(c) and (own := layer_of(c)) is not None)
     hidden: dict[str, tuple] = {}
     for other in chunks:
@@ -1192,7 +1388,7 @@ def should_skip(chunk, reasons: list, states: list | None = None) -> bool:
 
 
 def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | None = None,
-        place: Callable | None = None) -> None:
+        place: Callable | None = None, swap: Sdf.Layer | None = None) -> None:
     """Run execute on chunk's cook stage, record what it read, hand down what it changed.
 
     The mask is the chunk's inputs and what its last cook wrote. A cook that writes
@@ -1212,6 +1408,10 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     and records its inputs and outputs as its mask. One that read what a chunk not upstream
     of it authors is run again masked by them, with those layers hidden: on the whole stage
     it would see that chunk only if it happened to have cooked already.
+
+    Given swap, layer is a diff cook's scratch layer standing in for swap, the chunk's own
+    (cook_stage): every cook then runs on a cook stage of only the layers upstream of it, a
+    whole one and a first one too.
     """
     rec = record(chunk)
     outputs = rec.outputs
@@ -1223,7 +1423,8 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
     if outputs is not None and not unmaskable:
         mask = input_paths(chunk) | set(outputs) | set(rec.reads)
     hidden: dict[str, tuple] = {}
-    if not _whole(mask) and layer_of is not None:
+    # A diff cook runs on a cook stage of only what is upstream of it, a whole one too.
+    if (swap is not None or not _whole(mask)) and layer_of is not None:
         hidden = hidden_layers(chunk, layer, layer_of, place)
 
     rec.pending = set()
@@ -1233,7 +1434,7 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         failed = False
         watches: list[_Watch] = []
         try:
-            _execute(chunk, main, layer, mask, execute, watches, hidden)
+            _execute(chunk, main, layer, mask, execute, watches, hidden, swap)
         except CookCancelled:
             raise  # not a cook the mask broke: cancelled, it is not tried again
         except Exception:
@@ -1241,7 +1442,15 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
                 raise
             failed = True
         if _whole(mask):
-            if first and watches:
+            if first and watches and swap is not None:
+                # Cooked with only what is upstream of it already: nothing to cook again.
+                # Reading another branch is a missing wire, said as a masked cook says it.
+                first = False
+                inputs = input_paths(chunk)
+                if hidden and (read := read_hidden(watches[0], inputs, hidden)):
+                    below = _related(chunk)[1]
+                    unwired = [c for c in read if id(c) not in below]
+            elif first and watches:
                 first = False
                 inputs = input_paths(chunk)
                 masked = inputs | output_paths(layer)
@@ -1302,12 +1511,13 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         rec.reads = frozenset(
             path for path in (watch.points - watch.parents) | watch.children if not _covered(path, base))
     rec.scene = scene_state(main)
-    rec.layer = layer.identifier
+    rec.layer = (swap or layer).identifier
     # What changed is handed down by finish(), once the cook is wholly done.
     rec.everything = rec.scene != state
     if rec.everything:
         _scene_changed_by(chunk, state, rec.scene)
-    if hidden and not _whole(mask) and watches and (made := _made_out_of_sight(watches[0].absent, hidden)):
+    if (hidden and (swap is not None or not _whole(mask)) and watches
+            and (made := _made_out_of_sight(watches[0].absent, hidden))):
         raise CookBlocked(_blocked_message(chunk, made))
     if unwired:
         _warn_unwired(chunk, unwired)
@@ -1335,6 +1545,19 @@ def _warn_unwired(chunk, siblings: list) -> None:
         "%s reads prims that %s edit%s, but %s wired above it, so it doesn't see those edits.",
         chunk.name, listed, "s" if one else "", "isn't" if one else "aren't",
     )
+
+
+def changed_scene(chunk, before: tuple, after: tuple) -> None:
+    """A diff cook of chunk, given up, changed the scene from before to after (chunk_cook).
+
+    The cook run again in its place starts on the changed scene and finds nothing changed,
+    so it is said here: the chunks below are handed everything, and the rest are told as
+    run() tells them.
+    """
+    if before == after:
+        return
+    record(chunk).scene_changed = True
+    _scene_changed_by(chunk, before, after)
 
 
 def _scene_changed_by(chunk, before: tuple, after: tuple) -> None:
@@ -1414,6 +1637,12 @@ def _note_missing(chunk, main: Usd.Stage, inputs: Iterable[Sdf.Path]) -> None:
         _waiting.pop(chunk, None)
 
 
+def forget_waiting(chunk) -> None:
+    """Stop chunk waiting for a prim (waiting_on): for a host that decides itself when a
+    chunk cooks again, and cooks each one on a stage of its own."""
+    _waiting.pop(chunk, None)
+
+
 def waiting_on(chunk) -> list:
     """The chunks whose last cook found no prim at an input that is there now chunk has cooked.
 
@@ -1481,16 +1710,25 @@ def baseline(chunk, layer: Sdf.Layer) -> Sdf.Layer:
     return seen if seen is not None else snapshot(layer)
 
 
-def finish(chunk, layer: Sdf.Layer, before: Sdf.Layer | None) -> None:
+def finish(chunk, layer: Sdf.Layer, before: Sdf.Layer | None,
+           changed: set[Sdf.Path] | None = None) -> None:
     """Hand down what chunk's layer changed since the chunks below last saw it.
 
     Called once the cook is wholly done -- its driven attributes re-authored too -- and
     before chunk_cook.flush decides on the chunks below it.
+
+    Given changed -- what a diff cook's reconcile changed, when nothing else wrote to the
+    layer since before was taken (chunk_cook._Writes) -- that is handed down, rather than
+    found by comparing every spec of the layer with before a second time.
     """
     rec = record(chunk)
-    everything = before is None or rec.everything
+    everything = before is None or rec.everything or rec.scene_changed
     rec.everything = True
-    hand_down(chunk, EVERYTHING if everything else changed_paths(before, layer))
+    rec.scene_changed = False
+    if everything:
+        hand_down(chunk, EVERYTHING)
+    else:
+        hand_down(chunk, changed if changed is not None else changed_paths(before, layer))
     rec.seen = snapshot(layer)
 
 
@@ -1499,7 +1737,7 @@ def _whole(mask: set[Sdf.Path] | None) -> bool:
 
 
 def _execute(chunk, main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path] | None, execute,
-             watches: list[_Watch], hidden: dict[str, tuple]) -> None:
+             watches: list[_Watch], hidden: dict[str, tuple], swap: Sdf.Layer | None = None) -> None:
     """Run execute on a stage of mask, or on main itself when mask covers everything.
 
     The whole stage is main: composing all of it a second time on the cook stage would cost
@@ -1511,8 +1749,11 @@ def _execute(chunk, main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path] | Non
 
     The cook's watch, which collects what it looked up, is appended to watches before it
     runs, so it is there also when the cook raises.
+
+    A diff cook (swap given) cannot run on main, whose layer stack holds the chunk's own
+    layer and not its scratch layer: a whole one runs on a cook stage of everything.
     """
-    if _whole(mask):
+    if _whole(mask) and swap is None:
         # On main: the cook's unmasked() scope is the innermost. Watched all the same, so
         # run() can tell a first cook that read a sibling it is not wired to.
         watch = _Watch(main, {Sdf.Path.absoluteRootPath}, scene=True)
@@ -1525,8 +1766,9 @@ def _execute(chunk, main: Usd.Stage, layer: Sdf.Layer, mask: set[Sdf.Path] | Non
             watch.stages.clear()
         return
     prims = _chunk_prims(chunk)
-    with cook_stage(main, layer, mask | prims, hidden) as watch:
-        watch.parents = {parent for path in prims for parent in _ancestors(path)
+    whole = _whole(mask)
+    with cook_stage(main, layer, EVERYTHING if whole else mask | prims, hidden, swap) as watch:
+        watch.parents = set() if whole else {parent for path in prims for parent in _ancestors(path)
                          if parent.HasPrefix(_CHUNKS_ROOT) and parent not in prims}
         watches.append(watch)
         try:
@@ -1552,6 +1794,45 @@ def restored(chunk, layer: Sdf.Layer) -> None:
     rec.outputs = frozenset(output_paths(layer))
     rec.mask = None
     rec.everything = False
+
+
+def memo(chunk) -> dict | None:
+    """What chunk's last cook read and wrote, as prim paths: to keep with its result.
+
+    For open_cache, which keeps a chunk's layer when the network is saved and reads it back
+    on open under a key for everything the cook read. With the same key the cook reads the
+    same, so its mask holds as well -- and without it a result read back is cooked, never
+    skipped, at the first edit after opening (restored()).
+
+    Returns:
+        A dict for adopt(), or None when nothing is known of what it read.
+    """
+    rec = record(chunk)
+    if rec.outputs is None:
+        return None
+    return {
+        "mask": None if rec.mask is None else sorted(map(str, rec.mask)),
+        "reads": sorted(map(str, rec.reads)),
+        "unmaskable": rec.unmaskable,
+    }
+
+
+def adopt(chunk, kept: dict, layer: Sdf.Layer, main: Usd.Stage) -> None:
+    """Take back what a kept cook read (memo()), for a result read back under the same key.
+
+    Args:
+        chunk: The chunk whose result was read back.
+        kept: What memo() returned when the result was kept.
+        layer: The chunk's layer, holding the result.
+        main: The scene's stage.
+    """
+    rec = record(chunk)
+    rec.mask = None if kept["mask"] is None else frozenset(Sdf.Path(p) for p in kept["mask"])
+    rec.reads = frozenset(Sdf.Path(p) for p in kept["reads"])
+    rec.unmaskable = bool(kept["unmaskable"])
+    rec.outputs = frozenset(output_paths(layer))
+    rec.scene = scene_state(main)
+    rec.layer = layer.identifier
 
 
 def unaccounted(chunk) -> None:
