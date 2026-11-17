@@ -831,6 +831,13 @@ def _chunk_of(node):
     return prop.get_chunk() if hasattr(prop, "get_scene_stage") else None
 
 
+#: (chunk_scheduler.shape_version(), id(chunk) -> (weakref to it, weakrefs to its
+#: upstream_chunks)): kept while the graph keeps its shape, which is all the answer depends
+#: on. Weak, as every record here is: held strongly, chunks of a scene already closed lived
+#: on, still listening, until the next change of shape.
+_upstream_memo: tuple[int, dict] = (-1, {})
+
+
 def upstream_chunks(chunk) -> list:
     """chunk and every chunk that solves before it: wired to it by exec or by a param.
 
@@ -838,7 +845,88 @@ def upstream_chunks(chunk) -> list:
     chunk authored depends on all of it. So does what is wired into the chunkgroups a chunk
     sits in: a chunk inside a group reads what flows into the group, though no wire links
     it to the group's input.
+
+    Made from the answers for the chunks one step above it (direct_upstream_chunks), kept
+    until the graph changes shape. A walk of every param above each chunk, once per chunk,
+    was most of the first edit after opening a long chain: 26 s of 36 in usdview for 300
+    Transforms. Where chunks reach each other in a loop (a group and a chunk lofting a param
+    into it) the answer is walked as before.
     """
+    global _upstream_memo
+    version = chunk_scheduler.shape_version()
+    if _upstream_memo[0] != version:
+        _upstream_memo = (version, {})
+    found = _upstream_from_steps(chunk, _upstream_memo[1])
+    return list(found) if found is not None else _walk_upstream_chunks(chunk)
+
+
+def _upstream_steps(chunk) -> list:
+    """The first chunk on each path the walk (_walk_upstream_chunks) takes from chunk.
+
+    As direct_upstream_chunks, but a chunk chunk holds (a group's own, through any nodes in
+    between) counts as a step too: the walk follows what a node owns, and that reaches them.
+    """
+    seed = chunk.get_dag_node()
+    found: dict[int, object] = {}
+    seen = {seed}
+    pending = [seed]
+    for group in _groups_of(chunk):
+        pending.extend(node for _key, node in group.get_dag_node().get_inputs())
+    while pending:
+        node = pending.pop()
+        owner = _chunk_of(node)
+        if owner is not None and owner is not chunk:
+            found.setdefault(id(owner), owner)
+            continue
+        nodes = list(node._connections.inputs.values())
+        if (owned := node._owned) is not None:
+            nodes.extend(owned)
+        for nxt in nodes:
+            if nxt not in seen:
+                seen.add(nxt)
+                pending.append(nxt)
+    return list(found.values())
+
+
+def _upstream_from_steps(chunk, table: dict) -> tuple | None:
+    """chunk's upstream_chunks from its steps' answers, filling table; None on a loop.
+
+    Depth first without recursion: a chain of a thousand chunks would pass Python's limit.
+    """
+    def known(c):
+        entry = table.get(id(c))
+        if entry is None or entry[0]() is not c:
+            return None
+        found = tuple(ref() for ref in entry[1])
+        return None if any(x is None for x in found) else found
+
+    if (answer := known(chunk)) is not None:
+        return answer
+    stack = [(chunk, _upstream_steps(chunk), 0)]
+    on_path = {id(chunk)}
+    while stack:
+        c, steps, i = stack[-1]
+        if i < len(steps):
+            stack[-1] = (c, steps, i + 1)
+            step = steps[i]
+            if id(step) in on_path:
+                return None
+            if known(step) is None:
+                stack.append((step, _upstream_steps(step), 0))
+                on_path.add(id(step))
+            continue
+        stack.pop()
+        on_path.discard(id(c))
+        found = {id(c): c}
+        for step in steps:
+            for above in known(step):
+                found.setdefault(id(above), above)
+        table[id(c)] = (weakref.ref(c), tuple(weakref.ref(x) for x in found.values()))
+    return known(chunk)
+
+
+def _walk_upstream_chunks(chunk) -> list:
+    """upstream_chunks by walking every node above chunk: the answer where steps loop."""
     found = {id(chunk): chunk}
     groups_walked: set[int] = set()
 
