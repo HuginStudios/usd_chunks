@@ -418,6 +418,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A network with a chain of about a thousand chunks can be built and opened. Ordering
+  its chunks recursed once per chunk and stopped with a RecursionError.
 - MaterialX Shader keeps a name you give it (`name="Bark"` in a script, or a rename),
   and copies are numbered `constant_color3_1`, `_2` instead of starting at `constant_color3_`.
 - A reopened MaterialX network cooks each shader at most twice. The Surface at the
