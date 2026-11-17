@@ -515,18 +515,41 @@ def author_gizmos(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase) -> No
                 logger.exception("Failed to author gizmo %r on chunk %r", gizmo.name, chunk.name)
 
 
+def _record_matches(prim: Usd.Prim, chunk: core.ChunkBase, gizmo) -> bool:
+    """Whether the prim's record of a handle still says what the chunk now declares.
+
+    The parts a newer version of a chunk changes and a host reads: the type, the axis, where
+    the anchor comes from (a param, or a literal prim path) and how many params it drives.
+    The label, offset, hidden flag and anchor target are refreshed on every param change.
+    """
+    def token(field):
+        attr = prim.GetAttribute(_attr_name(gizmo.name, field))
+        return attr.Get() if attr and attr.HasAuthoredValue() else None
+
+    if token("type") != gizmo.type or token("axis") != gizmo.axis:
+        return False
+    literal = str(gizmo.anchor).startswith("/")
+    if literal != (token("anchorSource") is None):
+        return False
+    driver = prim.GetAttribute(_driver_attr_name(gizmo.name))
+    return bool(driver) and len(driver.GetConnections()) == len(gizmo.driver)
+
+
 def _sync_runtime_records(stage: Usd.Stage, prim: Usd.Prim, chunk: core.ChunkBase, gizmos: list) -> bool:
     """Bring the prim's records in line with a chunk whose handles change (GIZMOS_HOOK).
 
     A row's handle that is new gets authored; one whose row has gone loses its record, or a
-    host would keep drawing a handle that drives nothing. Only for a chunk with the hook: a
-    plain chunk's set never changes. True if anything was written.
+    host would keep drawing a handle that drives nothing. A handle whose record no longer says
+    what the chunk declares -- a network saved by an older version of the chunk, whose handle
+    has since moved to another anchor or become flat -- is authored again. Only for a chunk with
+    the hook: a plain chunk's set never changes. True if anything was written.
     """
     if getattr(chunk, "_module_hook", lambda _name: None)(GIZMOS_HOOK) is None:
         return False
     wanted = {g.name for g in gizmos}
     have = set(_gizmo_names(prim))
-    gone, new = have - wanted, [g for g in gizmos if g.name not in have]
+    stale = {g.name for g in gizmos if g.name in have and not _record_matches(prim, chunk, g)}
+    gone, new = (have - wanted) | stale, [g for g in gizmos if g.name not in have or g.name in stale]
     if not gone and not new:
         return False
     with Sdf.ChangeBlock():

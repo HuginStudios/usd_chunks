@@ -427,6 +427,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A network saved before a chunk changed its viewport handles (a `gizmos(node)` hook whose
+  handle moved to another anchor, or became a flat box) opened with the old handles: the
+  records it was saved with were only brought up to date when an anchor param changed or a
+  list was resized. Now each such chunk's handle records are brought in line with what it
+  declares after its first cook.
+
 - A network with a chain of about a thousand chunks can be built and opened. Ordering
   its chunks recursed once per chunk and stopped with a RecursionError.
 - MaterialX Shader keeps a name you give it (`name="Bark"` in a script, or a rename),

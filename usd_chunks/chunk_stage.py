@@ -428,6 +428,26 @@ def _adopt_cooked_inputs(chunk: core.ChunkBase) -> None:
     ChunkStageSync()._adopt_cooked_inputs(chunk)
 
 
+# id() of the chunks _sync_hook_gizmos has brought in line once this session.
+_gizmos_synced: set[int] = set()
+
+
+def _sync_hook_gizmos(chunk: core.ChunkBase) -> None:
+    """chunk_cook.after_cook's hook: a chunk whose handles come from its gizmos() hook gets its
+    records brought in line with them after its first cook.
+
+    A network saved by an older version of the chunk keeps the handle records that version
+    wrote, and only a change to an anchor param or a list's size re-syncs them -- so a reopened
+    network whose chunk has since moved a handle (another anchor, a flat box) drew the old one.
+    Once per chunk: the sync is cheap but a drag cooks every tick, and after the first cook the
+    records only change through those paths.
+    """
+    if id(chunk) in _gizmos_synced or chunk._module_hook(chunk_gizmo.GIZMOS_HOOK) is None:
+        return
+    _gizmos_synced.add(id(chunk))
+    ChunkStageSync()._refresh_gizmo_anchors(chunk)
+
+
 # (file metersPerUnit, stage metersPerUnit) pairs _warn_unit_mismatch has already warned about.
 _unit_warnings: set[tuple[float, float]] = set()
 
@@ -666,6 +686,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # id(chunk) -> (chunk, input names) edited this solve, for _follow_composed.
         self._follow_pending: dict[int, tuple[core.ChunkBase, set[str]]] = {}
         chunk_cook.after_cook(_adopt_cooked_inputs)
+        chunk_cook.after_cook(_sync_hook_gizmos)
         chunk_cook.after_cook(_warn_unit_mismatch)
         # Absolute, ./ or ../, and missing input files: the network's portability.
         chunk_cook.after_cook(asset_paths.check)
