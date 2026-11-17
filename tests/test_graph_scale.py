@@ -7,6 +7,12 @@ Two tiers, because the cost of a large graph is not where you would first look f
   This is the part people assume is the bottleneck. It is not: it is linear and finishes
   a 1000-node chain in tens of milliseconds.
 
+* **Network tier** -- real networks in three shapes, built, saved, opened and edited at
+  two sizes, each phase checked by how it grows, never by its seconds: a deep chain of
+  Transforms on one prim, a wide fan of moved cubes into one Merge, and a MaterialX shader
+  tree (skipped where USD has no MaterialX, as in CI). Runs on every suite: small sizes,
+  seconds each, but enough to catch a cook whose cost grew with the network again.
+
 * **Full-stack tier** -- 1000 real `dot` chunks (the cheapest module there is: its
   `execute` clears its own layer and returns) created through the registry and wired
   through `add_dependency`, so every structural change drags the real USD bookkeeping
@@ -34,7 +40,7 @@ from collections.abc import Callable
 import pytest
 from pxr import Usd
 
-from usd_chunks import chunk_registry, chunk_scheduler
+from usd_chunks import Scene, chunk, chunk_registry, chunk_scheduler, shader_defs
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_notice import ChunkNoticeAlias, ChunkNoticePropagator
 from usd_chunks import chunk_stage
@@ -138,8 +144,8 @@ def build_chunk_graph(count: int) -> list[tuple[str, float]]:
         chunks = []
         for _ in range(count):
             created = module.create() if module.loaded else module.load()
-            for chunk in created:
-                scene.add_chunk(chunk)
+            for made in created:
+                scene.add_chunk(made)
             chunks.append(created[0])
         return chunks
 
@@ -198,6 +204,126 @@ def reload_chunk_graph(count: int, directory: str) -> list[tuple[str, float]]:
     execute, _ = _time(head.execute)
 
     return [("export", export), ("load", load), ("exec loaded", execute)]
+
+
+# ------------------------------------------------------------------------------------------
+# Network tier
+# ------------------------------------------------------------------------------------------
+
+#: The two sizes each network is measured at. Four times apart, so a phase that should be
+#: linear grows about 4x and a quadratic one about 16x.
+SMALL, LARGE = 25, 100
+
+#: The most each phase may grow from SMALL to LARGE, as an exponent of the size ratio: 1 is
+#: linear, 2 quadratic. Between what main measures and what the code before the November 2026
+#: fixes did (#684-#696), with room above main for a slower, noisier CI runner. Measured, best
+#: of 3 (build, open, leaf edit, root edit):
+#:
+#:   chain  main 1.38 1.32 0.55 1.55   before 1.91 2.22 1.79 2.79
+#:   fan    main 1.19 1.13 0.30 0.30   before 1.20 1.15 0.33 0.30  (always linear: no shared prim)
+#:   mtlx   main 1.14 1.24 0.30 0.35   before 1.48 1.52 0.84 0.60
+#:
+#: A chain's root edit is near quadratic by its shape: every Transform below cooks, and each
+#: writes an op order as long as the chain.
+MAX_EXPONENT = {
+    "chain": {"build": 1.65, "open": 1.65, "edit leaf": 1.0, "edit root": 2.1},
+    "fan": {"build": 1.5, "open": 1.5, "edit leaf": 0.7, "edit root": 0.7},
+    "mtlx": {"build": 1.4, "open": 1.45, "edit leaf": 0.65, "edit root": 0.7},
+}
+
+
+def _chain(scene, n: int) -> dict:
+    """A cube and n Transforms below it, all moving the same prim: deep, one prim."""
+    with chunk.change_block():
+        last = scene.create.cube(name="Box", prim_path="/World/box")
+        first = None
+        for i in range(n):
+            last = scene.create.transform(last, name=f"T{i}", primpath_location="/World/box", ty=0.01)
+            first = first or last
+        scene.set_output(last)
+    return {"leaf": (last.name, "ty", 0.02), "root": (first.name, "ty", 0.02)}
+
+
+def _fan(scene, n: int) -> dict:
+    """n cubes, each moved by a Transform, into one Merge: wide, a prim each."""
+    with chunk.change_block():
+        moved = []
+        for i in range(n):
+            cube = scene.create.cube(name=f"Box{i}", prim_path=f"/World/box{i}")
+            moved.append(scene.create.transform(cube, name=f"T{i}", primpath_location=f"/World/box{i}", tx=i))
+        merge = scene.create.merge(*moved, name="Merge")
+        scene.set_output(merge)
+    return {"leaf": (moved[0].name, "ty", 1.0), "root": ("Box0", "width", 1.5)}
+
+
+def _shader_tree(scene, n: int) -> dict:
+    """A tree of n MaterialX add nodes over constant leaves, into one Standard Surface."""
+    with chunk.change_block():
+        sphere = scene.create.sphere(name="Ball", prim_path="/World/ball", radius1=1.0)
+        level = [scene.add("mtlx_shader", name=f"Const{i}", nodedef="ND_constant_color3",
+                           value=(0.1 * (i % 10), 0.5, 0.5)) for i in range(max(2, n // 2))]
+        leaf = level[0]
+        while len(level) > 1:
+            level = [scene.add("mtlx_shader", level[j], level[j + 1], name=f"Add{len(level)}_{j}",
+                               nodedef="ND_add_color3")
+                     for j in range(0, len(level) - 1, 2)] + level[len(level) - len(level) % 2:]
+        surface = scene.add("mtlx_shader", level[0], sphere, name="Surface",
+                            nodedef="ND_standard_surface_surfaceshader", bind_to="/World/ball")
+        scene.set_output(surface)
+    return {"leaf": (surface.name, "specular_roughness", 0.5), "root": (leaf.name, "value", (0.9, 0.2, 0.1))}
+
+
+_SHAPES = {"chain": _chain, "fan": _fan, "mtlx": _shader_tree}
+
+
+def network_phases(shape: str, n: int, directory: str) -> dict[str, float]:
+    """Build a network of shape at size n, save it, open it, edit it: seconds per phase.
+
+    Opened as the suite runs, with the open cache off (conftest): this measures what a
+    cook costs, which reading results back would hide.
+    """
+    path = os.path.join(directory, f"{shape}_{n}.usda")
+    phases = {}
+    with Scene.new() as scene:
+        phases["build"], edits = _time(lambda: _SHAPES[shape](scene, n))
+        scene.save(path)
+    phases["open"], scene = _time(lambda: Scene.open(path))
+    try:
+        for key in ("leaf", "root"):
+            name, param, value = edits[key]
+            target = scene.get_chunk(name)
+            # Twice, timed the second: the first edit after opening pays first-time costs.
+            scene.set(target, **{param: value})
+            nudged = tuple(v * 0.9 for v in value) if isinstance(value, tuple) else value * 0.9
+            phases[f"edit {key}"], _ = _time(lambda: scene.set(target, **{param: nudged}))
+    finally:
+        scene.close()
+    return phases
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+def test_no_phase_grows_faster_than_it_should(shape, tmp_path, monkeypatch):
+    """Each phase grows with the network as it should: a leaf edit not at all, the rest linearly.
+
+    Best of three at each size, as the scheduler test does: noise only ever adds time.
+    """
+    if shape == "mtlx" and "mtlx" not in shader_defs.available_source_types():
+        pytest.skip("this USD has no MaterialX shader definitions (no usdMtlx plugin)")
+    monkeypatch.setenv("USD_CHUNKS_OPEN_CACHE", "0")
+
+    def best(n: int) -> dict[str, float]:
+        runs = [network_phases(shape, n, str(tmp_path)) for _ in range(3)]
+        return {phase: min(run[phase] for run in runs) for phase in runs[0]}
+
+    small, large = best(SMALL), best(LARGE)
+    span = math.log(LARGE / SMALL)
+    grew = {phase: math.log(max(large[phase], 1e-4) / max(small[phase], 1e-4)) / span for phase in small}
+    too_fast = {phase: round(e, 2) for phase, e in grew.items() if e > MAX_EXPONENT[shape][phase]}
+
+    assert not too_fast, (
+        f"{shape}: grew faster than allowed {too_fast} (exponents {({p: round(e, 2) for p, e in grew.items()})}; "
+        f"seconds at {SMALL}: {_format(sorted(small.items()))}; at {LARGE}: {_format(sorted(large.items()))})"
+    )
 
 
 def test_scheduler_solves_1000_connected_nodes():

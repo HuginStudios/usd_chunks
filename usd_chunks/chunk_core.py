@@ -4336,6 +4336,10 @@ class ChunkConfig(AttributesBase):
     # only reproducible where it was made -- Blender Import's, from a .blend that may be
     # gone -- so the cache entry is the result, not a shortcut to it. Implies cache_cook.
     cache_always: bool = attrs.field(default=False)
+    # Cook this chunk every time a network opens, instead of reading back the result kept
+    # when it was saved (open_cache). For a module whose result depends on something no key
+    # can see: the clock, an unseeded random, a web request.
+    cook_on_open: bool = attrs.field(default=False)
     # Param values a chunk of this module gets when it is made new -- from a menu or a script
     # (MenuEntry.create) -- and not when a saved one is loaded. For a better default that must
     # not change saved networks: a saved chunk stores only the values that differ from main()'s

@@ -37,6 +37,7 @@ from usd_chunks import chunk_naming
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_stage
+from usd_chunks import chunk_topology
 from usd_chunks import chunk_trace
 from usd_chunks import chunk_utils
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
@@ -876,23 +877,43 @@ def resolve_gizmos(prim: Usd.Prim) -> list:
     return _ordered_downstream_first(stage, descs)
 
 
-def _exec_depth(stage: Usd.Stage, chunk_prim_path) -> int:
-    """How far down the exec chain a chunk prim sits. Bigger is further downstream."""
-    depth, path, seen = 0, Sdf.Path(str(chunk_prim_path)), set()
-    while path not in seen:
+def _exec_depth(stage: Usd.Stage, chunk_prim_path, memo: dict | None = None) -> int:
+    """How far down the exec chain a chunk prim sits. Bigger is further downstream.
+
+    Args:
+        stage: The stage holding the chunk prims.
+        chunk_prim_path: The chunk prim to measure.
+        memo: Depths already found, by prim path. Pass the same dict to measure several
+            chunks of one chain: each walk stops where an earlier one went, so the chain
+            is walked once, not once per chunk.
+
+    Returns:
+        The number of exec hops up to the top of the chain.
+    """
+    memo = {} if memo is None else memo
+    start = path = Sdf.Path(str(chunk_prim_path))
+    chain, seen = [], set()
+    while path not in memo:
+        if path in seen:
+            # A cycle: the hops taken so far, and nothing kept, since the depth of a prim
+            # on a loop depends on where the walk started.
+            return len(chain)
         seen.add(path)
         prim = stage.GetPrimAtPath(path)
-        if not (prim and prim.IsValid()):
-            break
-        upstream = chunk_stage.exec_input_connections(prim)
+        upstream = chunk_stage.exec_input_connections(prim) if prim and prim.IsValid() else []
         if not upstream:
+            memo[path] = 0
             break
+        chain.append(path)
         # The strongest branch, matching how the chain is read everywhere else. A merge
         # feeding several inputs makes depth approximate, and approximate is fine: it only
         # decides which of two handles on ONE prim is offered first.
         path = upstream[0].GetPrimPath()
+    depth = memo[path]
+    for step in reversed(chain):
         depth += 1
-    return depth
+        memo[step] = depth
+    return memo[start]
 
 
 def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
@@ -911,11 +932,11 @@ def _ordered_downstream_first(stage: Usd.Stage, descs: list) -> list:
     """
     if len(descs) < 2:
         return descs
-    depths = {}
+    depths, memo = {}, {}
     for desc in descs:
         key = str(desc.chunk_prim)
         if key not in depths:
-            depths[key] = _exec_depth(stage, desc.chunk_prim)
+            depths[key] = _exec_depth(stage, desc.chunk_prim, memo)
     # Stable, so handles from one chunk keep their declared order and equal-depth chunks
     # keep the layer-stack order they arrived in.
     return sorted(descs, key=lambda d: -depths[str(d.chunk_prim)])
@@ -2370,6 +2391,16 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
     stage = prim.GetStage()
     scene = getattr(ChunkRegistry(), "scene", None)
     depths: dict = {}
+    # Shared by every walk below: in a chain of Transforms on one prim each owner sits one
+    # hop below the last, and a fresh walk per owner made one cook cost the chain's length
+    # squared (0.26 s per Transform cook at 100 deep). Kept between cooks too, until an exec
+    # wire changes: read from the scene's stage, where the chunk prims are, so that a cook
+    # stage's answers never go into it.
+    depth_stage = node.get_scene_stage() if hasattr(node, "get_scene_stage") else None
+    if depth_stage:
+        memo = chunk_topology.exec_depth_memo(depth_stage)
+    else:
+        depth_stage, memo = stage, {}
     # Only an op already on the prim can join the order, so with no other chunk op there,
     # there is no one to look for -- the usual case, and asking every chunk in a big scene
     # made each Transform cook cost the size of the scene. A cook sees only what is above it,
@@ -2396,10 +2427,10 @@ def xform_op_order(node: core.ChunkBase, prim: Usd.Prim, my_op: str) -> list:
         owner_prim = _chunk_prim(stage, owner)
         if owner_prim is None:
             continue
-        depths[op_name] = _exec_depth(stage, owner_prim.GetPath())
+        depths[op_name] = _exec_depth(depth_stage, owner_prim.GetPath(), memo)
     # Depth only orders this op against others; alone, it sorts the same at any depth, and
     # measuring it walks the whole exec chain above this chunk.
-    depths[my_op] = _exec_depth(stage, _own_prim_path(stage, node)) if depths else 0
+    depths[my_op] = _exec_depth(depth_stage, _own_prim_path(stage, node), memo) if depths else 0
 
     # The prim's own ops keep their place at the front. Anything a chunk owns is dropped and
     # re-added below, so an op does not appear twice when a chunk's position changes.

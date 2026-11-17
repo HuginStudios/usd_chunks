@@ -63,6 +63,11 @@ _internal_layer_write_active: bool = False
 # graph topology when a caller (e.g. author_in_variant_context) didn't pass an explicit owner.
 _executing_chunk = None
 
+# Bumped as each module cook starts and ends (chunk_cook.executing). While it holds one value
+# nothing rewires the graph, so a lookup a cook repeats (chunk_topology's Edit Target walk,
+# asked once per shader input) can be kept until it changes.
+_cook_serial = 0
+
 
 def _chunk_of(prop):
     """The chunk prop belongs to, or None -- up its owners, since an AttributeSender has no
@@ -893,6 +898,11 @@ class DagNode:
         # through its own downstream closure.
         if previous is not None:
             chunk_scheduler.topology_changed(self, previous)
+        elif self._is_isolated():
+            # A node with no edges joining its first owner -- a param's attribute sender,
+            # made the first time that attribute changes -- adds a leaf and moves nothing:
+            # no path between other nodes, no depth (0 cannot deepen an owner).
+            chunk_scheduler.leaf_joined(self)
         else:
             chunk_scheduler.topology_changed(self)
 
@@ -903,6 +913,11 @@ class DagNode:
             if dirty:
                 node.dirty = True
             node.set_graph_id(self)
+
+    def _is_isolated(self) -> bool:
+        """Whether this node has no inputs, no outputs and owns nothing."""
+        conns = self._connections
+        return not conns.inputs and not conns.outputs and not self._owned
 
     def get_inputs(self) -> Iterator[tuple[int, DagNode]]:
         """Get the input (dependency) nodes of this node.

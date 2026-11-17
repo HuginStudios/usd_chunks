@@ -125,6 +125,21 @@ def topology_changed(*nodes: DagNode):
             pending.extend(downstream(stale))
 
 
+def leaf_joined(node: DagNode) -> None:
+    """A node with no edges has just joined its first owner: what topology_changed need not do.
+
+    No path between other nodes runs through a node with no edges, and a depth of 0 cannot
+    deepen the owner it joins, so the shape version and every cached depth stand; only the
+    node's own depth is dropped. A cook that sets a slider's range the first time makes an
+    attribute sender, and bumping the shape for it made skip_cook work out every chunk's
+    relations again on each such cook.
+
+    Args:
+        node (DagNode): The node that joined
+    """
+    _depth_cache.pop(node, None)
+
+
 def downstream(node: DagNode) -> list[DagNode]:
     """The nodes that must solve *after* node: its dependants, then its owner.
 

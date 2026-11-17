@@ -11,6 +11,18 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- **Opening a saved network reads results back instead of cooking.** Saving keeps each
+  chunk's result in the cook cache folder; opening reads it back while nothing the chunk
+  depends on has changed (its params and the files they name, its code, the chunks above it,
+  and the network file's own content and sublayers). Anything else cooks as before. In
+  usdview a 300-chunk village is ready in 10 s instead of 14 s, a 300-Transform chain in 8 s
+  instead of 18 s. A chunk does work once it really cooks (a first import, a first scatter),
+  so the first edit that reaches it can take longer than it did. A chunk that writes
+  outside its own layer (MaterialX Shader) still cooks on open. A module that must always
+  cook sets `cook_on_open=True`; `USD_CHUNKS_OPEN_CACHE=0` turns it off.
+- `chunk.TextEdit(..., wrap=True)` makes a prose field: in the Qt params panel its lines wrap
+  at the field's edge, in the UI's own font, so a paragraph is not one long line scrolled
+  sideways. Without it a `TextEdit` stays a code field (fixed-width font, no wrapping).
 - Houdini: **viewport handles** for chunk gizmos. Select a chunk node and press Enter: a
   box gizmo (Blockout Box, Blocking Volume) is Houdini's bounding box handle, where you
   drag one face at a time, and a translate gizmo is a move handle. Drags go through the
@@ -421,6 +433,36 @@ This file starts with the first release; development before that is in the commi
   list was resized. Now each such chunk's handle records are brought in line with what it
   declares after its first cook.
 
+- A network with a chain of about a thousand chunks can be built and opened. Ordering
+  its chunks recursed once per chunk and stopped with a RecursionError.
+- MaterialX Shader keeps a name you give it (`name="Bark"` in a script, or a rename),
+  and copies are numbered `constant_color3_1`, `_2` instead of starting at `constant_color3_`.
+- A reopened MaterialX network cooks each shader at most twice. The Surface at the
+  bottom of a shader tree cooked once per node above it: 50 times in a 100-node network.
+- Big MaterialX networks open faster. Each shader asked which layer to write to once per
+  input, and during a cook every ask walked the whole graph above it; now a cook asks once.
+  Opening a 100-node shader network: 40% less time.
+- Editing a long chain of Transforms on one prim is faster. Each Transform worked out how
+  far down the chain every other one sits, on every cook; now those depths are kept until a
+  wire in the chain changes. A root edit of a 300-Transform chain: 14.2 s → 9.7 s.
+- A cook in a long chain sets up its stage faster. Working out which chunk prims it may
+  read walked every ancestor of every chunk wired to it; now it asks once per parent. A
+  root edit of a 300-Transform chain: 14.2 s → 12.6 s.
+- Recooking a big network walks the session layer once per edit, not once per cook. The
+  cooks of one edit share a copy of it, and that copy was compared with the session layer
+  before each cook and after it, spec by spec, though between two cooks it almost never
+  changes. Building a 300-node MaterialX network: 29.9 s → 25.2 s.
+- Each cook in a big network spends less time setting up the stage it cooks on. Reading
+  the time offsets of the chunk layers took about 20 µs per layer at 300 chunks and 60 µs
+  at 1000, once per cook; now it reads them all at once. A root edit of a 300-Transform
+  chain: 14.4 s → 13.4 s.
+- Big MaterialX networks build and open faster. To find the Material it belongs under, each
+  shader read the inputs of every chunk in the network, once per node between it and the
+  Material, on every cook. Now it looks the wire up in an index kept in step with the stage.
+  A 300-node shader network: opening 34 s → 15 s, building 33 s → 25 s.
+- Many Transforms chained on one prim no longer slow down as the chain grows. Each cook
+  walked the chain once per Transform above it; now it walks it once. One cook at the end of
+  a 100-Transform chain: 0.29 s → 0.03 s.
 - Scatter Points with Max Slope over 90 now covers faces that point down, such as the
   underside of a sphere. New scatters sample with Tiles, which only drops points from
   above, so they stayed on the top half. Over 90, Darts is used instead.

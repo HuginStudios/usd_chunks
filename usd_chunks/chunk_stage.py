@@ -25,6 +25,7 @@ from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_notice
 from usd_chunks import chunk_scheduler
 from usd_chunks import chunk_utils
+from usd_chunks import open_cache
 from usd_chunks import sdf_authoring
 from usd_chunks import skip_cook
 from usd_chunks.chunk_flags import ChunkFlags
@@ -42,8 +43,11 @@ from usd_chunks.chunk_topology import (  # noqa: F401  re-exported
     edit_layer_memo_affected,
     freeze_edit_layer_memo,
     get_chunk_prim_path,
+    input_consumer_paths,
     invalidate_edit_layer_memo,
+    invalidate_input_consumers,
     nearest_upstream_edit_layer,
+    update_input_consumers,
     upstream_edit_target_layer,
 )
 
@@ -881,6 +885,9 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             prims = _iter_scoped_prims(stage, resyncs, info_changes)
         loaded_before = len(self._loaded_prim_paths)
         load_chunks(stage, self._scene, self._loaded_prim_paths, prims=prims)
+        if len(self._loaded_prim_paths) > loaded_before:
+            # Chunk prims can arrive by reference anywhere, under no root the index watches.
+            invalidate_input_consumers()
         if prims is not None and len(self._loaded_prim_paths) > loaded_before:
             self._rewire_to_new_chunks(resyncs | info_changes)
 
@@ -1229,6 +1236,7 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         # to cost every chunk a fresh walk of the exec chain above it.
         if edit_layer_memo_affected(notice, has_chunk_under=self._has_chunk_under):
             invalidate_edit_layer_memo()
+        update_input_consumers(notice, self._has_chunk_under)
         # Before the guards too: a chunk prim made during a suppressed write is still made.
         self._forget_output_children(notice)
         # Same reasoning, and the only place the resynced paths are visible at all: the scan
@@ -6091,13 +6099,25 @@ def _sources_of(stage: Usd.Stage, prim_to_chunk: dict, path: str) -> list[str]:
 
 
 def _roots_first(stage: Usd.Stage, prim_to_chunk: dict, path: str, seen: set, order: list[str]) -> None:
-    """Append what feeds path, then path itself, to order, roots first, skipping what seen holds."""
+    """Append what feeds path, then path itself, to order, roots first, skipping what seen holds.
+
+    A loop with its own stack, not recursion: a chain of about a thousand chunks went past
+    Python's recursion limit and the network could not be built.
+    """
     if path in seen:
         return
     seen.add(path)
-    for src in _sources_of(stage, prim_to_chunk, path):
-        _roots_first(stage, prim_to_chunk, src, seen, order)
-    order.append(path)
+    stack = [(path, iter(_sources_of(stage, prim_to_chunk, path)))]
+    while stack:
+        node, sources = stack[-1]
+        for src in sources:
+            if src not in seen:
+                seen.add(src)
+                stack.append((src, iter(_sources_of(stage, prim_to_chunk, src))))
+                break
+        else:
+            stack.pop()
+            order.append(node)
 
 
 # (chunk_scheduler.shape_version(), id(chunk) -> place) for branch_place.
@@ -7171,6 +7191,33 @@ def exec_dependencies(chunk: core.ChunkBase) -> list:
     if prim is None:
         return []
     return _chunks_at(str(conn.GetPrimPath()) for conn in exec_input_connections(prim))
+
+
+def input_consumers(chunk: core.ChunkBase) -> list:
+    """The chunks with a typed input wired to this one's prim, in scene order.
+
+    The reverse of a param wire: USD keeps a connection only on the consumer's side, so
+    this is read from an index of the scene's stage, kept until a wire changes. Exec inputs
+    are not counted -- they say what cooks after what, not what feeds what.
+
+    Args:
+        chunk (core.ChunkBase): The chunk being read from
+
+    Returns:
+        list: The consuming chunks, without chunk itself
+    """
+    stage = chunk.get_scene_stage()
+    if not stage:
+        return []
+    own = {getattr(chunk, "_exec_prim_path", None), getattr(chunk, "prim_path", None),
+           get_chunk_prim_path(chunk)}
+    paths = set()
+    for path in own:
+        if path:
+            paths |= input_consumer_paths(stage, str(path))
+    sync = ChunkStageSync()
+    found = sync._chunks_at(paths) if sync.initialized else _chunks_at(sorted(paths))
+    return [c for c in found if c is not chunk]
 
 
 def _wired_dependencies(chunk: core.ChunkBase) -> list:
@@ -8298,15 +8345,20 @@ def _load_chunks(
                 # shader at its definition's defaults, and a network of them opened with
                 # every input and wire gone. Its saved values are back now, so cook it
                 # again -- or, outside every active view, leave it stale for the view to.
-                # Stale first, then in cook order: a cook cascades downstream and clears
-                # what it reaches, so a chain of shaders cooks once from its first.
+                # In one solve: each execute() only marks what it reaches, and the cooks
+                # run once at the end, upstream first. Run one by one, every leaf of a
+                # shader tree cooked the Surface below it again: 50 times in a 100-node one.
+                # Each is marked as its own change too, which it is (its params came back):
+                # reached from the chunk above in the same solve it would be skipped.
                 for _, added in lofted:
                     chunk_cook.mark_cook_stale(added)
-                for prim, added in sorted(lofted, key=lambda item: cook_keys[id(item[1])]):
-                    if unseen(added) or not chunk_cook.is_cook_stale(added):
-                        continue
-                    if id(added) in top_level_chunk_ids or can_execute_sub_chunks:
-                        added.execute()
+                with chunk_cook.solving():
+                    for prim, added in sorted(lofted, key=lambda item: cook_keys[id(item[1])]):
+                        if unseen(added) or not chunk_cook.is_cook_stale(added):
+                            continue
+                        if id(added) in top_level_chunk_ids or can_execute_sub_chunks:
+                            added.execute()
+                            chunk_cook.mark_own_change(added)
 
                 # Second and last expression pass. Chunks that loft their params in the
                 # CHUNK_LOADED callback above -- mtlx_shader from its nodedef, wedge from
@@ -8649,6 +8701,13 @@ def export_chunks(
     stamp_stage_metadata(dst, stage)
     dst.Export(str(path))
     _reload_cached_layer(path)
+    # Each chunk's result, kept for the next open of this file (open_cache).
+    saved = Sdf.Layer.FindOrOpen(str(path))
+    if saved is not None:
+        open_cache.store(
+            scene.get_chunks(), stage, saved, ChunkLayerManager().get_layer,
+            chunk_cook.settled,
+        )
 
 
 def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:

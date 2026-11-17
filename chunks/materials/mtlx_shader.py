@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import re
 from pxr import Sdf, Tf, Usd, UsdShade
 
 from usd_chunks import chunk, chunk_notice, chunk_registry, chunk_utils, shader_defs
@@ -191,52 +193,17 @@ def _signature_changed(owner, _notice, sender):
         nodedef.value = identifier
 
 
-def _chunk_prim_paths(c) -> set:
-    """Every prim path a chunk may be identified by, as a set of strings.
-
-    A cooking chunk carries _exec_prim_path, which is what the rest of execute() matches
-    on and need not equal what get_chunk_prim_path derives -- inside a chunkgroup or a
-    view evaluation they differ, and comparing only one of them silently finds nothing.
-    """
-    paths = {
-        getattr(c, "_exec_prim_path", None),
-        getattr(c, "prim_path", None),
-        chunk_stage.get_chunk_prim_path(c),
-    }
-    return {str(p) for p in paths if p}
-
-
-def _consumer_chunk(node, stage, scene):
+def _consumer_chunk(node):
     """The chunk whose typed input is wired to this one's output, or None.
 
-    A reverse lookup, because USD indexes connections only from the consumer side. The
-    exec chain (inputs:chunk) is deliberately ignored: it says what cooks after what, not
-    what feeds what, and a shader's place in the network follows the data.
+    The exec chain (inputs:chunk) is deliberately ignored: it says what cooks after what,
+    not what feeds what, and a shader's place in the network follows the data.
     """
-    my_paths = _chunk_prim_paths(node)
-    if not my_paths:
-        return None
-
-    for other in scene.get_chunks():
-        if other is node:
-            continue
-
-        for path in _chunk_prim_paths(other):
-            prim = stage.GetPrimAtPath(path)
-            if not prim or not prim.IsValid():
-                continue
-
-            for attr in prim.GetAttributes():
-                name = attr.GetName()
-                if not name.startswith("inputs:") or name == "inputs:chunk":
-                    continue
-                if any(str(c.GetPrimPath()) in my_paths for c in attr.GetConnections()):
-                    return other
-
-    return None
+    consumers = chunk_stage.input_consumers(node)
+    return consumers[0] if consumers else None
 
 
-def _network_root(node, stage, scene) -> str:
+def _network_root(node) -> str:
     """The Material path of the terminal this shader ultimately feeds, or "".
 
     Walks consumer to consumer so a shader three nodes upstream of the surface still
@@ -247,7 +214,7 @@ def _network_root(node, stage, scene) -> str:
     current = node
 
     while True:
-        consumer = _consumer_chunk(current, stage, scene)
+        consumer = _consumer_chunk(current)
         if consumer is None or id(consumer) in seen:
             return ""
         seen.add(id(consumer))
@@ -279,8 +246,13 @@ def _rename(owner, sdef) -> None:
     get_valid_child_name strips a trailing number before re-suffixing, which is wrong for
     these names specifically: add_color3 would be handed back as add_color4, and that is a
     real and different MaterialX signature rather than a copy. Names ending in a digit get
-    a separator first, so the collision reads as add_color3_1.
+    a separator and a number first, so the collision reads as add_color3_1, not add_color3_.
+
+    A name someone chose (a script's name="Bark", a rename in the graph) is kept: only the
+    module's default name or a name this gave is replaced.
     """
+    if not _is_auto_name(owner.name):
+        return
     desired = _node_name(sdef)
     if owner.name == desired:
         return
@@ -291,8 +263,17 @@ def _rename(owner, sdef) -> None:
         owner.name = desired
         return
 
-    base = f"{desired}_" if desired[-1:].isdigit() else desired
+    base = f"{desired}_1" if desired[-1:].isdigit() else desired
     owner.name = owner.get_valid_child_name(base, reserved)
+
+
+def _is_auto_name(name: str) -> bool:
+    """Whether name is the module's default (MaterialXShader2) or one _rename gave (add_color3_1)."""
+    if re.fullmatch(r"MaterialXShader\d*", name):
+        return True
+    stem = re.sub(r"_\d+$", "", name)
+    candidates = {name, stem, stem.rstrip("_"), re.sub(r"\d+$", "", name)}
+    return any(shader_defs.get_shader_def(f"ND_{candidate}", SOURCE_TYPE) is not None for candidate in candidates)
 
 
 def _ensure_prim_path(node, sdef) -> str:
@@ -486,8 +467,7 @@ def execute(node):
     # An intermediate belongs inside the network it feeds: a UsdShade Material is
     # conventionally self-contained, holding every shader that contributes to it. While
     # unwired it stays at its own path, and moves under the Material once connected.
-    scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
-    root = "" if sdef.is_terminal else (_network_root(node, stage, scene) if scene else "")
+    root = "" if sdef.is_terminal else _network_root(node)
 
     # Uniquify the path actually being authored. Uniquifying `home` first and then
     # composing would carry a suffix earned at the old location into a nested slot that

@@ -54,10 +54,11 @@ def reconcile(src: Sdf.Layer, dst: Sdf.Layer,
 
 def _layer_info(src: Sdf.Layer, dst: Sdf.Layer, sublayers=None) -> bool:
     if sublayers is None:
-        paths, offsets = list(src.subLayerPaths), list(src.subLayerOffsets)
+        # copy(), not list(): the proxy builds the whole list again for each item read.
+        paths, offsets = list(src.subLayerPaths), src.subLayerOffsets.copy()
     else:
         paths, offsets = [path for path, _ in sublayers], [offset for _, offset in sublayers]
-    moved = paths != list(dst.subLayerPaths) or offsets != list(dst.subLayerOffsets)
+    moved = paths != list(dst.subLayerPaths) or offsets != dst.subLayerOffsets.copy()
     if moved:
         dst.subLayerPaths = paths
         for i, offset in enumerate(offsets):
@@ -92,6 +93,14 @@ def _info(s, d, skip: frozenset = frozenset()) -> bool:
             _time_samples(s, d, value)
         elif key in _LIST_EDITED:
             _list_op(getattr(d, _LIST_EDITED[key]), value)
+        elif key == "default" and isinstance(d, Sdf.AttributeSpec):
+            # Through the spec's own setter, which casts to the attribute's type: GetInfo
+            # hands a float attribute's value back as a Python float, and SetInfo stores that
+            # as a double. Python reads the number back the same, but a typed read (C++, and
+            # Hydra's UsdImaging) skips a value of the wrong type and resolves the next one
+            # down -- a schema's fallback, or nothing -- so a recooked float never reached the
+            # renderer: a lens's k1 stayed what the first cook wrote.
+            d.default = value
         else:
             d.SetInfo(key, value)
     return changed
