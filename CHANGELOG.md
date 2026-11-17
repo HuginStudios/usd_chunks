@@ -418,6 +418,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A reopened MaterialX network cooks each shader at most twice. The Surface at the
+  bottom of a shader tree cooked once per node above it: 50 times in a 100-node network.
 - Big MaterialX networks open faster. Each shader asked which layer to write to once per
   input, and during a cook every ask walked the whole graph above it; now a cook asks once.
   Opening a 100-node shader network: 40% less time.
