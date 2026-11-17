@@ -427,6 +427,9 @@ This file starts with the first release; development before that is in the commi
 - Big MaterialX networks open faster. Each shader asked which layer to write to once per
   input, and during a cook every ask walked the whole graph above it; now a cook asks once.
   Opening a 100-node shader network: 40% less time.
+- Editing a long chain of Transforms on one prim is faster. Each Transform worked out how
+  far down the chain every other one sits, on every cook; now those depths are kept until a
+  wire in the chain changes. A root edit of a 300-Transform chain: 14.2 s → 9.7 s.
 - Many Transforms chained on one prim no longer slow down as the chain grows. Each cook
   walked the chain once per Transform above it; now it walks it once. One cook at the end of
   a 100-Transform chain: 0.29 s → 0.03 s.

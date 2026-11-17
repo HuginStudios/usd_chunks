@@ -126,6 +126,31 @@ _cook_memo: dict[str, Sdf.Layer | object] = {}
 _cook_memo_key: tuple = ()
 
 
+# How far down its exec chain each chunk prim sits (gizmo.runtime._exec_depth), by prim path,
+# for one stage. A walk of the same inputs:chunk connections the edit layer memo is a cache
+# of, so dropped whenever that is (invalidate_edit_layer_memo). Rebuilt on every cook, it
+# was most of a Transform's cook in a long chain on one prim: the chain walked once per cook.
+_exec_depth_memo: dict = {}
+_exec_depth_memo_stage: weakref.ref | None = None
+
+
+def exec_depth_memo(stage: Usd.Stage) -> dict:
+    """The kept exec depths for stage's chunk prims: a dict to read and fill.
+
+    Args:
+        stage: The scene's stage, not a cook stage.
+
+    Returns:
+        The memo, emptied first if it held another stage's depths.
+    """
+    global _exec_depth_memo_stage
+    current = _exec_depth_memo_stage() if _exec_depth_memo_stage is not None else None
+    if current is None or current != stage:
+        _exec_depth_memo.clear()
+        _exec_depth_memo_stage = weakref.ref(stage)
+    return _exec_depth_memo
+
+
 def _cook_memo_for(stage: Usd.Stage) -> dict:
     """The memo for stage's answers during the cook running now; empty when it is a new cook."""
     global _cook_memo_key
@@ -152,6 +177,7 @@ def invalidate_edit_layer_memo() -> None:
         return
     _edit_layer_memo.clear()
     _cook_memo.clear()
+    _exec_depth_memo.clear()
 
 
 _edit_layer_memo_muted: frozenset[str] = frozenset()
