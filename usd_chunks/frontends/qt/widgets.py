@@ -126,6 +126,12 @@ QSlider::sub-page:horizontal {
     border-top-left-radius: 10px;
     border-bottom-left-radius: 10px;
 }
+QSlider::handle:disabled {
+    background: #6a6a6a;
+}
+QSlider::sub-page:horizontal:disabled {
+    background: #2c2c2c;
+}
 QRangeSlider {
     qproperty-barColor: #202020;
 }
@@ -213,6 +219,12 @@ QSlider::handle:horizontal {
 }
 QSlider::handle:horizontal:hover {
     background: #ffffff;
+}
+QSlider::handle:horizontal:disabled {
+    background: #6a6d73;
+}
+QSlider::sub-page:horizontal:disabled {
+    background: #2e3035;
 }
 QCheckBox::indicator {
     width: 12px;

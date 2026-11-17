@@ -121,6 +121,11 @@ class ChunkParamWidgetBase(Generic[ParamT], chunk_notice.ChunkNoticePropagator):
             self.set_icon(self.param.icon)
 
         self.set_param_layout(self.param.layout)
+        # A param disabled before this widget existed sends no state notice to it. Only
+        # DISABLED is applied here: a hide or show on a widget with no parent yet would open
+        # it as a window of its own.
+        if self.param.has_state(ChunkFlags.State.DISABLED):
+            self.set_enabled(False)
 
     @abstractmethod
     def get_value(self) -> Any:

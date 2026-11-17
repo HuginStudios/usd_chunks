@@ -20,6 +20,12 @@ This file starts with the first release; development before that is in the commi
   found nothing to change. A 300-node MaterialX network: build 16.2 s → 13.9 s, open with
   every chunk cooking 11.9 s → 9.3 s.
 
+### Fixed
+
+- A param a chunk disabled before its panel was opened (a slider greyed out because a
+  switch is off) now shows greyed out. Sliders, checkboxes and menus showed live until the
+  state next changed, and a disabled slider's handle now dims so it reads as off.
+
 ## [1.0.0-rc] - 2026-11-11
 
 The first release candidate.
