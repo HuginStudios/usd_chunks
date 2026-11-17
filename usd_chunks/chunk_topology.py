@@ -232,6 +232,149 @@ def edit_layer_memo_affected(
     return False
 
 
+# Typed-input wires between chunk prims, read from the source's side. USD keeps a connection
+# only on the consumer, so without this "who reads my output" was a walk of every chunk
+# prim's attributes, which a MaterialX Shader asked once per hop to its Material on every
+# cook. Kept in both directions so a chunk prim that changes can be re-read on its own.
+_consumers: dict[str, set[str]] | None = None  # source prim path -> consumer chunk prims
+_sources: dict[str, set[str]] = {}  # consumer chunk prim -> the source prim paths it reads
+_consumers_stage: weakref.ref | None = None
+_consumers_muted: frozenset[str] = frozenset()
+
+
+def _typed_input_sources(prim: Usd.Prim) -> set[str]:
+    """The prim paths a chunk prim's typed inputs connect to; exec inputs are left out."""
+    sources = set()
+    for attr in prim.GetAttributes():
+        name = attr.GetName()
+        if not name.startswith(chunk_naming.INPUTS_PREFIX) or chunk_naming.is_exec_input_name(name):
+            continue
+        sources.update(str(conn.GetPrimPath()) for conn in attr.GetConnections())
+    return sources
+
+
+def _set_sources(consumer: str, sources: set[str]) -> None:
+    """Record what one chunk prim reads, replacing what the index held for it."""
+    for source in _sources.pop(consumer, ()):
+        held = _consumers.get(source)
+        if held is not None:
+            held.discard(consumer)
+            if not held:
+                del _consumers[source]
+    if sources:
+        _sources[consumer] = sources
+        for source in sources:
+            _consumers.setdefault(source, set()).add(consumer)
+
+
+def _index_input_consumers(stage: Usd.Stage) -> None:
+    """Build the index from one walk of the stage."""
+    global _consumers
+    _consumers = {}
+    _sources.clear()
+    for prim in stage.TraverseAll():
+        if prim.GetTypeName() == _CHUNK_PRIM_TYPENAME:
+            _set_sources(str(prim.GetPath()), _typed_input_sources(prim))
+
+
+def input_consumer_paths(stage: Usd.Stage, source_path: str) -> frozenset[str]:
+    """The chunk prims with a typed input wired to source_path's prim.
+
+    Answered from an index of the whole stage, built on first ask and kept in step with
+    each change after it (update_input_consumers), so asking costs the same at any size.
+
+    Args:
+        stage: The scene's stage.
+        source_path: The prim path of the chunk being read from.
+
+    Returns:
+        The consumers' prim paths, empty when nothing reads from it.
+    """
+    global _consumers_stage, _consumers_muted
+    current = _consumers_stage() if _consumers_stage is not None else None
+    if _consumers is None or current is None or current != stage:
+        _index_input_consumers(stage)
+        _consumers_stage = weakref.ref(stage)
+        _consumers_muted = frozenset(stage.GetMutedLayers())
+    return frozenset(_consumers.get(source_path, ()))
+
+
+def invalidate_input_consumers() -> None:
+    """Drop the input_consumer_paths index; the next ask builds it again."""
+    global _consumers
+    _consumers = None
+    _sources.clear()
+
+
+def update_input_consumers(notice: Usd.Notice.ObjectsChanged, has_chunk_under: Callable[[str], bool]) -> None:
+    """Keep the input_consumer_paths index in step with one change round.
+
+    Only chunk prims can move an answer: a typed input gaining, losing or changing its
+    connections, or a chunk prim coming or going. Each one named is read again on its own.
+    A change to the layers themselves (a sublayer edit reports "/", a mute reports nothing
+    useful, so the muted set is compared) drops the index instead -- except ChunkLayerManager
+    moving its own layers, which hold cook results, not wires; every chunk adds one as it is
+    made. What a chunk cooks -- driven prims and its param values -- moves nothing.
+
+    Args:
+        notice: The stage's ObjectsChanged notice.
+        has_chunk_under: Whether a chunk prim the sync knows lies strictly below a path.
+    """
+    if _consumers is None:
+        return
+    stage = notice.GetStage()
+    current = _consumers_stage() if _consumers_stage is not None else None
+    if stage is None or current is None or current != stage:
+        invalidate_input_consumers()
+        return
+    if frozenset(stage.GetMutedLayers()) != _consumers_muted:
+        invalidate_input_consumers()
+        return
+
+    def reread_input(path: Sdf.Path) -> None:
+        name = path.name
+        if not name.startswith(chunk_naming.INPUTS_PREFIX) or chunk_naming.is_exec_input_name(name):
+            return
+        prim = stage.GetPrimAtPath(path.GetPrimPath())
+        if prim and prim.GetTypeName() == _CHUNK_PRIM_TYPENAME:
+            _set_sources(str(prim.GetPath()), _typed_input_sources(prim))
+
+    chunks_prefix = _CHUNKS_ROOT + "/"
+    for path in notice.GetResyncedPaths():
+        if path.IsPropertyPath():
+            reread_input(path)
+            continue
+        if path == Sdf.Path.absoluteRootPath:
+            if chunk_notice._internal_layer_write_active:
+                continue
+            invalidate_input_consumers()
+            return
+        path_str = str(path)
+        prim = stage.GetPrimAtPath(path)
+        is_chunk = bool(prim) and prim.GetTypeName() == _CHUNK_PRIM_TYPENAME
+        holds_chunks = path_str == _CHUNKS_ROOT or has_chunk_under(path_str)
+        if not (is_chunk or holds_chunks or path_str in _sources or path_str.startswith(chunks_prefix)):
+            continue
+        # What the index held at and under this prim goes; what is there now is read back.
+        _set_sources(path_str, set())
+        if holds_chunks:
+            prefix = path_str + "/"
+            for consumer in [c for c in _sources if c.startswith(prefix)]:
+                _set_sources(consumer, set())
+        if prim:
+            for p in Usd.PrimRange.AllPrims(prim):
+                if p.GetTypeName() == _CHUNK_PRIM_TYPENAME:
+                    _set_sources(str(p.GetPath()), _typed_input_sources(p))
+    for path in notice.GetChangedInfoOnlyPaths():
+        if path == Sdf.Path.absoluteRootPath:
+            if chunk_notice._internal_layer_write_active:
+                continue
+            invalidate_input_consumers()
+            return
+        if path.IsPropertyPath() and "connectionPaths" in notice.GetChangedFields(path):
+            reread_input(path)
+
+
 @contextlib.contextmanager
 def freeze_edit_layer_memo():
     """Hold the memo across a block whose writes provably cannot move any answer.
