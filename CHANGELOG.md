@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- **Cache chunk.** Keeps everything above it in one `.usdc` file and reads that instead:
+  press **Recache** and the chunks above cook once, are written to the file (by default
+  `./cache/<name>.usdc` next to the network) and are switched off, also when the network
+  is opened again. A change above keeps the file showing and marks the Cache stale until
+  you press Recache. A module can declare `never_skip=True` to cook whenever anything above
+  it changes, and a gate's `gate_before_cook(node)` hook switches its branches off before
+  they cook (see [Core chunks](docs/core-chunks.md#cache)).
 - **Opening a saved network reads results back instead of cooking.** Saving keeps each
   chunk's result in the cook cache folder; opening reads it back while nothing the chunk
   depends on has changed (its params and the files they name, its code, the chunks above it,

@@ -4669,6 +4669,44 @@ def gate_to_branches(node: core.ChunkBase, live: set[int]) -> tuple[set, set]:
     return keep, muted
 
 
+#: Module hook of a gate that can choose before its inputs cook: gate_before_cook(node)
+#: returns the input slots to keep live, or None to choose when it cooks, as any gate does.
+GATE_BEFORE_COOK_HOOK = "gate_before_cook"
+
+
+def _gates_ahead(gate: core.ChunkBase) -> set[int] | None:
+    """The live slots a gate chooses without cooking its inputs, or None."""
+    hook = gate._module_hook(GATE_BEFORE_COOK_HOOK)
+    return hook(gate) if hook is not None else None
+
+
+def gate_ahead(chunks) -> set[str]:
+    """Apply, before a cook pass, the gates that choose without their inputs cooking.
+
+    A gate mutes the branches it turns off when it cooks, which is after those branches
+    cooked: for a Switch only time spent, for a Cache the whole point lost -- every chunk
+    above it cooked on every open. A gate whose choice needs nothing from above (a Cache
+    with its file on disk) says so through its module's gate_before_cook hook, and its
+    branches are blocked here, before anything cooks.
+
+    Args:
+        chunks: The chunks about to cook.
+
+    Returns:
+        The prim paths of the chunks those gates keep out.
+    """
+    out: set[str] = set()
+    for gate in chunks:
+        if gate.get_param(GATE_RECORD_PARAM) is None:
+            continue
+        live = _gates_ahead(gate)
+        if live is None:
+            continue
+        gate_to_branches(gate, live)
+        out |= _gate_record(gate)
+    return out
+
+
 def _redefine_orphaned_ancestors(stage: Usd.Stage) -> None:
     """Re-define the scopes that muting a branch just left defined by nobody.
 
@@ -6257,6 +6295,8 @@ def _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hi
         if g.get_param(GATE_RECORD_PARAM) is not None and not will_cook(g)
         for path in _gate_record(g)
     }
+    # And a gate that chooses without its inputs cooking (gate_ahead), whether it cooks or not.
+    gated_off |= gate_ahead(cook_list)
     if gated_off:
         cook_list = [c for c in cook_list if get_chunk_prim_path(c) not in gated_off]
         cook_set = set(cook_list)
@@ -8258,6 +8298,9 @@ def _load_chunks(
                 # dirty children, so a batch let one group's queued inner roots be reached late
                 # and cooked their group before them -- a car configurator's glass binding came
                 # out empty. Run in turn, each root still dirties its group itself.
+                # A gate that can choose before its inputs cook blocks them now, so they do not
+                # cook only to be muted after (a Cache with its file on disk).
+                gate_ahead(every_chunk)
                 unseen = _unseen_by_active_views(stage, scene)
                 stale_before = {id(c) for _, c in deferred if chunk_cook.is_cook_stale(c)}
                 # Keyed over every chunk (above), the groups included: a batch holds a group's

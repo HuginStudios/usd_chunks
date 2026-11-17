@@ -4340,6 +4340,11 @@ class ChunkConfig(AttributesBase):
     # when it was saved (open_cache). For a module whose result depends on something no key
     # can see: the clock, an unseeded random, a web request.
     cook_on_open: bool = attrs.field(default=False)
+    # Cook whenever anything above changes, even when what the cook reads on the stage did
+    # not (skip_cook would skip it), except while a network loads, when nothing above has.
+    # For a chunk that watches the chunks above it rather than their prims: a Cache telling
+    # whether its file is still what is above it.
+    never_skip: bool = attrs.field(default=False)
     # Param values a chunk of this module gets when it is made new -- from a menu or a script
     # (MenuEntry.create) -- and not when a saved one is loaded. For a better default that must
     # not change saved networks: a saved chunk stores only the values that differ from main()'s
