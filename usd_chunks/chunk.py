@@ -576,10 +576,18 @@ class LineEdit(ChunkParamBase[str]):
 
 
 class TextEdit(ChunkParamBase[str]):
-    """An editable multi-line string param."""
+    """An editable multi-line string param.
+
+    Attributes:
+        rows: How many lines tall the field is drawn. None: the frontend's default.
+        wrap: Prose rather than code: lines wrap at the field's edge and the field uses the
+            UI's own font. Off (the default) keeps a code field: one line per line, a fixed-
+            width font, and a scrollbar for long ones.
+    """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
     rows: int | None = field(default=None, metadata={"validate": False, "convert": False})
+    wrap: bool = field(default=False, metadata={"validate": False, "convert": False})
 
     @classmethod
     @override
