@@ -9,6 +9,13 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- Auto quick save in usdview: an edited network is written to `shot.autosave.usda` beside its
+  file every 2 minutes, and offered back (Recover or Discard) when it is opened again after a
+  crash. Save Scene deletes the quick saves; turn it off in **Chunks > Auto Quick Save**, or
+  for everyone with `USD_CHUNKS_AUTOSAVE_MINUTES=0`.
+
 ### Changed
 
 - Cooks in a network with big layers are faster. Each cook checked whether it read

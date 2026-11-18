@@ -26,7 +26,7 @@ so that one could stand in for it where a native build ships.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from pxr import Sdf, Tf, Usd
 
@@ -49,81 +49,39 @@ def _own_children(field, *_args) -> bool:
     return field != "primChildren"
 
 
-class History:
-    """The chunk prims of one stage's layers, recorded as a tree of steps.
+class ChunkSpecs:
+    """The own spec of every chunk prim in a stage's layers, kept as text to compare.
 
     A chunk prim's specs can sit in any layer of the stage's local layer stack: the root
     layer, the session layer, a department sublayer, or an over on a prim a Reference chunk
     brought in. So a spec counts when the *stage* says its prim is a chunk -- an over has no
-    type of its own. Each chunk's own layer is left out: it holds cooked output, and cooking
+    type of its own. Backdrops and sticky notes count too: they sit among the chunks and are
+    saved with them. Each chunk's own layer is left out: it holds cooked output, and cooking
     makes it again.
+
+    What `History` records undo steps from, and what autosave.ChangeTracker compares to tell
+    an edit of the network from a cook.
 
     Args:
         stage: The network's stage.
-        on_record: Called with this history after each step is recorded -- where a host
-            stores `key()` with its own undo step. Recording starts with `listen()`.
+        ignored: Property names left out of every snapshot, so a change to only those is no
+            change at all.
     """
 
-    def __init__(self, stage: Usd.Stage, on_record: Callable[[History], None] | None = None):
+    def __init__(self, stage: Usd.Stage, ignored: Iterable[str] = ()):
         self.stage = stage
-        self.on_record = on_record
-        self.token = uuid.uuid4().hex[:8]  # a step id an earlier session saved is not ours
-        self.parents: dict[int, int | None] = {0: None}
-        self.changes: dict[int, tuple] = {0: ()}
-        self.current = 0
-        self.restoring = False
-        self._next = 1
-        #: Group by user input: a step starts at the first change after `note_input()`, and
-        #: what arrives without one folds into the step before. Off where the host's own
-        #: undo steps are the boundaries (Blender).
-        self.grouping = False
-        self._input = False
-        self._listener = None
-        self._scratch = Sdf.Layer.CreateAnonymous("usd_chunks_undo.usda")
+        self.ignored = frozenset(ignored)
+        self._scratch = Sdf.Layer.CreateAnonymous("usd_chunks_specs.usda")
         #: chunk prim path -> {layer identifier -> text of its own spec in that layer}
         self.specs: dict[Sdf.Path, dict[str, str]] = {}
         self.layers: dict[str, Sdf.Layer] = {}
         self._refresh_layers()
 
-    # -- listening --------------------------------------------------------------------
-
-    def listen(self) -> None:
-        """Record every change the stage reports from now on."""
-        if self._listener is None:
-            self._listener = Tf.Notice.Register(
-                Usd.Notice.ObjectsChanged, self._on_objects_changed, self.stage)
-
-    def close(self) -> None:
-        """Stop recording."""
-        if self._listener is not None:
-            self._listener.Revoke()
-            self._listener = None
-
-    def _on_objects_changed(self, notice, _sender) -> None:
-        if self.observe(self.touched(notice)) and self.on_record is not None:
-            self.on_record(self)
-
-    # -- ids --------------------------------------------------------------------------
-
-    def key(self, step: int | None = None) -> str:
-        """The id a host stores for `step` (the current one by default)."""
-        return f"{self.token}:{self.current if step is None else step}"
-
-    def _step_of(self, key) -> int | None:
-        """The step `key` names; None for one of ours that was pruned.
-
-        A step with no id of this session -- none, or one an earlier session saved -- was
-        pushed before recording began: Blender pushes a .blend's first undo step before
-        the network is tracked. The network was then as it opened: step 0.
-        """
-        token, _, step = str(key or "").partition(":")
-        if token != self.token:
-            return 0 if 0 in self.parents else None
-        if not step.isdigit() or int(step) not in self.parents:
-            return None
-        return int(step)
-
-    # -- layers -----------------------------------------------------------------------
+    def reset(self) -> None:
+        """Forget every snapshot and read the layers again, as they are now."""
+        self.specs = {}
+        self.layers = {}
+        self._refresh_layers()
 
     def _refresh_layers(self) -> None:
         """Follow the layer stack. A layer that came is read as it is; one that went is
@@ -171,6 +129,10 @@ class History:
         scratch.Clear()
         Sdf.CreatePrimInLayer(scratch, path)
         Sdf.CopySpec(layer, path, scratch, path, _copy_value, _own_children)
+        spec = scratch.GetPrimAtPath(path)
+        for name in self.ignored:
+            if name in spec.properties:
+                spec.RemoveProperty(spec.properties[name])
         return scratch.ExportToString()
 
     def _remember(self, lid: str, path: Sdf.Path, text: str | None) -> None:
@@ -180,6 +142,104 @@ class History:
             self.specs[path].pop(lid, None)
             if not self.specs[path]:
                 del self.specs[path]
+
+    def touched(self, notice: Usd.Notice.ObjectsChanged) -> set[tuple[str, Sdf.Path]]:
+        """The (layer, chunk prim) pairs a stage change may have touched -- anywhere in
+        the layer stack, not only under CHUNKS_ROOT: a network can live under an asset's
+        own prim."""
+        resynced = [p.GetPrimPath() for p in notice.GetResyncedPaths()]
+        if resynced:  # a sublayer coming or going resyncs what it holds, not always "/"
+            self._refresh_layers()
+        paths = {p for p in (q.GetPrimPath() for q in notice.GetChangedInfoOnlyPaths())
+                 if p in self.specs or self._is_chunk(p)}
+        for prim in resynced:
+            paths.update(p for p in self.specs if p.HasPrefix(prim))
+            for layer in self.layers.values():
+                paths.update(self._chunk_paths_under(layer, prim))
+        return {(lid, path) for path in paths for lid in self.layers}
+
+    def diff(self, keys) -> list[tuple[str, Sdf.Path, str | None, str | None]]:
+        """What changed at the (layer, path) `keys` since the last look, remembered from now.
+
+        Returns:
+            (layer identifier, path, old text, new text) for each spec that changed, in path
+            order; a text is None where there is no spec.
+        """
+        changes = []
+        for lid, path in sorted(keys, key=lambda k: (k[1], k[0])):
+            new = self._snapshot(lid, path)
+            old = self.specs.get(path, {}).get(lid)
+            if new == old:
+                continue
+            self._remember(lid, path, new)
+            changes.append((lid, path, old, new))
+        return changes
+
+
+class History(ChunkSpecs):
+    """The chunk prims of one stage's layers (see `ChunkSpecs`), recorded as a tree of steps.
+
+    Args:
+        stage: The network's stage.
+        on_record: Called with this history after each step is recorded -- where a host
+            stores `key()` with its own undo step. Recording starts with `listen()`.
+    """
+
+    def __init__(self, stage: Usd.Stage, on_record: Callable[[History], None] | None = None):
+        self.on_record = on_record
+        self.token = uuid.uuid4().hex[:8]  # a step id an earlier session saved is not ours
+        self.parents: dict[int, int | None] = {0: None}
+        self.changes: dict[int, tuple] = {0: ()}
+        self.current = 0
+        self.restoring = False
+        self._next = 1
+        #: Group by user input: a step starts at the first change after `note_input()`, and
+        #: what arrives without one folds into the step before. Off where the host's own
+        #: undo steps are the boundaries (Blender).
+        self.grouping = False
+        self._input = False
+        self._listener = None
+        super().__init__(stage)
+
+    # -- listening --------------------------------------------------------------------
+
+    def listen(self) -> None:
+        """Record every change the stage reports from now on."""
+        if self._listener is None:
+            self._listener = Tf.Notice.Register(
+                Usd.Notice.ObjectsChanged, self._on_objects_changed, self.stage)
+
+    def close(self) -> None:
+        """Stop recording."""
+        if self._listener is not None:
+            self._listener.Revoke()
+            self._listener = None
+
+    def _on_objects_changed(self, notice, _sender) -> None:
+        if self.observe(self.touched(notice)) and self.on_record is not None:
+            self.on_record(self)
+
+    # -- ids --------------------------------------------------------------------------
+
+    def key(self, step: int | None = None) -> str:
+        """The id a host stores for `step` (the current one by default)."""
+        return f"{self.token}:{self.current if step is None else step}"
+
+    def _step_of(self, key) -> int | None:
+        """The step `key` names; None for one of ours that was pruned.
+
+        A step with no id of this session -- none, or one an earlier session saved -- was
+        pushed before recording began: Blender pushes a .blend's first undo step before
+        the network is tracked. The network was then as it opened: step 0.
+        """
+        token, _, step = str(key or "").partition(":")
+        if token != self.token:
+            return 0 if 0 in self.parents else None
+        if not step.isdigit() or int(step) not in self.parents:
+            return None
+        return int(step)
+
+    # -- layers -----------------------------------------------------------------------
 
     def _put(self, lid: str, path: Sdf.Path, text: str | None) -> None:
         """Make the prim's own spec at `path` in layer `lid` what `text` says, keeping its
@@ -201,21 +261,6 @@ class History:
             Sdf.CopySpec(scratch, path, layer, path, _copy_value, _own_children)
         self._remember(lid, path, text)
 
-    def touched(self, notice: Usd.Notice.ObjectsChanged) -> set[tuple[str, Sdf.Path]]:
-        """The (layer, chunk prim) pairs a stage change may have touched -- anywhere in
-        the layer stack, not only under CHUNKS_ROOT: a network can live under an asset's
-        own prim."""
-        resynced = [p.GetPrimPath() for p in notice.GetResyncedPaths()]
-        if resynced:  # a sublayer coming or going resyncs what it holds, not always "/"
-            self._refresh_layers()
-        paths = {p for p in (q.GetPrimPath() for q in notice.GetChangedInfoOnlyPaths())
-                 if p in self.specs or self._is_chunk(p)}
-        for prim in resynced:
-            paths.update(p for p in self.specs if p.HasPrefix(prim))
-            for layer in self.layers.values():
-                paths.update(self._chunk_paths_under(layer, prim))
-        return {(lid, path) for path in paths for lid in self.layers}
-
     # -- recording --------------------------------------------------------------------
 
     def observe(self, keys) -> bool:
@@ -224,14 +269,7 @@ class History:
         Returns:
             True if a step was recorded.
         """
-        changes = []
-        for lid, path in sorted(keys, key=lambda k: (k[1], k[0])):
-            new = self._snapshot(lid, path)
-            old = self.specs.get(path, {}).get(lid)
-            if new == old:
-                continue
-            self._remember(lid, path, new)
-            changes.append((lid, path, old, new))
+        changes = self.diff(keys)
         # The chunk system answering a restore (mirroring params back, re-syncing inputs)
         # belongs to the step being restored, not to a new one.
         if not changes or self.restoring:
