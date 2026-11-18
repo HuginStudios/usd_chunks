@@ -186,3 +186,33 @@ Double-click a ChunkGroup node to go inside and work on its contents as a separa
 with its own views. New chunks you create while inside a group are added to that group.
 See [ChunkGroup](core-chunks.md#chunkgroup) for how params are shared with the outside
 (lofting).
+
+## Auto quick save (usdview)
+
+While a network has changes you haven't saved, usdview writes a copy of it beside its
+file every 2 minutes: `shot.usda` gets `shot.autosave.usda`. Only edits count (params,
+wires, nodes moved, backdrops); cooking, playback and File > Reload don't, so a network you
+only look at never writes one. A quick save is the file Save Scene would write, and opens
+like any network.
+
+When you open a network that has quick saves newer than its file -- at launch or with
+File > Open, after a crash or a quit without saving -- usdview asks before the network's
+chunks load:
+
+- **Recover** (with several quick saves, one button per file, newest first: **Recover
+  latest (14:30)**, **Recover earlier (14:28)**, ...) opens the quick save's network in
+  place of the saved one. The network stays unsaved until you save it. Every quick save on
+  disk is kept and none is written over: from here on they go to `shot.autosave.1.usda`,
+  `shot.autosave.2.usda` and so on, until you save.
+- **Discard** (**Discard all**) deletes the quick saves and opens the network as saved.
+- Closing the question without choosing keeps every quick save, recovers nothing, and asks
+  again next time.
+
+**Chunks > Save Scene** to the network's own file deletes its quick saves. Saving it under
+another name keeps them, as the network's own file still lacks the changes. Opening a
+quick save itself (`shot.autosave.usda`) neither asks nor writes quick saves of it.
+
+Turn quick saves off with **Chunks > Auto Quick Save** (your own setting, kept between
+sessions). `USD_CHUNKS_AUTOSAVE_MINUTES` sets how often, and `0` turns them off for everyone,
+greying out the menu entry (see [Environment variables](install.md#environment-variables)).
+Quick saves already on disk are offered either way.

@@ -12,6 +12,7 @@ from usd_chunks.chunk_flags import ChunkFlags
 
 from usd_chunks import chunk_stage
 from usd_chunks.graph import engine as chunk_graph
+from usd_chunks.frontends.qt import autosave as qt_autosave
 
 from usd_chunks.frontends.qt.widgets import (
     ChunkWidget,
@@ -70,7 +71,8 @@ def save_chunkgroup_dialog(scene=None) -> None:
 
 def save_scene_dialog(scene=None) -> None:
     """Save the scene -- see chunk_stage.save_scene. Writes the same file Save
-    ChunkGroup does, kept as its own menu entry.
+    ChunkGroup does, kept as its own menu entry. Saved to the network's own file,
+    its quick saves are deleted (frontends.qt.autosave.notify_saved).
     """
     scene = scene or chunk_registry.ChunkRegistry().scene
 
@@ -80,6 +82,7 @@ def save_scene_dialog(scene=None) -> None:
     if not os.path.splitext(file)[1]:
         file += ".usda"
     chunk_stage.save_scene(scene, file)
+    qt_autosave.notify_saved(file)
 
 
 class EditableTabBar(QtWidgets.QTabBar):
