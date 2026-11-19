@@ -85,14 +85,14 @@ def _curve_prims(prim, recurse: bool):
     return [p for p in Usd.PrimRange(prim) if UsdGeom.BasisCurves(p)]
 
 
-def _widths_per_vertex(curves, point_count: int) -> np.ndarray:
+def _widths_per_vertex(curves, point_count: int, time=Usd.TimeCode.Default()) -> np.ndarray:
     """Widths as one value per control point, whatever interpolation they were authored at.
 
     A constant width is one number for the whole prim; vertex and varying are already per-CV
     for the purposes here. Anything missing falls back to a hairline rather than zero, since a
     tube of radius zero is invisible and reads as the chunk having failed.
     """
-    widths = curves.GetWidthsAttr().Get()
+    widths = curves.GetWidthsAttr().Get(time)
     if not widths:
         return np.full(point_count, 0.1, dtype=np.float64)
     widths = np.asarray(widths, dtype=np.float64)
@@ -103,23 +103,39 @@ def _widths_per_vertex(curves, point_count: int) -> np.ndarray:
     return widths[:point_count]
 
 
-def _read_strands(prim):
-    """(points, radii) per strand, in world space.
+#: A per-point primvar carried from the curves onto the mesh, one value per vertex. Vine
+#: writes it: when each point grew, so a shader can grow the mesh in as it did the curves.
+GROWTH_PRIMVAR = "growth"
+
+
+def _growth_per_vertex(curves, point_count: int, time):
+    """The curves' growth primvar, one value per control point, or None when it has none."""
+    primvar = UsdGeom.PrimvarsAPI(curves).GetPrimvar(GROWTH_PRIMVAR)
+    if not primvar or not primvar.HasValue():
+        return None
+    values = primvar.Get(time)
+    if values is None or len(values) != point_count:
+        return None
+    return np.asarray(values, dtype=np.float64)
+
+
+def _read_strands(prim, time=Usd.TimeCode.Default()):
+    """(points, radii) per strand, in world space, at `time`.
 
     World space because the output Mesh is authored without a transform of its own: the curves
     may sit under any xform, and a tube that ignored it would land somewhere else entirely.
     """
     curves = UsdGeom.BasisCurves(prim)
-    points = curves.GetPointsAttr().Get()
-    counts = curves.GetCurveVertexCountsAttr().Get()
+    points = curves.GetPointsAttr().Get(time)
+    counts = curves.GetCurveVertexCountsAttr().Get(time)
     if not points or not counts:
         return [], "", ""
 
     points = np.asarray(points, dtype=np.float64)
-    widths = _widths_per_vertex(curves, len(points))
+    widths = _widths_per_vertex(curves, len(points), time)
 
     matrix = np.asarray(
-        UsdGeom.XformCache().GetLocalToWorldTransform(prim), dtype=np.float64
+        UsdGeom.XformCache(time).GetLocalToWorldTransform(prim), dtype=np.float64
     )
     # Row-vector convention, matching Gf: p * M, with the translation in the last row.
     points = points @ matrix[:3, :3] + matrix[3, :3]
@@ -138,6 +154,29 @@ def _read_strands(prim):
         strands.append((points[at:at + count], widths[at:at + count] * 0.5))
         at += count
     return strands, kind, basis
+
+
+def _read_growth(prim, time=Usd.TimeCode.Default()):
+    """The curves' growth primvar split per strand, or None when it has none."""
+    curves = UsdGeom.BasisCurves(prim)
+    counts = curves.GetCurveVertexCountsAttr().Get(time)
+    points = curves.GetPointsAttr().Get(time)
+    if not counts or not points:
+        return None
+    growth = _growth_per_vertex(curves, len(points), time)
+    if growth is None:
+        return None
+    return np.split(growth, np.cumsum(np.asarray(counts, dtype=np.int64))[:-1])
+
+
+def _sample_times(prims):
+    """Every time the curves' shape is sampled at, sorted; empty for still curves."""
+    times = set()
+    for prim in prims:
+        curves = UsdGeom.BasisCurves(prim)
+        for attr in (curves.GetPointsAttr(), curves.GetCurveVertexCountsAttr(), curves.GetWidthsAttr()):
+            times.update(attr.GetTimeSamples())
+    return sorted(times)
 
 
 # ---------------------------------------------------------------------------
@@ -504,14 +543,38 @@ def build_mesh(strands, kind, basis, sides: int, per_segment: int,
 # authoring
 # ---------------------------------------------------------------------------
 
-def _author(stage, path: str, built, source_prim) -> None:
+def _author(stage, path: str, built, source_prim, time=Usd.TimeCode.Default()) -> None:
+    """Write the swept mesh at `time`; `built` None writes an empty one.
+
+    Empty rather than absent, so a material bound to the Mesh output, or anything else wired
+    below, still finds a prim when there is nothing to sweep yet -- a vine before anything is
+    painted, or the first frame of a growth animation.
+    """
+    if built is None:
+        built = (np.zeros((0, 3)), None, np.zeros((0, 2)), np.zeros(0, dtype=np.int32),
+                 np.zeros(0, dtype=np.int32))
     points, _normals, st, counts, indices = built[:5]
+    carried = built[5] if len(built) > 5 else None
     mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(path))
     mesh.CreatePointsAttr().Set(
-        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(points, dtype=np.float32))
+        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(points, dtype=np.float32).reshape(-1, 3)), time
     )
-    mesh.CreateFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(counts))
-    mesh.CreateFaceVertexIndicesAttr().Set(Vt.IntArray.FromNumpy(indices))
+    mesh.CreateFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(np.ascontiguousarray(counts, dtype=np.int32)), time)
+    mesh.CreateFaceVertexIndicesAttr().Set(Vt.IntArray.FromNumpy(np.ascontiguousarray(indices, dtype=np.int32)), time)
+    primvars = UsdGeom.PrimvarsAPI(mesh)
+    uv = primvars.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+    uv.Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(st, dtype=np.float32).reshape(-1, 2)), time)
+    if carried is not None:
+        primvars.CreatePrimvar(GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(
+            Vt.FloatArray.FromNumpy(np.ascontiguousarray(carried, dtype=np.float32)), time)
+    if len(points):
+        lo = points.min(axis=0)
+        hi = points.max(axis=0)
+        mesh.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*lo.astype(float)),
+                                                   Gf.Vec3f(*hi.astype(float))]), time)
+    if not time.IsDefault():
+        return
+
     # Polygons, not a subdivision cage: left to the default the tube is smoothed into a
     # thinner one, and the silhouette stops matching the width the curve was authored at.
     mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
@@ -529,10 +592,6 @@ def _author(stage, path: str, built, source_prim) -> None:
     # Little is lost: a swept tube's true normals are its radial directions, and a renderer
     # recovers those from the geometry. `sides` is what governs how round it looks.
 
-    primvars = UsdGeom.PrimvarsAPI(mesh)
-    uv = primvars.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
-    uv.Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(st, dtype=np.float32)))
-
     # Carry the curve's colour, so the tube looks like what it replaced before any material is
     # bound -- otherwise turning this on appears to lose the vine's green.
     source_colour = UsdGeom.Gprim(source_prim).GetDisplayColorAttr().Get() if source_prim else None
@@ -540,10 +599,50 @@ def _author(stage, path: str, built, source_prim) -> None:
         UsdGeom.Primvar(mesh.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
         mesh.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*source_colour[0])]))
 
-    lo = points.min(axis=0)
-    hi = points.max(axis=0)
-    mesh.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*lo.astype(float)),
-                                               Gf.Vec3f(*hi.astype(float))]))
+
+def _sweep_sources(sources, time, settings):
+    """Sweep every source's strands at `time`: (built, strand count, first source with any).
+
+    Sources are grouped by their type and basis, so a linear and a cubic curve picked together
+    are each swept as what they are, and the groups' meshes are joined.
+    """
+    groups: dict = {}
+    first = None
+    for source in sources:
+        strands, kind, basis = _read_strands(source, time)
+        if not strands:
+            continue
+        growth = _read_growth(source, time)
+        first = first or source
+        group = groups.setdefault((kind, basis), ([], []))
+        group[0].extend(strands)
+        group[1].extend(growth if growth is not None else [None] * len(strands))
+    parts = []
+    for (kind, basis), (strands, growth) in groups.items():
+        # Carry growth only when every strand has it; a mix would have no value for some.
+        carry = growth if all(g is not None for g in growth) else None
+        built = build_mesh(strands, kind, basis, settings["sides"], settings["segments"],
+                           settings["uv_mode"], settings["tiles_along"], settings["width_scale"],
+                           settings["tiles_around"], settings["profile"], settings["up"], carry)
+        if built is not None:
+            parts.append(built if carry is not None else built + (None,))
+    count = sum(len(g[0]) for g in groups.values())
+    if not parts:
+        return None, count, first
+    if len(parts) == 1:
+        built = parts[0]
+    else:
+        offsets = np.cumsum([0] + [len(p[0]) for p in parts[:-1]])
+        carried = [p[5] for p in parts]
+        built = (
+            np.concatenate([p[0] for p in parts]),
+            np.concatenate([p[1] for p in parts]),
+            np.concatenate([p[2] for p in parts]),
+            np.concatenate([p[3] for p in parts]),
+            np.concatenate([p[4] + o for p, o in zip(parts, offsets)]).astype(np.int32),
+            np.concatenate(carried) if all(c is not None for c in carried) else None,
+        )
+    return (built if built[5] is not None else built[:5]), count, first
 
 
 def execute(node) -> None:
@@ -557,9 +656,13 @@ def execute(node) -> None:
     out_path = node.get_param("primpath_location").value
     if not out_path:
         return
+    if node.get_param("out_mesh").value != out_path:
+        node.get_param("out_mesh").value = out_path
 
     paths = node.get_param("curves_prim").resolve_paths()
     if not paths:
+        if stage is not None:
+            _author(stage, out_path, None, None)
         node.get_param("readout").value = "pick a BasisCurves to sweep"
         return
 
@@ -573,36 +676,43 @@ def execute(node) -> None:
         for curve in _curve_prims(upstream.GetPrimAtPath(path), recurse)
     ]
     if not sources:
+        _author(stage, out_path, None, None)
         node.get_param("readout").value = "no BasisCurves under that prim"
         return
 
-    sides = max(3, int(node.get_param("sides", is_i).value))
-    per_segment = max(1, int(node.get_param("segments", is_i).value))
-    uv_mode = node.get_param("uv_mode", is_s).value
-    tiles_along = float(node.get_param("tiles_along", is_f).value) or 1.0
-    tiles_around = float(node.get_param("tiles_around", is_f).value) or 1.0
-    width_scale = float(node.get_param("width_scale", is_f).value)
-    profile = node.get_param("profile", is_s).value
-    up = (0.0, 1.0, 0.0) if UsdGeom.GetStageUpAxis(upstream).upper() == "Y" else (0.0, 0.0, 1.0)
+    settings = {
+        "sides": max(3, int(node.get_param("sides", is_i).value)),
+        "segments": max(1, int(node.get_param("segments", is_i).value)),
+        "uv_mode": node.get_param("uv_mode", is_s).value,
+        "tiles_along": float(node.get_param("tiles_along", is_f).value) or 1.0,
+        "tiles_around": float(node.get_param("tiles_around", is_f).value) or 1.0,
+        "width_scale": float(node.get_param("width_scale", is_f).value),
+        "profile": node.get_param("profile", is_s).value,
+        "up": (0.0, 1.0, 0.0) if UsdGeom.GetStageUpAxis(upstream).upper() == "Y" else (0.0, 0.0, 1.0),
+    }
 
-    all_strands, kind, basis, first = [], UsdGeom.Tokens.linear, UsdGeom.Tokens.bspline, None
-    for source in sources:
-        strands, kind, basis = _read_strands(source)
-        if strands:
-            all_strands.extend(strands)
-            first = first or source
+    built, strand_count, first = _sweep_sources(sources, Usd.TimeCode.Default(), settings)
+    _author(stage, out_path, built, first)
+    # Animated curves -- a Vine with Animate Growth on -- give an animated mesh: each time the
+    # curves are sampled at is swept and written at that time.
+    times = _sample_times(sources)
+    for time in times:
+        at, _count, _first = _sweep_sources(sources, Usd.TimeCode(time), settings)
+        _author(stage, out_path, at, first, Usd.TimeCode(time))
 
-    built = build_mesh(all_strands, kind, basis, sides, per_segment,
-                       uv_mode, tiles_along, width_scale, tiles_around, profile, up)
-    if built is None:
+    if node.get_param("hide_source", is_b).value:
+        # The mesh replaces the curves. A renderer that draws curves (Storm, V-Ray) would
+        # otherwise draw the vine twice, once as each.
+        for source in sources:
+            UsdGeom.Imageable(stage.GetPrimAtPath(source.GetPath())).CreateVisibilityAttr().Set(
+                UsdGeom.Tokens.invisible)
+
+    if built is None and not times:
         node.get_param("readout").value = "those curves have no sweepable strands"
         return
-
-    _author(stage, out_path, built, first)
-    node.get_param("out_mesh").value = out_path
-    node.get_param("readout").value = (
-        f"{len(all_strands)} strands, {len(built[3])} faces"
-    )
+    faces = len(built[3]) if built is not None else 0
+    node.get_param("readout").value = f"{strand_count} strands, {faces} faces" + (
+        f", {len(times)} frames" if times else "")
 
 
 def main():
@@ -639,13 +749,13 @@ def main():
         "Ribbon: a flat strip lying on the ground, the curve's width wide -- a road, a\n"
         "river, a path. u runs across it, v along.",
     ))
-    shape.add_param(chunk.Spinbox(
+    shape.add_param(chunk.Slider(
         "sides", "Sides", is_int=True, min_value=3, max_value=64, default_value=6,
         flags=_PF.LABELED,
         tooltip="Faces around the tube. Six is plenty for a vine seen from a metre away;\n"
         "raise it for a hero strand, lower it for a field of them.",
     ))
-    shape.add_param(chunk.Spinbox(
+    shape.add_param(chunk.Slider(
         "segments", "Segments", is_int=True, min_value=1, max_value=16, default_value=4,
         flags=_PF.LABELED,
         tooltip="Samples per curve segment, for cubic curves only. A linear curve is already\n"
@@ -659,6 +769,11 @@ def main():
     shape.add_param(chunk.Checkbox(
         "recurse", "Include Children", default_value=True, flags=_PF.LABELED,
         tooltip="Sweep every BasisCurves under the picked prim, not only the prim itself.",
+    ))
+    shape.add_param(chunk.Checkbox(
+        "hide_source", "Hide Curves", default_value=True, flags=_PF.LABELED,
+        tooltip="Hide the curves the mesh was made from. A renderer that draws curves (Storm,\n"
+        "V-Ray) would otherwise draw the vine twice.",
     ))
     chunk_api.add_param(shape)
 
@@ -705,9 +820,6 @@ def config():
         description="""
         Turns curves (vines, hair) into tube meshes with UVs, so they can take a real material.
 
-        Curves to Mesh — sweeps a tube along a BasisCurves and gives it UVs,
-        so it can carry a real material.
-
         A curve cannot be textured in most renderers. Rendering the same
         BasisCurves with and without a primvars:st and comparing the images:
         Storm honours curve UVs, V-Ray and Cycles return pixel-identical
@@ -716,6 +828,11 @@ def config():
         Wire a Vine chunk's Vine Curves output into Curves, bind your material
         to the Mesh output, and the vines take bark, moss or whatever else.
         Works on any BasisCurves — Add Hair's, or curves referenced in.
+
+        The curves are hidden once swept (Hide Curves), so a renderer that
+        draws curves does not draw the vine twice. Animated curves, such as a
+        Vine with Animate Growth on, give an animated mesh: every time sample
+        is swept. A "growth" primvar on the curves is carried onto the mesh.
 
         Parameters:
           - Curves: the BasisCurves to sweep, or a prim above some.
