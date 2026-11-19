@@ -1088,35 +1088,61 @@ def _pin(points, widths):
 # ---------------------------------------------------------------------------
 
 
-def _leaf_points(strands, positions, normals, radii, spacing):
+def _leaf_points(strands, positions, normals, radii, growth, settings):
     """Points along the vines at a fixed arc-length spacing, with the surface normal at each.
 
     Deliberately the same shape a Scatter Brush's Painted Points output has -- position plus
     normal -- so a Scatter Points chunk instances leaves along a vine with the code it already
     has, rather than this chunk growing leaf geometry nobody asked it for.
 
-    Offset outward by the local radius so a leaf sits *on* the vine instead of inside it.
+    Each leaf sits on the stem's surface (lifted by the local radius) and is pushed off to one
+    side by Spread, alternating left and right along the strand the way ivy sets its leaves.
+    Straight down the middle, every instanced leaf covered the stem it grew from. Bare Base
+    drops the leaves on the oldest part of the vine, where real ivy has lost them.
+
+    Args:
+        strands: Index chains, from `_strands`.
+        positions: (N, 3) node positions.
+        normals: (N, 3) surface normals at the nodes.
+        radii: A radius per node.
+        growth: When each node grew, 0..1, from `_growth_of`.
+        settings: From `_settings`: leaf_spacing, leaf_spread and leaf_bare are read.
+
+    Returns:
+        (points, normals, growth): (L, 3), (L, 3) and (L,) arrays.
     """
-    if spacing <= 0.0:
-        return [], []
-    points, facing = [], []
-    for chain in strands:
-        travelled = 0.0
-        next_leaf = spacing
-        for a, b in zip(chain[:-1], chain[1:]):
-            start, end = positions[a], positions[b]
-            segment = float(np.linalg.norm(end - start))
-            if segment <= 1e-9:
-                continue
-            while next_leaf <= travelled + segment:
-                t = (next_leaf - travelled) / segment
-                normal = normals[b]
-                at = start + (end - start) * t
-                points.append(Gf.Vec3f(*(at + normal * radii[b])))
-                facing.append(Gf.Vec3f(*normal))
-                next_leaf += spacing
-            travelled += segment
-    return points, facing
+    spacing = settings["leaf_spacing"]
+    found_points, found_normals, found_growth = [], [], []
+    radii = np.asarray(radii, dtype=np.float64)
+    bare = settings["leaf_bare"] * (float(growth.max()) if len(growth) else 0.0)
+    for chain in strands if spacing > 0.0 else ():
+        chain = np.asarray(chain)
+        start, end = positions[chain[:-1]], positions[chain[1:]]
+        segment = np.linalg.norm(end - start, axis=1)
+        travelled = np.concatenate(([0.0], np.cumsum(segment)))
+        distance = np.arange(1, int(travelled[-1] / spacing + 1e-9) + 1) * spacing
+        if not len(distance):
+            continue
+        # The segment each leaf falls on: the first one whose far end reaches it. A
+        # zero-length segment is never chosen, since the one before it reaches as far.
+        on = np.clip(np.searchsorted(travelled, distance, side="left") - 1, 0, len(segment) - 1)
+        t = np.clip((distance - travelled[on]) / np.maximum(segment[on], 1e-12), 0.0, 1.0)
+        tip = chain[1:][on]
+        normal = normals[tip]
+        along = (end[on] - start[on]) / np.maximum(segment[on], 1e-12)[:, None]
+        side = np.cross(normal, along)
+        side /= np.maximum(np.linalg.norm(side, axis=1), 1e-12)[:, None]
+        sign = np.where(np.arange(len(distance)) % 2 == 0, 1.0, -1.0)[:, None]
+        at = start[on] + (end[on] - start[on]) * t[:, None]
+        at = at + normal * radii[tip][:, None] + side * sign * settings["leaf_spread"]
+        age = growth[chain[:-1]][on] * (1.0 - t) + growth[tip] * t
+        keep = age >= bare
+        found_points.append(at[keep])
+        found_normals.append(normal[keep])
+        found_growth.append(age[keep])
+    if not found_points:
+        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0)
+    return np.concatenate(found_points), np.concatenate(found_normals), np.concatenate(found_growth)
 
 
 # ---------------------------------------------------------------------------
@@ -1173,6 +1199,8 @@ def _settings(node, surface):
         "form": node.get_param("curve_form").value,
         "leaves": bool(node.get_param("leaves").value),
         "leaf_spacing": base_width * number("leaf_spacing"),
+        "leaf_spread": base_width * number("leaf_spread"),
+        "leaf_bare": min(max(number("leaf_bare") / 100.0, 0.0), 1.0),
         "leaf_size": base_width * number("leaf_size"),
     }
 
@@ -1454,9 +1482,9 @@ def execute(node):
     _lift(nodes, radii, settings["lift"])
 
     leaves = (
-        _leaf_points(strands, nodes.position, nodes.normal, radii, settings["leaf_spacing"])
+        _leaf_points(strands, nodes.position, nodes.normal, radii, growth, settings)
         if settings["leaves"]
-        else ([], [])
+        else (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
     )
 
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
@@ -1555,17 +1583,25 @@ def _author_leaves(stage, path, leaves, settings, node):
     Guide purpose: the points are data for Scatter Points, and a renderer that draws Points
     (V-Ray) would show each leaf as a ball. usdview shows them with Display Guide on.
     """
-    points, normals = leaves
+    points, normals, growth = leaves
+
+    def vec3f(array):
+        return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(array, dtype=np.float32).reshape(-1, 3))
+
     cloud = UsdGeom.Points.Define(stage, path)
     cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
-    cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
-    cloud.CreateNormalsAttr().Set(Vt.Vec3fArray(normals))
+    cloud.CreatePointsAttr().Set(vec3f(points))
+    cloud.CreateNormalsAttr().Set(vec3f(normals))
     cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)))
+    # The same clock as the curves' growth primvar, so a shader can grow leaves in with them.
+    UsdGeom.PrimvarsAPI(cloud).CreatePrimvar(
+        GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+    ).Set(Vt.FloatArray.FromNumpy(np.ascontiguousarray(growth, dtype=np.float32)))
     colour = node.get_param("leaf_color").value or (0.35, 0.62, 0.22)
     UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
     cloud.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
-    if points:
-        _set_extent(cloud, np.asarray([[p[0], p[1], p[2]] for p in points]), settings["leaf_size"])
+    if len(points):
+        _set_extent(cloud, np.asarray(points), settings["leaf_size"])
 
 
 def _set_extent(gprim, points, width):
@@ -1613,6 +1649,8 @@ def _sync_params(node):
     _show(node, "step", not node.get_param("auto_step").value)
     leaves = bool(node.get_param("leaves").value)
     _show(node, "leaf_spacing", leaves)
+    _show(node, "leaf_spread", leaves)
+    _show(node, "leaf_bare", leaves)
     _show(node, "leaf_size", leaves)
     _show(node, "leaf_color", leaves)
 
@@ -1899,6 +1937,30 @@ def main():
             flags=_PF.LABELED,
             tooltip="Distance along a vine between leaves, as a multiple of Thickness — about\n"
             "three stem-widths apart by default, which is roughly how ivy sets them.",
+        )
+    )
+    leaf.add_param(
+        chunk.Slider(
+            "leaf_spread",
+            "Spread",
+            min_value=0.0,
+            max_value=6.0,
+            default_value=1.0,
+            flags=_PF.LABELED,
+            tooltip="How far each leaf sits to the side of the stem, as a multiple of Thickness.\n"
+            "Leaves alternate left and right; zero puts them all down the middle.",
+        )
+    )
+    leaf.add_param(
+        chunk.Slider(
+            "leaf_bare",
+            "Bare Base %",
+            min_value=0.0,
+            max_value=90.0,
+            default_value=0.0,
+            flags=_PF.LABELED,
+            tooltip="No leaves on the oldest part of each vine: the share of its growth, from the\n"
+            "root, left bare. Old ivy stems lose their leaves; 30 to 50 reads as mature.",
         )
     )
     leaf.add_param(
