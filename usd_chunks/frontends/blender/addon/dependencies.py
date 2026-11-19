@@ -166,11 +166,11 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
             col.separator()
         if len(self.items) == 1:
             item = self.items[0]
-            col.label(text=f"OK to install {_names(item)} for chunk {item.chunk}?")
+            col.label(text=f"OK to install {_names(item)} for {chunk_text(item.chunk)}?")
         else:
             col.label(text="OK to install these for the chunks that need them?")
             for item in self.items:
-                col.prop(item, "install", text=f"{_names(item)} for chunk {item.chunk}")
+                col.prop(item, "install", text=f"{_names(item)} for {chunk_text(item.chunk)}")
         col.separator()
         target = chunk_registry.ChunkDependencyManager().target_dir()
         col.label(text=f"pip installs into {target}", icon="INFO")
@@ -183,7 +183,7 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
             self.report({"ERROR"}, "Turn on Allow Online Access to install chunk dependencies")
             return {"CANCELLED"}
         logger.info("usd_chunks: installing %s", ", ".join(
-            f"{_names(i)} for {i.chunk}" for i in chosen))
+            f"{', '.join(_requirements(i))} for {i.chunk}" for i in chosen))
         packages: list[str] = []
         for item in chosen:
             packages.extend(p for p in item.packages.split("\n") if p and p not in packages)
@@ -270,7 +270,7 @@ def draw_missing(layout, context) -> None:
     box = layout.box()
     box.label(text="Missing dependencies", icon="ERROR")
     for chunk_name in sorted(set(missing) & used):
-        box.label(text=f"{chunk_name}: {', '.join(missing[chunk_name])}")
+        box.label(text=f"{chunk_text(chunk_name)}: {package_names(missing[chunk_name])}")
     if others := len(set(missing) - used):
         box.label(text=f"+ {others} chunk(s) not in this network")
     if not _online():
@@ -289,8 +289,49 @@ def _online() -> bool:
     return getattr(bpy.app, "online_access", True)
 
 
+def _requirements(item) -> list[str]:
+    """The requirement strings a dialog row stands for, version ranges and all."""
+    return [p for p in item.packages.split("\n") if p]
+
+
 def _names(item) -> str:
-    return ", ".join(p for p in item.packages.split("\n") if p)
+    return package_names(_requirements(item))
+
+
+def package_names(requirements) -> str:
+    """The packages a person is asked about: "scipy", not "scipy>=1.11,<2".
+
+    The full requirement is in the console line the install logs.
+    """
+    return ", ".join(chunk_registry.split_requirement(r)[0] for r in requirements)
+
+
+#: How many node names chunk_text lists before it counts the rest.
+_MAX_NODE_NAMES = 4
+
+
+def chunk_text(module_name: str) -> str:
+    """A chunk module as the dialog names it: the module, as the Shift+A menu lists it, then
+    the open network's nodes made from it, as their headers read.
+
+    "scatter_points (Trees, Bushes, Ferns, Grass)" says which nodes wait for the install;
+    the module name alone did not, since every node carries a name of its own.
+
+    Args:
+        module_name: The chunk module's name.
+
+    Returns:
+        The module name, with the node names in brackets when the open network has any.
+    """
+    scene = chunk_registry.ChunkRegistry().scene
+    names = sorted(c.name for c in (scene.get_chunks() if scene else ())
+             if (m := c.get_chunk_module()) and m.module_name == module_name)
+    if not names:
+        return module_name
+    shown = ", ".join(names[:_MAX_NODE_NAMES])
+    if len(names) > _MAX_NODE_NAMES:
+        shown += f" and {len(names) - _MAX_NODE_NAMES} more"
+    return f"{module_name} ({shown})"
 
 
 CLASSES = (USDCHUNKS_PG_missing_dependency, USDCHUNKS_OT_install_dependencies)

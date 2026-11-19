@@ -9,6 +9,13 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Fixed
+
+- Blender: the dialog that offers to install a chunk's packages names the packages without
+  their version ranges, and the nodes in the open network that wait for them: "OK to
+  install scipy for scatter_points (Bushes, Ferns, Grass, Trees)?". It showed
+  `scipy>=1.11,<2` and the module name only. The sidebar's Missing dependencies box too.
+
 ## [1.0.0-rc.1] - 2026-11-19
 
 ### Changed
