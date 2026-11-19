@@ -130,6 +130,51 @@ def test_truthy_values_install_without_asking(deps, monkeypatch, value):
     assert installed == ["requests"]
 
 
+def test_truthy_hands_the_install_to_a_scene_that_installs_later(deps, monkeypatch, caplog):
+    """Blender installs in the background and recooks after. Run inline, pip froze it for
+    the whole download while a network opened, with nothing on screen to say why."""
+    mgr, asked = deps
+    monkeypatch.setenv("USD_CHUNK_AUTO_INSTALL", "1")
+    cls = chunk_registry.ChunkDependencyManager
+    monkeypatch.setattr(cls, "install", lambda *a, **k: pytest.fail("installed inline"))
+    later = []
+
+    class _Scene:
+        def install_later(self, packages, chunk_name):
+            later.append((list(packages), chunk_name))
+            return True
+
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "scene", _Scene(), raising=False)
+
+    with caplog.at_level(logging.WARNING, logger=chunk_registry.logger.name):
+        missing = mgr.install_packages(["scipy>=1.11,<2"], "scatter_points")
+
+    assert later == [(["scipy>=1.11,<2"], "scatter_points")]
+    assert asked == []
+    assert missing == ["scipy>=1.11,<2"], "missing until the scene has installed it"
+    assert "pip install" not in caplog.text, "no how-to-install warning: it is being installed"
+    assert not cls._declined, "a later install is not a no"
+
+
+def test_truthy_installs_inline_when_the_scene_does_not_take_it(deps, monkeypatch):
+    mgr, _ = deps
+    monkeypatch.setenv("USD_CHUNK_AUTO_INSTALL", "1")
+    installed = []
+    monkeypatch.setattr(
+        chunk_registry.ChunkDependencyManager, "install",
+        lambda self, packages, chunk_name="": installed.extend(packages) or True,
+    )
+
+    class _Scene:
+        def install_later(self, packages, chunk_name):
+            return False
+
+    monkeypatch.setattr(chunk_registry.ChunkRegistry(), "scene", _Scene(), raising=False)
+
+    assert mgr.install_packages(["requests"], "chunky") == []
+    assert installed == ["requests"]
+
+
 def test_a_no_is_not_asked_again(deps, monkeypatch):
     """Ten nodes of one chunk in a network load it ten times; one dialog, not ten."""
     mgr, asked = deps

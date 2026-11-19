@@ -41,18 +41,29 @@ _pending: dict[str, list[str]] = {}
 #: so the sidebar can offer them again after the dialog is dismissed.
 _missing: dict[str, list[str]] = {}
 
+#: Chunk names queued with ask=False, installed without the dialog when next offered.
+_auto: set[str] = set()
+
 #: The install running now; the modal operator writes it, the panel reads it.
 _status: dict = {"running": False, "line": "", "label": "", "started": 0.0}
 
 
-def queue(packages, chunk_name: str) -> None:
+def queue(packages, chunk_name: str, ask: bool = True) -> None:
     """Remember that `chunk_name` needs `packages`, and offer them once Blender is idle.
 
     Offered with Allow Online Access off too: the dialog says so and carries the toggle.
     Only a console warning, as this was, left a network that silently placed nothing.
+
+    Args:
+        packages: The requirement strings to install.
+        chunk_name: The chunk module that needs them.
+        ask: False when the user agreed ahead of time (USD_CHUNK_AUTO_INSTALL): installed
+            without the dialog, unless online access is off and the dialog has to say so.
     """
-    logger.warning("usd_chunks: chunk %s needs %s, which is not installed -- asking to "
-                   "install it", chunk_name, ", ".join(packages))
+    logger.warning("usd_chunks: chunk %s needs %s, which is not installed -- %s",
+                   chunk_name, ", ".join(packages), "asking to install it" if ask else "installing it")
+    if not ask:
+        _auto.add(chunk_name)
     for pending in (_pending, _missing):
         wanted = pending.setdefault(chunk_name, [])
         wanted.extend(p for p in packages if p not in wanted)
@@ -90,8 +101,10 @@ def _offer_pending():
         _pending.update(missing)
         return 1.0
     _pending.update(missing)
+    auto = bool(_auto) and set(missing) <= _auto
+    _auto.clear()
     with bpy.context.temp_override(window=windows[0]):
-        bpy.ops.usdchunks.install_dependencies("INVOKE_DEFAULT")
+        bpy.ops.usdchunks.install_dependencies("INVOKE_DEFAULT", auto=auto)
     return None
 
 
@@ -127,6 +140,8 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
     bl_options = {"INTERNAL"}
 
     items: bpy.props.CollectionProperty(type=USDCHUNKS_PG_missing_dependency)
+    #: Install what is queued without the dialog: USD_CHUNK_AUTO_INSTALL is on.
+    auto: bpy.props.BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
     _thread: threading.Thread | None = None
     _timer = None
@@ -148,6 +163,10 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
         _pending.clear()
         if not self.items:
             return {"CANCELLED"}
+        if self.auto and _online():
+            for item in self.items:
+                item.install = True
+            return self.execute(context)
         return context.window_manager.invoke_props_dialog(
             self, width=460, title="Missing chunk dependencies", confirm_text="Install"
         )
@@ -301,3 +320,4 @@ def unregister() -> None:
         bpy.app.timers.unregister(_offer_pending)
     _pending.clear()
     _missing.clear()
+    _auto.clear()
