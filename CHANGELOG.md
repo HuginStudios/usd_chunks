@@ -9,6 +9,12 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Fixed
+
+- Blender: after installing a chunk's packages, the status bar names the package and how
+  many chunks cooked again ("Installed scipy; 4 chunk(s) recooked"). It said "0 chunk node
+  type(s) now available", which read like a failure.
+
 ## [1.0.0-rc.1] - 2026-11-19
 
 ### Changed
