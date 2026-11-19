@@ -671,6 +671,41 @@ def test_a_vine_at_no_growth_says_so(host) -> None:
     assert "raise Growth" in node.get_param("readout").value
 
 
+# ---------------------------------------------------------------------------
+# hanging
+# ---------------------------------------------------------------------------
+
+
+def test_hanging_tendrils_leave_the_wall_and_fall(host) -> None:
+    _paint(host.mesh, lambda p: 1.0)
+    node = host.vine(curve_form="Linear", lift=0.0, smooth=0)
+    flat = host.points()
+    assert np.abs(flat[:, 1]).max() < 1e-4  # on the wall, which is the y = 0 plane
+
+    node.get_param("hang").value = 100.0
+    hung = host.points()
+
+    off = np.abs(hung[:, 1]) > 0.1
+    assert off.any()
+    # Nothing falls below the foot of the wall: the lowest point of the surface is the floor.
+    assert hung[:, 2].min() >= -1e-4
+    # The vine it hangs from is the same vine: turning Hang on only adds to it.
+    nearest = np.min(np.linalg.norm(flat[:, None, :] - hung[None, :, :], axis=2), axis=1)
+    assert nearest.max() < 1e-5
+
+
+def test_hanging_tendrils_grow_after_their_tips(host) -> None:
+    """Along every curve, tendrils included, growth only goes up: each point grew after the
+    one before it, so a growth animation drops a tendril once its tip has got there."""
+    _paint(host.mesh, lambda p: 1.0)
+    host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0)
+    growth, _ = _growth(host)
+    counts = host.curves().GetCurveVertexCountsAttr().Get()
+
+    for strand in np.split(growth, np.cumsum(counts)[:-1]):
+        assert np.all(np.diff(strand) > 0.0)
+
+
 def test_the_vine_path_moves_the_result(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(vine_path="/Growth/Ivy")
