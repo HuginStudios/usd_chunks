@@ -2732,6 +2732,36 @@ _POINT_ARRAYS = ("positions", "orientations", "scales", "protoIndices", "points"
                  "widths", "curveVertexCounts", "faceVertexCounts", "faceVertexIndices")
 
 
+#: What a painted cloud carries beyond its default points that changes the cook: the ids it
+#: is matched by, and (with them) every time sample of its points. See `_painted_hidden`.
+_PAINTED_ANIMATED = ("points", "ids")
+
+
+def _hash_painted(stage, paths) -> str:
+    """A digest of what `_hash_prims` leaves out of a painted cloud: its ids and time samples.
+
+    An animated cloud (a Vine growing its leaves) has the same default points as a still one,
+    and hashing those alone handed it the still cloud's cached cook -- every instance showing
+    from the first frame.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    for path in paths:
+        prim = stage.GetPrimAtPath(path) if path else None
+        if not prim:
+            continue
+        for name in _PAINTED_ANIMATED:
+            attr = prim.GetAttribute(name)
+            if not attr:
+                continue
+            if attr.HasValue() and attr.Get() is not None:
+                h.update(f"{name}:default".encode())
+                h.update(np.asarray(attr.Get()).tobytes())
+            for time in attr.GetTimeSamples():
+                h.update(f"{name}@{time!r}".encode())
+                h.update(np.asarray(attr.Get(time)).tobytes())
+    return h.hexdigest()
+
+
 def _hash_prims(stage, paths, prune_instancers=False, primvar=None) -> str:
     """One digest of every prim under *paths* a reader here reads: its type, world
     transform and point arrays, and *primvar* where it has it. *prune_instancers* skips an
@@ -2802,7 +2832,7 @@ def cache_key(node):
         ("surface", _hash_prims(scratch, surfaces, primvar=node.get_param("density_primvar").value or None)),
         ("avoid", _hash_prims(scratch, paths("avoid_prims"))),
         ("near", _hash_prims(scratch, paths("near_prims"), prune_instancers=True)),
-        ("placed", _hash_prims(scratch, paths("points_prim"))),
+        ("placed", _hash_prims(scratch, paths("points_prim")), _hash_painted(scratch, paths("points_prim"))),
         ("prototypes", tuple(
             (p.src_path, repr(p.variants), _layer_stamps(scratch.GetPrimAtPath(p.src_path)))
             for p in _resolve_prototypes(node, scratch) if scratch.GetPrimAtPath(p.src_path)

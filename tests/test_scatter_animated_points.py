@@ -7,6 +7,8 @@ them.
 """
 from __future__ import annotations
 
+import importlib
+
 from pxr import UsdGeom
 
 from usd_chunks import Scene
@@ -62,3 +64,18 @@ def test_a_still_cloud_hides_nothing() -> None:
 
         assert len(instancer.GetPositionsAttr().Get()) == 3
         assert instancer.GetInvisibleIdsAttr().GetNumTimeSamples() == 0
+
+
+def test_an_animated_cloud_is_not_handed_the_still_clouds_cached_cook() -> None:
+    """Both clouds have the same default points. The cook cache's key has to see the time
+    samples and ids too, or the animated one reuses the still one's cook, with no instance
+    ever hidden."""
+    module = importlib.import_module("chunks.modelling.scatter_points")
+    keys = []
+    for code in (_STILL, _CLOUD):
+        scene = _scatter(code)
+        with scene:
+            chunk_obj = next(c for c in scene.get_chunks() if c.get_param("points_prim") is not None)
+            keys.append(module.cache_key(chunk_obj))
+
+    assert keys[0] != keys[1]
