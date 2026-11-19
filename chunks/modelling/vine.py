@@ -1650,7 +1650,11 @@ def execute(node):
             at = _draw(nodes, growth, fraction, settings)
             time = Usd.TimeCode(frame)
             _author_curves(stage, where[1], at, settings, node, time)
-            _author_leaves(stage, where[2], at[4] if at else None, settings, node, time)
+            # The grown vine's leaves, each from the frame the vine reaches it -- not the
+            # leaves of the part-grown vine. Those are spaced along strands that regroup as
+            # the vine grows, so they would shuffle from frame to frame. Kept by index, which
+            # is each leaf's id, so an instancer can follow them.
+            _author_leaves(stage, where[2], drawn[4], settings, node, time, fraction)
 
     hit_cap = grown.grown >= settings["max_nodes"]
     _report(
@@ -1797,7 +1801,7 @@ def _author_curves(stage, path, drawn, settings, node, time=Usd.TimeCode.Default
     _set_extent(curves, all_points, float(all_widths.max()) if len(all_widths) else 0.0, time)
 
 
-def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Default()):
+def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Default(), grown_to=None):
     """The leaf cloud, in the shape Scatter Points already reads.
 
     Authored even when it is empty, so the Leaf Points output resolves to a real prim the moment
@@ -1808,11 +1812,17 @@ def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Defaul
     (V-Ray) would show each leaf as a ball. usdview shows them with Display Guide on.
 
     `leaves` None is a frame before any leaf grew. Points, normals, widths, growth and extent
-    are written at `time`.
+    are written at `time`; with `grown_to`, only the leaves grown by then (growth up to it).
+    Every leaf carries its index in `leaves` as its id, so the same leaf keeps the same id on
+    every frame.
     """
     if leaves is None:
         leaves = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
     points, normals, growth = leaves
+    ids = np.arange(len(points), dtype=np.int64)
+    if grown_to is not None:
+        keep = growth <= grown_to + 1e-12
+        points, normals, growth, ids = points[keep], normals[keep], growth[keep], ids[keep]
 
     def vec3f(array):
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(array, dtype=np.float32).reshape(-1, 3))
@@ -1824,6 +1834,7 @@ def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Defaul
         UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
         cloud.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
     cloud.CreatePointsAttr().Set(vec3f(points), time)
+    cloud.CreateIdsAttr().Set(Vt.Int64Array.FromNumpy(ids), time)
     cloud.CreateNormalsAttr().Set(vec3f(normals), time)
     cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)), time)
     # The same clock as the curves' growth primvar, so a shader can grow leaves in with them.
