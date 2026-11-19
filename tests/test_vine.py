@@ -281,6 +281,33 @@ def test_a_vine_that_never_forked_is_its_own_tip_width() -> None:
     assert radii == [pytest.approx(0.05)] * 20
 
 
+def test_meander_noise_is_smooth_and_bounded() -> None:
+    """Smooth is the point: neighbouring steps of a vine have to turn the same way, or the
+    turning averages out into a jitter, which is all Wander ever gave."""
+    rng = np.random.default_rng(0)
+    points = rng.uniform(-50.0, 50.0, size=(5000, 3))
+    values = vine._value_noise(points, seed=3)
+    nearby = vine._value_noise(points + 0.01, seed=3)
+
+    assert values.min() >= -1.0 and values.max() <= 1.0
+    assert values.std() > 0.2
+    assert np.abs(values - nearby).max() < 0.1
+    assert not np.allclose(values, vine._value_noise(points, seed=4))
+
+
+def test_meander_turns_within_the_surface() -> None:
+    up = np.tile([0.0, 0.0, 1.0], (200, 1))
+    ahead = np.tile([1.0, 0.0, 0.0], (200, 1))
+    positions = np.random.default_rng(1).uniform(0.0, 20.0, size=(200, 3))
+
+    turned = vine._meander(ahead, up, positions, 1.0, 4.0, seed=0)
+
+    assert np.allclose(turned[:, 2], 0.0)
+    assert np.allclose(np.linalg.norm(turned, axis=1), 1.0)
+    assert np.ptp(np.arctan2(turned[:, 1], turned[:, 0])) > 0.5
+    assert np.array_equal(vine._meander(ahead, up, positions, 0.0, 4.0, seed=0), ahead)
+
+
 def test_smoothing_pins_both_ends() -> None:
     """A vine that grew from the ground has to still start there."""
     points = np.asarray([[0.0, 0, 0], [1.0, 1, 0], [2.0, -1, 0], [3.0, 0, 0]])
@@ -305,8 +332,9 @@ def test_vines_grow_only_where_the_surface_was_painted(host) -> None:
     assert len(points)
     # One face of slack at each edge: the weight is interpolated across the boundary triangles,
     # so the paint genuinely reaches a third of a face past the last painted vertex.
-    assert points[:, 0].min() > 3.0 - SIZE / 30.0
-    assert points[:, 0].max() < 7.0 + SIZE / 30.0
+    # Plus float32 rounding: a vine that reaches the very edge of the slack lands on it.
+    assert points[:, 0].min() > 3.0 - SIZE / 30.0 - 1e-5
+    assert points[:, 0].max() < 7.0 + SIZE / 30.0 + 1e-5
 
 
 def test_a_wired_but_unpainted_field_grows_nothing(host) -> None:
@@ -489,7 +517,9 @@ def test_step_decides_how_smoothly_a_vine_curves_and_not_how_thick_it_is(host) -
     touch it.
     """
     _paint(host.mesh, _stripe(2.0, 8.0))
-    node = host.vine(auto_step=False, step=0.1)
+    # Constant width (Taper 1), so how much each vine forked -- which Step does change --
+    # cannot move the widest point.
+    node = host.vine(auto_step=False, step=0.1, taper=1.0)
     fine = max(host.curves().GetWidthsAttr().Get())
     node.get_param("step").value = 0.4
     node.execute()
@@ -627,7 +657,7 @@ def test_a_part_grown_vine_is_the_older_part_of_the_grown_one(host) -> None:
     growth, _ = _growth(host)
 
     assert 0 < len(young) < len(grown)
-    assert growth.max() <= 0.4
+    assert growth.max() <= 0.4 + 1e-6  # float32 primvar
     # Cut, not regrown or moved: every point of the young vine is a point of the grown one.
     nearest = np.min(np.linalg.norm(young[:, None, :] - grown[None, :, :], axis=2), axis=1)
     assert nearest.max() < 1e-5

@@ -686,6 +686,52 @@ def _tangent(direction, normal, rng):
     return fallback / max(float(np.linalg.norm(fallback)), 1e-9)
 
 
+#: Meander's wavelength, in growth steps: how far a vine goes before it swings back.
+_MEANDER_WAVELENGTH = 24.0
+
+
+def _value_noise(points, seed):
+    """Smooth noise in -1..1 over 3D space, one value per point; about one swing per unit.
+
+    Value noise on an integer lattice, blended with smoothstep: cheap, the same everywhere a
+    point lands whatever order it is asked in, and smooth, so neighbouring steps of one vine
+    turn the same way. Per-step random noise (Wander) cannot do that -- it averages out over a
+    few steps, which leaves a straight vine with a jitter on it.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    cell = np.floor(points)
+    frac = points - cell
+    fade = frac * frac * (3.0 - 2.0 * frac)
+    base = cell.astype(np.int64)
+    total = np.zeros(len(points))
+    for corner in range(8):
+        offset = np.array([(corner >> 0) & 1, (corner >> 1) & 1, (corner >> 2) & 1])
+        lattice = base + offset
+        # A 64-bit integer hash of the lattice point and the seed, folded to 0..1.
+        h = (lattice[:, 0] * 73856093) ^ (lattice[:, 1] * 19349663) ^ (lattice[:, 2] * 83492791)
+        h = (h ^ (seed * 2654435761)) & 0xFFFFFFFF
+        h = (h * 2246822519) & 0xFFFFFFFF
+        h ^= h >> 13
+        value = (h & 0xFFFF) / 32767.5 - 1.0
+        weight = np.prod(np.where(offset == 1, fade, 1.0 - fade), axis=1)
+        total += value * weight
+    return total
+
+
+def _meander(directions, normals, positions, amount, wavelength, seed):
+    """Turn each direction about its surface normal by a smoothly varying angle.
+
+    The angle comes from `_value_noise` over space, so a vine swings one way for a while and
+    then the other, and two vines that pass the same spot bend alike, as if following the
+    wall's grain. At 1 the turn reaches about 70 degrees either way.
+    """
+    if amount <= 0.0 or not len(directions):
+        return directions
+    angle = _value_noise(positions / max(wavelength, 1e-9), seed) * amount * 1.2
+    turned = np.cross(normals, directions)
+    return directions * np.cos(angle)[:, None] + turned * np.sin(angle)[:, None]
+
+
 def _tangents(directions, normals):
     """`_tangent` for a whole iteration, and without the random nudge.
 
@@ -787,6 +833,7 @@ def _grow(roots, attractors, projector, settings, rng):
     kill_sq = settings["kill"] ** 2
     climb = settings["climb"]
     wander = settings["wander"]
+    meander = settings.get("meander", 0.0)
 
     # A new node can only change an attractor within reach of it: one further away than both
     # the influence and the kill distance is neither pulled nor consumed by it. So an
@@ -859,6 +906,12 @@ def _grow(roots, attractors, projector, settings, rng):
         if wander > 0.0:
             direction = direction + rng.normal(scale=wander, size=direction.shape)
         direction = _tangents(direction, nodes.normal[owners])
+        if meander > 0.0:
+            direction = _tangents(
+                _meander(direction, nodes.normal[owners], nodes.position[owners], meander,
+                         step * _MEANDER_WAVELENGTH, settings["seed"]),
+                nodes.normal[owners],
+            )
 
         landed, landed_normals, found = projector.project_many(
             nodes.position[owners] + direction * step
@@ -1186,6 +1239,8 @@ def _settings(node, surface):
         "kill": step * number("kill"),
         "climb": number("climb"),
         "wander": number("wander"),
+        "meander": number("meander"),
+        "seed": int(number("seed")),
         "density": number("density"),
         "roots": max(1, int(number("root_count"))),
         "min_branch": max(1, int(number("min_branch"))),
@@ -1292,8 +1347,8 @@ def _up_axis(stage):
 _GROWN: dict = {}
 
 #: The settings that change what grows. The rest only change how it is drawn.
-_GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "density", "roots", "min_branch",
-                    "max_nodes")
+_GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "meander", "density", "roots",
+                    "min_branch", "max_nodes")
 
 
 class _Grown:
@@ -1783,7 +1838,7 @@ def main():
             "Density",
             min_value=0.0,
             max_value=1.0,
-            default_value=0.5,
+            default_value=0.2,
             flags=_PF.LABELED,
             tooltip="How thickly the vines fill what was painted. Low leaves gaps between them,\n"
             "high packs them against each other.",
@@ -1795,10 +1850,23 @@ def main():
             "Climb",
             min_value=0.0,
             max_value=2.0,
-            default_value=0.35,
+            default_value=0.15,
             flags=_PF.LABELED,
             tooltip="Pull toward the stage's up axis — the plant's phototropism. Zero lets the\n"
             "vines wander the painted region evenly; high sends them straight up a wall.",
+        )
+    )
+    grow.add_param(
+        chunk.Slider(
+            "meander",
+            "Meander",
+            min_value=0.0,
+            max_value=1.0,
+            default_value=0.8,
+            flags=_PF.LABELED,
+            tooltip="How much the vines swing from side to side as they grow, in long smooth\n"
+            "curves. Zero grows them straight toward the unfilled paint, which reads as\n"
+            "combed hair; high makes them wind like old ivy.",
         )
     )
     grow.add_param(
@@ -1985,7 +2053,7 @@ def main():
             "Influence",
             min_value=1.0,
             max_value=40.0,
-            default_value=12.0,
+            default_value=24.0,
             flags=_PF.LABELED,
             tooltip="How far a node reaches for attractors, as a multiple of Step. Larger makes\n"
             "long, purposeful runs; smaller makes a dense, wandering mat.",
@@ -1997,7 +2065,7 @@ def main():
             "Kill Distance",
             min_value=0.5,
             max_value=10.0,
-            default_value=2.0,
+            default_value=5.0,
             flags=_PF.LABELED,
             tooltip="How close a vine has to come before that part of the paint counts as\n"
             "covered, as a multiple of Step. It sets how far apart branches settle.",
@@ -2065,6 +2133,8 @@ def config():
             vine curves. It does not change how thick one is.
           - Density: how thickly the vines fill what was painted.
           - Climb: pull toward the up axis — the plant's phototropism.
+          - Meander: long, smooth side-to-side swings, so vines wind rather than
+            run in parallel.
           - Wander: randomness per step.
           - Roots: how many vines to start when no painted points are wired.
           - Thickness %: width at the base, as a share of the painted region,
