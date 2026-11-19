@@ -22,6 +22,9 @@ This file starts with the first release; development before that is in the commi
   it again.
 - A run with a Light in it no longer logs `ERROR Could not send notice ... is not in the
   local LayerStack`.
+- URDF Import writes each link's whole inertia: its principal moments and the axes they are
+  about, scaled with Scale. It wrote only the diagonal, without the axes (usdchecker
+  rejected every link) and dropped `ixy`, `ixz` and `iyz`.
 
 ## [1.0.0-rc.2] - 2026-11-19
 
