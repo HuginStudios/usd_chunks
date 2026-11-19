@@ -29,6 +29,11 @@ This file starts with the first release; development before that is in the commi
 - Vine cooks faster and grows the same vines. Changing Thickness, Taper, Lift, Smoothing,
   Form, the leaf settings or the colours no longer grows the vine again: on a
   131k-triangle rock, 830 ms → 80 ms. A full grow with a fine step: 3.9 s → 1.2 s.
+- **Breaking:** Vine grows winding, branching stems by default instead of evenly spaced
+  parallel ones. A new Meander slider swings them from side to side in long curves, and
+  the defaults changed: Meander 0.8, Climb 0.15, Density 0.2, Influence 24, Kill Distance
+  5. A saved Vine left at the old defaults grows the new way. To keep the old look, set
+  Meander 0, Climb 0.35, Density 0.5, Influence 12 and Kill Distance 2.
 
 ### Fixed
 
