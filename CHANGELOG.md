@@ -37,6 +37,9 @@ This file starts with the first release; development before that is in the commi
   grown vine's leaves, each from the frame the vine reaches it, with a stable id; Scatter
   Points hides each leaf instance until its point exists (`invisibleIds`). Before, every
   leaf showed from the first frame.
+- `examples/scripts/ivy_wall.py` and a Vines page in the docs: ivy on a stone wall, painted,
+  grown, swept to a mesh, shaded and lit, ready to render in a renderer that draws no curves
+  (Aurora). `animate=True` grows it over 48 frames.
 
 ### Changed
 
