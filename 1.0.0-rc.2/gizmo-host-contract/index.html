@@ -1,0 +1,2368 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://huginstudios.github.io/usd_chunks/1.0.0-rc.2/gizmo-host-contract/">
+      
+      
+        <link rel="prev" href="../fast-chunks/">
+      
+      
+        <link rel="next" href="../graph-frontends/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Chunk gizmos: the host contract - USD Chunks</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#chunk-gizmos-the-host-contract" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="USD Chunks" class="md-header__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            USD Chunks
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Chunk gizmos: the host contract
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="lime"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  USD Chunks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../blender/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Blender
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../breakage/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Breakage: fracture, emit, simulate
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks, params and groups
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-requirements/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks that need pip packages
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../core-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Output, View and ChunkGroup
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../example/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Example
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../expressions/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Expressions
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../fast-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Making a chunk fast
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunk gizmos: the host contract
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../graph-frontends/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a graph frontend
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../houdini/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Houdini
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../install/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Install
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../node-graph-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using the node graph
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../plugins/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Plugins
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../runtime-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Building a chunk at runtime
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../scripting/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Scripting
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../surface_flow/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Liquid on surfaces: condensation, runs, drips
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../undo/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Undo and redo
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../vines/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Vines: paint, grow, sweep, shade
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../writing-a-chunk/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a chunk module
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="USD Chunks" class="md-nav__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    USD Chunks
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    USD Chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../blender/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blender
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../breakage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Breakage: fracture, emit, simulate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks, params and groups
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-requirements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks that need pip packages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../core-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output, View and ChunkGroup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fast-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Making a chunk fast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunk gizmos: the host contract
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunk gizmos: the host contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-four-calls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The four calls
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-discovery-from-a-selected-prim-to-its-handles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Discovery: from a selected prim to its handles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-the-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. The record
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. The record">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-to-draw-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to draw it
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#letting-the-user-drag-the-pivot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Letting the user drag the pivot
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-types-and-what-each-one-sends-back" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Types, and what each one sends back
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Types, and what each one sends back">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#axis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        axis
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-when-to-show-a-handle-editmode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. When to show a handle: editmode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-write-back" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Write-back
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Write-back">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#do-not-write-the-prim-directly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Do not write the prim directly
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-on-every-tick" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write on every tick
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notices
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Errors
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-conventions-not-inferable-from-the-usd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Conventions not inferable from the USD
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-graceful-degradation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Graceful degradation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-a-prim-no-chunk-drives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. A prim no chunk drives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worked example
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph-frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a graph frontend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../houdini/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Houdini
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-graph-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using the node graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building a chunk at runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scripting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../surface_flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Liquid on surfaces: condensation, runs, drips
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../undo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Undo and redo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vines: paint, grow, sweep, shade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../writing-a-chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a chunk module
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_22" >
+        
+          
+          <label class="md-nav__link" for="__nav_22" id="__nav_22_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_22_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_22">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SUMMARY
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_core
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_flags/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_flags
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_notice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_notice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_resources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_resources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_stage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_stage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="chunk-gizmos-the-host-contract">Chunk gizmos: the host contract<a class="headerlink" href="#chunk-gizmos-the-host-contract" title="Permanent link">⚓︎</a></h1>
+<p>How a DCC displays chunk-driven viewport handles.</p>
+<p><strong>usd_chunks records. The DCC interprets.</strong> This repo authors a schema onto chunk prims
+and owns the write-back. It does not draw, pick, or drag. If you are building a viewport
+layer — <code>usd-guides</code> for usdview and Kraken, or a native integration for Houdini, Blender
+or Maya — this page is the whole surface you need.</p>
+<p>The governing rule everything here is designed around:</p>
+<blockquote>
+<p>A host must be able to build a native handle from <code>ui:gizmo:*</code> alone, with no geometry
+library from us.</p>
+</blockquote>
+<p>Three of the five target hosts have manipulators better than anything we would ship, so
+our geometry would be a downgrade there. Nothing below asks you to draw our shapes.</p>
+<hr />
+<h2 id="the-four-calls">The four calls<a class="headerlink" href="#the-four-calls" title="Permanent link">⚓︎</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">resolve_gizmos</span><span class="p">(</span><span class="n">prim</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">GizmoDesc</span><span class="p">]</span>   <span class="c1"># what handles exist</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">apply_bindings</span><span class="p">(</span><span class="n">chunk_prim</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>   <span class="c1"># write-back</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">chunk</span><span class="o">.</span><span class="n">start_gizmo</span><span class="p">()</span> <span class="o">/</span> <span class="n">chunk</span><span class="o">.</span><span class="n">stop_gizmo</span><span class="p">()</span>              <span class="c1"># drag bracket</span>
+</span></code></pre></div>
+<p>Plus two optional helpers:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">decompose</span><span class="p">(</span><span class="n">matrix</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="p">{</span><span class="s2">"translate"</span><span class="p">:</span> <span class="n">Vec3d</span><span class="p">,</span> <span class="s2">"rotate"</span><span class="p">:</span> <span class="n">Vec3d</span><span class="p">,</span> <span class="s2">"scale"</span><span class="p">:</span> <span class="n">Vec3d</span><span class="p">}</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">ensure_transform_chunk</span><span class="p">(</span><span class="n">prim</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">GizmoDesc</span> <span class="o">|</span> <span class="kc">None</span>   <span class="c1"># see §8</span>
+</span></code></pre></div>
+<p>That is all of it. There is no callback to register, no base class to subclass, and
+nothing we call on you.</p>
+<hr />
+<h2 id="1-discovery-from-a-selected-prim-to-its-handles">1. Discovery: from a selected prim to its handles<a class="headerlink" href="#1-discovery-from-a-selected-prim-to-its-handles" title="Permanent link">⚓︎</a></h2>
+<p>The user selects <code>/World/Cube</code>. The handles are declared on a chunk prim under <code>/chunks</code>,
+which is not in the viewport and is not what anyone clicks. Two routes:</p>
+<p><strong>Route A — ask us.</strong></p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">for</span> <span class="n">desc</span> <span class="ow">in</span> <span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">resolve_gizmos</span><span class="p">(</span><span class="n">selected_prim</span><span class="p">):</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="o">...</span>
+</span></code></pre></div>
+<p>Walks the prim's layer stack. Every chunk owns its own <code>Sdf.Layer</code>, so a prim's spec stack
+already records which chunks authored it. Cheap, and a disabled or muted chunk drops out
+for free because its specs are not in the stack.</p>
+<p>Also accepts a chunk prim directly, for a node-graph-driven UI.</p>
+<p><strong>Route B — pure USD, no dependency on this repo.</strong></p>
+<p>Index every prim carrying a <code>ui:gizmo:*:anchor</code> relationship, and find the ones whose
+targets include your selection. Slower — O(chunks) per selection change, which is nothing
+at realistic graph sizes — but it means a third-party host is never <em>forced</em> to import
+usd_chunks just to find handles.</p>
+<p>Write-back still needs us. See §5.</p>
+<blockquote>
+<p><strong>A handle only appears after the chunk has cooked at least once.</strong> Route A traces
+through the layer that a cook writes; before that the layer is empty and there is
+nothing to trace. Chunks cook on creation, so this is rarely visible — but if handles
+are missing on a freshly loaded scene, this is why.</p>
+</blockquote>
+<p><strong>Order is meaningful: nearest the view first.</strong> <code>resolve_gizmos</code> returns handles sorted by
+exec depth, so <code>descs[0]</code> is the chunk with the final say over that prim. A host with no
+chunk selected can drive <code>descs[0]</code> and be editing the one the user can actually see.</p>
+<p>Sorted by the graph rather than by layer strength, because the two disagree in one case
+that matters: a chunk which has not authored anything yet is not in the prim's layer stack
+at all. An Offset Transform sitting at zero authors nothing by design, so it would sort
+last however far downstream it sat -- and ownership would flip the moment someone typed a
+number into it.</p>
+<p><strong>Which handle belongs to whom.</strong> <code>resolve_gizmos</code> returns handles from <em>every</em> chunk in
+the prim's layer stack, upstream ones included. <strong>You filter to the chunk the user has
+selected</strong>, if your UI has a notion of one. A prim touched by two transform chunks in one chain would otherwise show two
+identical handles in the same place. Stated the other way round: a handle only ever edits
+the chunk you are looking at.</p>
+<hr />
+<h2 id="2-the-record">2. The record<a class="headerlink" href="#2-the-record" title="Permanent link">⚓︎</a></h2>
+<p><code>GizmoDesc</code> is a plain data record. No Qt types, no callbacks, nothing beyond <code>pxr</code>.</p>
+<table>
+<thead>
+<tr>
+<th>field</th>
+<th>type</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td><code>str</code></td>
+<td>Identity within the chunk. The namespace segment, never the type — two cubes on one chunk is ordinary.</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td><code>str</code></td>
+<td>What kind of handle, and what it sends back. See §3.</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td><code>str</code></td>
+<td>Display name. Falls back to the chunk's name.</td>
+</tr>
+<tr>
+<td><code>chunk_prim</code></td>
+<td><code>Sdf.Path</code></td>
+<td>Which chunk declared this handle. <strong>Pass it straight back to <code>apply_bindings</code></strong>, and use it to filter to the chunk the user selected. <code>name</code> is not unique across chunks — more than one calls its handle <code>transform</code>.</td>
+</tr>
+<tr>
+<td><code>anchor</code></td>
+<td><code>tuple[Sdf.Path]</code></td>
+<td>The scene prims the handle hangs off. Already resolved — never a param to evaluate.</td>
+</tr>
+<tr>
+<td><code>anchor_source</code></td>
+<td><code>str</code></td>
+<td>The param that produced them. For our write-back; you do not need it.</td>
+</tr>
+<tr>
+<td><code>driver</code></td>
+<td><code>tuple[Sdf.Path]</code></td>
+<td>The properties this handle writes, in order. Informational — write through <code>apply_bindings</code>, not directly.</td>
+</tr>
+<tr>
+<td><code>axis</code></td>
+<td><code>str \| None</code></td>
+<td>Signed direction token, in the anchor's local space. <code>None</code> means free drag.</td>
+</tr>
+<tr>
+<td><code>space</code></td>
+<td><code>str</code></td>
+<td><code>"local"</code> or <code>"world"</code>. <strong>Defaults to <code>"local"</code> and is only authored when non-default.</strong></td>
+</tr>
+<tr>
+<td><code>editmode</code></td>
+<td><code>tuple[str]</code></td>
+<td>When to show it. See §4.</td>
+</tr>
+<tr>
+<td><code>offset</code></td>
+<td><code>tuple[float,float,float] \| None</code></td>
+<td>Where the handle sits, as a point in the anchor's own space. <code>None</code> means <strong>you decide</strong> — put it on the geometry. Not static: a chunk can move it between resolves.</td>
+</tr>
+<tr>
+<td><code>size</code></td>
+<td><code>float \| None</code></td>
+<td>Relative size hint. <strong><code>None</code> means you decide</strong> — usually the right answer, since a viewport wants a screen-constant handle and only you know the camera distance.</td>
+</tr>
+</tbody>
+</table>
+<p>A chunk can suppress one of its own handles while a mode of its own would fight it —
+camera.py hides its transform handle while <code>lock_to_freecam</code> is on, because the freecam
+re-authors the transform every frame and a drag would silently snap back. <strong><code>resolve_gizmos</code>
+simply does not return a suppressed handle</strong>, so route A needs no check. Route B must
+honour <code>ui:gizmo:&lt;name&gt;:hidden = true</code>, which is authored for exactly this purpose.</p>
+<p><strong>Several anchor targets means one handle at their averaged pivot</strong>, not one handle per
+target. A transform chunk pointed at three prims is ordinary use.</p>
+<h3 id="where-to-draw-it">Where to draw it<a class="headerlink" href="#where-to-draw-it" title="Permanent link">⚓︎</a></h3>
+<p>The anchor says <em>what the handle is attached to</em>. It is not always where the handle sits.</p>
+<p><strong>Read the driven value and offset by it.</strong> Follow the <code>driver</code> connections, read the
+current values, and place the handle accordingly:</p>
+<ul>
+<li>A <code>translate</code> handle driving an <strong>offset</strong> — "shift this body 3 units from its start" —
+  belongs at <code>anchor + (3, 0, 0)</code>. Drawn on the anchor it would sit at zero and never move.</li>
+<li>A <code>cube</code> on <strong>focus distance</strong> with <code>axis = "-Z"</code> belongs at the focus point, <code>distance</code>
+  along the camera's -Z. That is where the existing focus reticle already draws.</li>
+</ul>
+<p>The rule is the same in both cases: the handle shows <em>the value</em>, and the anchor is the
+frame that value is measured in. <code>offset</code> is a point on top of that — not a substitute for
+reading the value.</p>
+<p><strong><code>offset</code> is a pivot, and it is not static.</strong> A Transform chunk with a pivot set reports it
+here, so:</p>
+<ul>
+<li><code>offset is None</code> — no chunk has an opinion. <strong>Place the handle yourself</strong>, and put it on
+  the geometry rather than on the transform origin: those differ more often than they look
+  like they should. A <code>Kitchen_set</code> cup carries a transform on its group and very nearly the
+  inverse on the mesh, so its world transform composes to the identity and its origin is out
+  at the world origin. The bbox centroid is the answer that stays useful.</li>
+<li><code>offset</code> set — draw there, and make your rotation turn about it. It is a point in the
+  anchor's <strong>own object space</strong>, so map it through the anchor's local-to-world:
+  <code>primWorld.Transform(offset)</code>. The chunk's op is the innermost one, so everything upstream
+  of it still applies to the pivot.</li>
+</ul>
+<p>The value moves <em>while the user drags a pivot slider</em>, so re-read it on stage change rather
+than caching it at selection time. Nothing else about the drag changes: you still report the
+absolute matrix the user dragged to, and the chunk solves its own params about its own pivot.</p>
+<h3 id="letting-the-user-drag-the-pivot">Letting the user drag the pivot<a class="headerlink" href="#letting-the-user-drag-the-pivot" title="Permanent link">⚓︎</a></h3>
+<p>Optional, and the reason <code>offset</code> has a write counterpart. Hold a modifier (usdview's gizmo
+uses <code>D</code>, matching its Maya-ish <code>W</code>/<code>E</code>/<code>R</code>/<code>M</code>) and a drag moves the pivot rather than the
+object:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">apply_offset</span><span class="p">(</span><span class="n">desc</span><span class="o">.</span><span class="n">chunk_prim</span><span class="p">,</span> <span class="n">desc</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">world_point</span><span class="p">)</span>   <span class="c1"># -&gt; bool</span>
+</span></code></pre></div>
+<p><strong>You send a world point.</strong> You have a position under the mouse and nothing else; you do not
+know that a Transform chunk keeps its pivot in the anchor's object space, and you should not
+have to. The conversion happens on our side, exactly as <code>apply_bindings</code> takes an absolute
+matrix and lets the chunk work out its own share.</p>
+<p>Three rules:</p>
+<ul>
+<li><strong>False means do nothing.</strong> Unlike <code>commit_transform</code>, do <em>not</em> fall back to writing the
+  prim — there is nowhere on a prim to put a pivot, and moving the prim instead is the
+  opposite of what was asked. False just means no chunk here owns a pivot.</li>
+<li><strong>Write every tick, never batch to mouse-release.</strong> The chunk cooks per write, and that is
+  what keeps the object still while the pivot moves under it. Same rule as every other drag.</li>
+<li><strong>Reset your handle when the gesture ends.</strong> A pivot drag leaves your manipulator holding
+  the whole drag in its local translation; carry that into the next ordinary drag and the
+  object jumps by however far the pivot moved.</li>
+</ul>
+<p>A chunk that does not implement the write hook returns False, so this degrades to "no pivot
+dragging" rather than to anything surprising.</p>
+<hr />
+<h2 id="3-types-and-what-each-one-sends-back">3. Types, and what each one sends back<a class="headerlink" href="#3-types-and-what-each-one-sends-back" title="Permanent link">⚓︎</a></h2>
+<p><strong>A gizmo drives exactly one thing, and its type says what.</strong> There is no slot, no key, no
+payload map — reading the type answers the whole question.</p>
+<table>
+<thead>
+<tr>
+<th><code>type</code></th>
+<th>you send back</th>
+<th>drives</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>transform</code></td>
+<td><code>Gf.Matrix4d</code></td>
+<td>Nine params: translate xyz, rotate xyz, scale xyz</td>
+</tr>
+<tr>
+<td><code>translate</code></td>
+<td><code>Gf.Vec3d</code></td>
+<td>Three params, or one vector-typed param</td>
+</tr>
+<tr>
+<td><code>rotate</code></td>
+<td><code>Gf.Vec3d</code>, Euler XYZ, <strong>degrees</strong></td>
+<td>as above</td>
+</tr>
+<tr>
+<td><code>scale</code></td>
+<td><code>Gf.Vec3d</code></td>
+<td>as above</td>
+</tr>
+<tr>
+<td><code>cube</code>, <code>sphere</code></td>
+<td>a single number</td>
+<td>One param</td>
+</tr>
+<tr>
+<td><code>box</code></td>
+<td>six numbers</td>
+<td>Six params: the +X, -X, +Y, -Y, +Z, -Z faces, in that order</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>transform</code> is the whole-chunk handle</strong> — in effect <em>"run your native transform
+manipulator and give me the result"</em>. Build your own TRS handle, let the user drag it, and
+hand back the matrix it produced. You never need to decompose it; we do that, so the Euler
+convention lives in exactly one place instead of being re-derived slightly differently in
+every host.</p>
+<p><strong>Shape types are one-dimensional handles.</strong> A shape plus an <code>axis</code> <em>is</em> a linear handle:
+map it onto your native linear-handle primitive and ignore the shape name entirely.
+<code>usd-guides</code> draws the shape literally; Houdini and Blender should not.</p>
+<p><strong><code>box</code> is a box whose faces are the handles.</strong> Draw no handle of your own. Each driven
+param is the distance from the anchor's origin to one face, in the anchor's local space, so
+the six values <em>are</em> the box. The user hovers a face, it highlights, they grab it and pull
+it along its normal; only that face moves. Two pure helpers do the maths, in the anchor's
+space (apply the inverse of its world transform to the mouse ray first):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">hit</span> <span class="o">=</span> <span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">pick_box_face</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">direction</span><span class="p">)</span>  <span class="c1"># on hover and press</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">if</span> <span class="n">hit</span><span class="p">:</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">face</span><span class="p">,</span> <span class="n">t</span> <span class="o">=</span> <span class="n">hit</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">start</span><span class="p">,</span> <span class="n">grab</span> <span class="o">=</span> <span class="n">values</span><span class="p">,</span> <span class="n">origin</span> <span class="o">+</span> <span class="n">direction</span> <span class="o">*</span> <span class="n">t</span>            <span class="c1"># keep both for the drag</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="o">...</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">new</span> <span class="o">=</span> <span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">drag_box_face</span><span class="p">(</span><span class="n">start</span><span class="p">,</span> <span class="n">face</span><span class="p">,</span> <span class="n">grab</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">direction</span><span class="p">)</span>  <span class="c1"># every tick</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">apply_bindings</span><span class="p">(</span><span class="n">desc</span><span class="o">.</span><span class="n">chunk_prim</span><span class="p">,</span> <span class="n">desc</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">new</span><span class="p">)</span>
+</span></code></pre></div>
+<p><strong>Pick against the box, never the scene.</strong> <code>pick_box_face</code> tests the box the six values
+describe, so a mesh inside the volume can never be what is grabbed. Test it before your
+own pick and let a hit win. <code>drag_box_face</code> always starts from the press's values and grab
+point, not the last tick's, so a long drag does not drift. Snapping is the chunk's
+(<code>gizmo_changed</code>), not yours.</p>
+<p><strong>Unknown types.</strong> The set will grow. Skip a <code>type</code> you do not recognise rather than
+guessing — a <em>custom</em> type is one only the <code>usd-guides</code> render path understands, and
+silently mis-drawing it is worse than not drawing it.</p>
+<h3 id="axis"><code>axis</code><a class="headerlink" href="#axis" title="Permanent link">⚓︎</a></h3>
+<p><code>X</code>, <code>-X</code>, <code>Y</code>, <code>-Y</code>, <code>Z</code>, <code>-Z</code>, <code>screen</code> — in the <strong>anchor's local space</strong>.</p>
+<p><strong>The sign is load-bearing.</strong> Camera focus distance is <code>-Z</code>, because a camera looks down
+-Z. An unsigned token would put that handle out the back of the camera.</p>
+<p><code>None</code> (attribute absent) means free drag: any mouse direction moves the driven value, and
+you choose the mapping. Sensitivity needs no schema — numeric params carry <code>min_value</code> /
+<code>max_value</code>, so scale screen delta against the declared range.</p>
+<p>Resolve the token to a world direction from the anchor's matrix, which you already hold in
+order to draw. Deliberately not a vector: one authored in world space would be wrong the
+moment the anchor rotates.</p>
+<hr />
+<h2 id="4-when-to-show-a-handle-editmode">4. When to show a handle: <code>editmode</code><a class="headerlink" href="#4-when-to-show-a-handle-editmode" title="Permanent link">⚓︎</a></h2>
+<p>A <code>token[]</code>, because a handle wanting more than one is normal.</p>
+<table>
+<thead>
+<tr>
+<th>value</th>
+<th>show it when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>onPrimSelection</code></td>
+<td>your viewport selection includes the anchor prim</td>
+</tr>
+<tr>
+<td><code>onChunkSelection</code></td>
+<td>the chunk itself is selected — node graph, or a LOP node</td>
+</tr>
+<tr>
+<td><code>always</code></td>
+<td>the chunk is live</td>
+</tr>
+</tbody>
+</table>
+<p>Defaults to <code>["onPrimSelection"]</code>.</p>
+<p>You apply this against a selection <strong>you already own</strong>. Nothing pushes at you and there is
+no activation call to implement. <code>onChunkSelection</code> is defined but not yet wired on our
+side — treat it as reserved.</p>
+<hr />
+<h2 id="5-write-back">5. Write-back<a class="headerlink" href="#5-write-back" title="Permanent link">⚓︎</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">chunk</span><span class="o">.</span><span class="n">start_gizmo</span><span class="p">()</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">while</span> <span class="n">dragging</span><span class="p">:</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">apply_bindings</span><span class="p">(</span><span class="n">desc</span><span class="o">.</span><span class="n">chunk_prim</span><span class="p">,</span> <span class="n">desc</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>   <span class="c1"># every tick</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">chunk</span><span class="o">.</span><span class="n">stop_gizmo</span><span class="p">()</span>
+</span></code></pre></div>
+<p><code>apply_bindings</code> takes either the chunk prim path off the record or a live chunk object, so
+a host that only ever holds <code>GizmoDesc</code> needs no lookup of its own.</p>
+<h3 id="do-not-write-the-prim-directly">Do not write the prim directly<a class="headerlink" href="#do-not-write-the-prim-directly" title="Permanent link">⚓︎</a></h3>
+<p>It will be erased. A chunk like <code>transform.py</code> rewrites its whole layer, its
+<code>xformOp:transform</code> included, on <strong>every cook</strong>, so a direct write survives until the next execute
+and then vanishes. Nor should you write the <code>inputs:</code> attributes in <code>driver</code> yourself —
+those are param storage, and going around the param system skips the propagation that
+makes downstream chunks update.</p>
+<p><code>apply_bindings</code> writes the params, which dirties the chunk, which recooks, which moves the
+prim. That is the whole reason this boundary exists.</p>
+<h3 id="write-on-every-tick">Write on every tick<a class="headerlink" href="#write-on-every-tick" title="Permanent link">⚓︎</a></h3>
+<blockquote>
+<p><strong>Never batch writes to <code>stop_gizmo()</code> yourself.</strong> Call <code>apply_bindings</code> every tick;
+<code>usd_chunks</code> decides when to cook.</p>
+</blockquote>
+<p>Batching in the host is the tempting optimisation the first time a heavy chunk cooks
+slowly, and for a chunk that cooks fast it is exactly what makes a handle feel dead: the
+object stops following the cursor and jumps at the end. Writing per tick is already how
+sliders behave.</p>
+<p>Inside the <code>start_gizmo()</code>/<code>stop_gizmo()</code> bracket, <code>usd_chunks</code> paces the cooks:</p>
+<ul>
+<li><strong>At most every <code>chunk_gizmo.DRAG_INTERVAL</code> (1/30 s), the newest value only.</strong> A write
+  that comes sooner waits on a <code>scene.call_later</code> timer and is replaced by any later one,
+  so mouse moves that arrive during a cook collapse into one cook instead of queueing
+  behind it. A tick that arrives once the interval is up cooks then and there, so the drag
+  keeps cooking even where a host's timers starve while input keeps coming (Qt's on
+  Windows do); the timer only cooks the value left when the mouse stops.</li>
+<li><strong>Once a cook takes longer than <code>chunk_gizmo.SLOW_COOK</code> (50 ms), not until release.</strong> A
+  cook that long blocks the viewport, so the handle would freeze on every one. While the
+  handle moves the rest of the drag cooks nothing; it cooks where the handle rests (held
+  still for <code>chunk_gizmo.DRAG_REST</code>, 0.1 s; each tick starts the wait again) and where it
+  is let go. That release
+  cook is timed too, and the chunk's next drag starts from it: still slow, it waits from
+  the first tick; fast again, it drags live.</li>
+</ul>
+<p><code>stop_gizmo()</code> cooks the write still waiting before <code>GIZMO_STOP</code> goes out. Outside a
+bracket, every write cooks at once.</p>
+<p>Draw your handle from the mouse every frame, not from the cooked prim: it would trail the
+cursor by up to one interval plus a cook, and on a slow chunk stand still until release.
+Your <code>call_later</code> must honour its <code>delay</code>, and your viewport must redraw after a cook that
+a timer ran, not only on mouse moves.</p>
+<h3 id="notices">Notices<a class="headerlink" href="#notices" title="Permanent link">⚓︎</a></h3>
+<p><code>GIZMO_START</code> → <code>GIZMO_CHANGED</code> (one per cook, after the write) → <code>GIZMO_STOP</code>.</p>
+<p>If your host has its own undo stack, open a block on START and close it on STOP. usdview
+needs none of this: <code>chunk_undo.UndoStack</code> (fed by <code>frontends/qt/undo.py</code>) makes one step
+of everything from a mouse press to the next input, so a drag is one undo whether its
+writes came from a handle, a slider or a cook. It undoes chunk prims only
+(docs/undo.md); with the C++ <code>usd-undo</code> plugin loaded, that one owns Ctrl+Z instead and
+coalesces at <code>Sdf</code> level, as it does in Kraken.</p>
+<h3 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">⚓︎</a></h3>
+<ul>
+<li>An unknown gizmo name raises — you asked for a handle the chunk does not declare.</li>
+<li>A wrong-arity value raises <strong>before writing anything</strong>, so a bad drag cannot leave a
+  chunk half-updated.</li>
+<li>Some chunks solve their own drags (a lookat point has no param to bind to). This is
+  invisible to you: same call, same payload.</li>
+</ul>
+<hr />
+<h2 id="6-conventions-not-inferable-from-the-usd">6. Conventions not inferable from the USD<a class="headerlink" href="#6-conventions-not-inferable-from-the-usd" title="Permanent link">⚓︎</a></h2>
+<p>Three things you cannot read off the attributes. They are here because a host that guesses
+gets them silently wrong.</p>
+<ol>
+<li><strong>The <code>transform</code> driver is ordered translate, rotate, scale.</strong> Nine connections. The
+   arity is discoverable by counting; the order is not. Only matters if you bypass
+   <code>apply_bindings</code>, which you should not.</li>
+<li><strong>Absent <code>space</code> means <code>local</code>.</strong> Only authored when non-default, to keep the usda
+   quiet.</li>
+<li><strong>Absent <code>size</code> means you decide.</strong> Not "size 1".</li>
+</ol>
+<hr />
+<h2 id="7-graceful-degradation">7. Graceful degradation<a class="headerlink" href="#7-graceful-degradation" title="Permanent link">⚓︎</a></h2>
+<p>A DCC that has never heard of <code>ui:gizmo:</code> ignores the attributes completely. They are
+plain <code>uniform token</code> attributes and one relationship on a prim it already ignores. There
+is no plugin to register and nothing breaks.</p>
+<hr />
+<h2 id="8-a-prim-no-chunk-drives">8. A prim no chunk drives<a class="headerlink" href="#8-a-prim-no-chunk-drives" title="Permanent link">⚓︎</a></h2>
+<p><code>resolve_gizmos</code> returns nothing for a prim that no chunk touches — an imported mesh, a
+cube from a sublayer. The obvious fallback is to write the prim directly, and it is the
+wrong one: that edit is not in the graph, so it does not survive the driving chunk's next
+cook and it is not what gets written out when the scene is saved. The user moved something
+and nothing recorded it.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">desc</span> <span class="o">=</span> <span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">ensure_transform_chunk</span><span class="p">(</span><span class="n">prim</span><span class="p">)</span>   <span class="c1"># creates one if nothing offers a handle</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">if</span> <span class="n">desc</span><span class="p">:</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">chunk_gizmo</span><span class="o">.</span><span class="n">apply_bindings</span><span class="p">(</span><span class="n">desc</span><span class="o">.</span><span class="n">chunk_prim</span><span class="p">,</span> <span class="n">desc</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">matrix</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Same idea as Houdini dropping an Edit node in front of geometry you start moving. We decide
+what to create and where it lands in the graph, so a host never learns the <code>/chunks</code> layout:</p>
+<ul>
+<li><strong>Only when nothing already places the prim.</strong> The test is <code>placement_gizmos(prim)</code> —
+  any handle of type <code>transform</code>, <code>translate</code>, <code>rotate</code> or <code>scale</code>. Not "is there a
+  Transform chunk", and deliberately not "is there a <code>transform</code> handle" either: rbd_solver
+  declares separate <code>translate</code> and <code>rotate</code> offsets and no <code>scale</code>, so it can never form a
+  whole-chunk transform, yet it plainly owns where that body starts. Testing only for
+  <code>transform</code> reported such a prim as unowned and stacked a duplicate chunk on top of it.
+  Declaring any placement handle is how a chunk opts out.</li>
+<li><strong>A prim can be owned without offering one matrix-taking handle.</strong> <code>ensure_transform_chunk</code>
+  then returns <code>None</code> having created nothing — that is "owned by parts", not "unowned".
+  Drive the parts individually: <code>decompose(matrix)</code> keys by gizmo <em>type</em>, so each entry goes
+  to the handle of that type, and a type with no handle is simply not written.</li>
+<li><strong>At the end of the active context's chain</strong>, wired to the tail, with any view moved
+  along to it — the same placement as creating it by hand in the Params tab.</li>
+<li><strong>Seeded from the prim's current local transform</strong>, so the object does not jump when the
+  chunk appears.</li>
+<li><strong>Idempotent.</strong> Safe to call once per mouse-move; the second call resolves the chunk the
+  first one made.</li>
+<li>Returns <code>None</code> if it could not create one (no <code>transform</code> module, no live scene). Decide
+  for yourself whether that is fatal or a reason to fall back to writing the prim.</li>
+</ul>
+<p>Call it at grab time if you have a drag-start hook, so the creation lands inside your undo
+bracket. Calling it on the first commit works too, one frame later.</p>
+<hr />
+<h2 id="worked-example">Worked example<a class="headerlink" href="#worked-example" title="Permanent link">⚓︎</a></h2>
+<p>Selecting <code>/World/Cube</code>, which a Transform chunk drives:</p>
+<div class="language-usda highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k k-Token">uniform</span><span class="w"> </span><span class="kt">token</span><span class="w">   </span><span class="na">ui:gizmo:transform:type</span><span class="w">     </span><span class="o">=</span><span class="w"> </span><span class="s">"transform"</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k k-Token">uniform</span><span class="w"> </span><span class="kt">token</span><span class="w">   </span><span class="na">ui:gizmo:transform:label</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="s">"Transform"</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k k-Token">uniform</span><span class="w"> </span><span class="kt">token[]</span><span class="w"> </span><span class="na">ui:gizmo:transform:editmode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">"onPrimSelection"</span><span class="p">]</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="kt">rel</span><span class="w">             </span><span class="na">ui:gizmo:transform:anchor</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="nn">&lt;/World/Cube&gt;</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="k k-Tokens">uniform</span><span class="w"> </span><span class="kt">token</span><span class="w">   </span><span class="na">ui:gizmo:transform:driver</span><span class="p">.</span>connect<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">...</span>nine<span class="w"> </span>params<span class="p">...</span><span class="w"> </span><span class="p">]</span>
+</span></code></pre></div>
+<p>A Houdini integration, with no geometry from us:</p>
+<ol>
+<li>Selection changes → <code>resolve_gizmos(selected_prim)</code> (or the anchor-rel index).</li>
+<li>Filter to the selected chunk.</li>
+<li><code>editmode</code> contains <code>onPrimSelection</code> and the anchor matches → show it.</li>
+<li><code>type == "transform"</code> → build the native TRS handle; <code>label</code> names it.</li>
+<li>Place it at the anchor prim's world transform. Several anchors → their averaged pivot.</li>
+<li>Press → <code>chunk.start_gizmo()</code>, open an undo block.</li>
+<li>Each drag tick → <code>apply_bindings(chunk, "transform", handle_matrix)</code>.</li>
+<li>Release → <code>chunk.stop_gizmo()</code>, close the block.</li>
+</ol>
+<p>The user sees the cube follow the handle, because step 7 wrote nine float params and the
+chunk recooked.</p>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 11, 2026 17:52:58 UTC">November 11, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 19, 2026 09:15:11 UTC">August 19, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "navigation.sections", "navigation.expand", "navigation.path", "toc.integrate", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotation", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>
