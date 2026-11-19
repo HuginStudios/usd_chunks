@@ -774,6 +774,21 @@ def test_tendrils_hang_below_the_paint_down_to_the_foot_of_the_mesh(host) -> Non
     assert z.min() >= -1e-4
 
 
+def test_leaves_on_a_tendril_face_every_way_round_it(host) -> None:
+    """All facing out the way the tip left the wall, a tendril's leaves read as a flat plastic
+    ribbon. Turned round the strand, they read as a hanging shoot."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=40.0, leaf_spread=0.0)
+    cloud = host.leaves()
+    points = np.asarray(cloud.GetPointsAttr().Get(), dtype=np.float64)
+    normals = np.asarray(cloud.GetNormalsAttr().Get(), dtype=np.float64)
+    hanging = points[:, 2] < 5.0  # below the paint: on a tendril
+
+    assert hanging.sum() > 20
+    # On the wall every normal is +-y; round a tendril they spread through x as well.
+    assert np.abs(normals[hanging, 0]).mean() > 0.3
+
+
 def test_hanging_tendrils_grow_after_their_tips(host) -> None:
     """Along every curve, tendrils included, growth only goes up: each point grew after the
     one before it, so a growth animation drops a tendril once its tip has got there."""

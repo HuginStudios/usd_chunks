@@ -1046,9 +1046,18 @@ def _hang(nodes, projector, settings, seed):
     # the whole mesh, not only its painted part. Ivy painted on the arches of a wall hangs down
     # past the arches; a floor at the lowest paint, the springing, stopped every tendril there.
     floor = settings.get("hang_floor", projector.lowest(up))
+    # A slow sideways sway, its own way and pace on each tendril, so a strand hangs in a long
+    # loose curve. Per-step noise alone averaged out into a dead-straight line.
+    sway = rng.normal(size=(len(tips), 3))
+    sway -= np.outer(sway @ up, up)
+    sway *= _SWAY / np.maximum(np.linalg.norm(sway, axis=1), 1e-9)[:, None]
+    phase = rng.uniform(0.0, 2.0 * np.pi, len(tips))
+    pace = rng.uniform(0.6, 1.4, len(tips)) * 2.0 * np.pi * step / max(settings["hang_length"], step)
     out = nodes.copy()
-    for _ in range(steps):
-        direction = direction + (-up) * _GRAVITY + rng.normal(scale=0.08, size=direction.shape)
+    for index in range(steps):
+        wave = np.sin(phase + pace * index)[:, None]
+        direction = (direction + (-up) * _GRAVITY + sway * wave
+                     + rng.normal(scale=0.08, size=direction.shape))
         direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
         position = position + direction * step
         landed, normals, found = projector.project_many(position)
@@ -1062,9 +1071,28 @@ def _hang(nodes, projector, settings, seed):
         if not going.any():
             break
         position, direction, away = position[going], direction[going], away[going]
+        sway, phase, pace = sway[going], phase[going], pace[going]
         parent, born = parent[going], born[going] + 1
-        parent = out.add_many(position, parent, away, direction, born, True)
+        # Each leaf on a tendril faces its own way round the strand: all facing out the way the
+        # tip left the wall, they read as a flat plastic ribbon.
+        facing = _turned(away, direction, rng.uniform(-_LEAF_TURN, _LEAF_TURN, len(away)))
+        parent = out.add_many(position, parent, facing, direction, born, True)
     return out
+
+
+#: How far a tendril's sway pulls it sideways each step, against gravity's pull down.
+_SWAY = 0.22
+
+#: How far, either way, a tendril's leaf turns round the strand from the way the tip faced.
+_LEAF_TURN = 1.4
+
+
+def _turned(vectors, axes, angles):
+    """Each vector turned about its axis (unit) by its angle, in radians (Rodrigues)."""
+    axes = axes / np.maximum(np.linalg.norm(axes, axis=1), 1e-9)[:, None]
+    cos, sin = np.cos(angles)[:, None], np.sin(angles)[:, None]
+    return (vectors * cos + np.cross(axes, vectors) * sin
+            + axes * _dot(axes, vectors)[:, None] * (1.0 - cos))
 
 
 def _growth_of(nodes):
