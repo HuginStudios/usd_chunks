@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usd-chunks"
-# Matches the release tag: v1.0.0-rc is 1.0.0rc0 in Python's spelling.
-version = "1.0.0rc0"
+# Matches the release tag: v1.0.0-rc.1 is 1.0.0rc1 in Python's spelling.
+version = "1.0.0rc1"
 description = "UI and execution interface for OpenUSD"
 readme = "README.md"
 requires-python = ">=3.11"

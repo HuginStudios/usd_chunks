@@ -9,6 +9,8 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-11-19
+
 ### Changed
 
 - Cooks in a network with big layers are faster. Each cook checked whether it read
