@@ -719,6 +719,20 @@ def test_each_animated_frame_is_what_growth_draws(host) -> None:
     assert np.array_equal(middle, host.points("/Still/Curves"))
 
 
+def test_an_animated_vine_keeps_its_leaves_where_they_grew(host) -> None:
+    """Every frame shows some of the grown vine's leaves, each with its own id. The leaves of
+    the part-grown vine sit along strands that regroup as it grows, and would shuffle."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine(animate=True, start_frame=1, end_frame=11)
+    cloud = host.leaves()
+    final = np.asarray(cloud.GetPointsAttr().Get())
+
+    assert list(cloud.GetIdsAttr().Get()) == list(range(len(final)))
+    ids = np.asarray(cloud.GetIdsAttr().Get(6))
+    assert 0 < len(ids) < len(final)
+    assert np.array_equal(np.asarray(cloud.GetPointsAttr().Get(6)), final[ids])
+
+
 def test_a_still_vine_writes_no_time_samples(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     host.vine()

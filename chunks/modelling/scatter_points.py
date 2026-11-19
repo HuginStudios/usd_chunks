@@ -1341,6 +1341,30 @@ def _painted_points(stage, points_path, up=None):
     return positions, facing[:len(positions)]
 
 
+def _painted_hidden(stage, points_path):
+    """For an animated painted cloud: {time: indices of its points missing at that time}.
+
+    The cloud's default value says which points there are; each time sample says which of
+    them exist yet, matched by the cloud's `ids` -- the points of a growing vine are not in
+    the same order, or at quite the same place, from frame to frame. A cloud that is not
+    animated, or has no ids to match by, gives {}: every instance always shows.
+    """
+    prim = stage.GetPrimAtPath(points_path) if points_path and stage is not None else None
+    if not prim or not prim.IsA(UsdGeom.Points):
+        return {}
+    cloud = UsdGeom.Points(prim)
+    times = cloud.GetPointsAttr().GetTimeSamples()
+    every = cloud.GetIdsAttr().Get()
+    if not times or every is None or not len(every):
+        return {}
+    every = np.asarray(every, dtype=np.int64)
+    hidden = {}
+    for time in times:
+        present = np.asarray(cloud.GetIdsAttr().Get(time) or [], dtype=np.int64)
+        hidden[time] = np.flatnonzero(~np.isin(every, present)).astype(np.int64)
+    return hidden
+
+
 def _density_mask(prim, primvar_name=None):
     """A weight function over the painted surface, or None when nothing is painted.
 
@@ -3221,6 +3245,12 @@ def execute(node):
         instancer.GetProtoIndicesAttr().Set(out_indices)
         instancer.GetScalesAttr().Set(out_scales)
         instancer.GetOrientationsAttr().Set(out_orients)
+        if placed and scatter_mode != "Stack":
+            # An animated cloud -- a Vine growing its leaves -- shows each instance only once
+            # its point exists. One instance per painted point, in order, so a point's index
+            # in the cloud is its instance's id.
+            for time, hidden in _painted_hidden(scratch_stage, points_input).items():
+                instancer.GetInvisibleIdsAttr().Set(Vt.Int64Array.FromNumpy(hidden), time)
 
         if proxy_mode != "Off":
             # The viewport draws proxy, a final render draws render: usdview shows the

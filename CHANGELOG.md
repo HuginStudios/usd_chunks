@@ -33,6 +33,10 @@ This file starts with the first release; development before that is in the commi
 - Curves to Mesh sweeps animated curves into an animated mesh: every time sample of the
   curves is swept and written at that time. A Vine with Animate Growth on now grows as a
   mesh too. A `growth` primvar on the curves is carried onto the mesh, one value per point.
+- Leaves grow in with an animated vine. With Animate Growth on, Vine's leaf points are the
+  grown vine's leaves, each from the frame the vine reaches it, with a stable id; Scatter
+  Points hides each leaf instance until its point exists (`invisibleIds`). Before, every
+  leaf showed from the first frame.
 
 ### Changed
 
