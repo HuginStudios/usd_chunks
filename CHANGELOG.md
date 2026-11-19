@@ -66,6 +66,10 @@ This file starts with the first release; development before that is in the commi
   used up the points before the paint was covered. A node now grows at most four branches.
   Vines on rocks and other curved meshes cover more and cook faster (a dense rock:
   3 s → 1.1 s); the same seed grows a slightly different vine than before.
+- Vine no longer roots its vines on the underside of what it grows on. A brush stroke along
+  the foot of a wall also paints its bottom face, buried in the ground; that was the lowest
+  paint, so the vines started there and grew out of sight. Asking for more roots than fit
+  no longer starts two vines on the same point.
 
 ## [1.0.0-rc.1] - 2026-11-19
 

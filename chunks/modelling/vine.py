@@ -770,7 +770,7 @@ def _tangents(directions, normals):
     return flat / np.maximum(length, 1e-9)[:, None]
 
 
-def _choose_roots(points, up, count, spacing):
+def _choose_roots(points, up, count, spacing, normals=None):
     """Which attractors vines start from when nobody painted the roots by hand.
 
     Lowest first, then spread: a vine that starts at the bottom of what was painted and climbs
@@ -778,20 +778,31 @@ def _choose_roots(points, up, count, spacing):
     random cheerfully does -- reads as one vine, not five. Spacing is relaxed rather than
     enforced, so a narrow painted strip still gets the roots it was asked for.
 
+    Faces that look straight down go last. The lowest paint on a wall or a rock is usually
+    its underside, sitting on the ground: a brush stroke along the foot of a wall reaches it,
+    and vines rooted there grew along the buried face, out of sight.
+
     Indices, not positions, so the caller can take the normal it already sampled alongside each
     attractor rather than projecting thousands of candidates to find five.
     """
     if not len(points) or count <= 0:
         return []
-    order = np.argsort(points @ up)
+    height = points @ up
+    if normals is not None:
+        underside = (np.asarray(normals) @ up) < -0.7
+        order = np.lexsort((height, underside))
+    else:
+        order = np.argsort(height)
     chosen: list[int] = []
+    taken: set[int] = set()
     for gap in (spacing, spacing * 0.25, 0.0):
         for i in order.tolist():
             if len(chosen) >= count:
                 break
-            if gap > 0.0 and chosen and _too_near(points, i, chosen, gap):
+            if i in taken or (gap > 0.0 and chosen and _too_near(points, i, chosen, gap)):
                 continue
             chosen.append(i)
+            taken.add(i)
         if len(chosen) >= count:
             break
     return chosen
@@ -1538,7 +1549,7 @@ def _grow_skeleton(surface, settings, seed, cloud):
         # half grew and the other stayed bare. Sharing the region out between them is what
         # "five vines" is asking for.
         spread = max(settings["influence"], surface.diagonal() / (settings["roots"] + 1))
-        chosen = _choose_roots(attractors, settings["up"], settings["roots"], spread)
+        chosen = _choose_roots(attractors, settings["up"], settings["roots"], spread, attractor_normals)
         roots = [(attractors[i], attractor_normals[i]) for i in chosen]
     if not roots:
         return "no root found on the painted surface"
