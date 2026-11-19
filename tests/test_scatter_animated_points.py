@@ -122,3 +122,16 @@ def test_a_painted_direction_turns_each_instance_and_a_painted_scale_sizes_it() 
                 Gf.Vec3d(1, 0, 0))
             assert np.allclose(tuple(axis), want, atol=2e-2)
         assert scales[1] == pytest.approx(scales[0] * 0.5, rel=1e-3)
+
+
+def test_a_change_of_painted_direction_or_scale_is_a_new_cook() -> None:
+    module = importlib.import_module("chunks.modelling.scatter_points")
+    keys = []
+    for code in (_DIRECTED, _DIRECTED.replace("[(1, 0, 0), (0, 1, 0)]", "[(0, 1, 0), (1, 0, 0)]"),
+                 _DIRECTED.replace("[1, 0.5]", "[1, 0.25]")):
+        scene = _scatter(code)
+        with scene:
+            chunk_obj = next(c for c in scene.get_chunks() if c.get_param("points_prim") is not None)
+            keys.append(module.cache_key(chunk_obj))
+
+    assert len({repr(key) for key in keys}) == 3

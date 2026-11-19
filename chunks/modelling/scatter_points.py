@@ -2767,8 +2767,9 @@ _POINT_ARRAYS = ("positions", "orientations", "scales", "protoIndices", "points"
 
 
 #: What a painted cloud carries beyond its default points that changes the cook: the ids it
-#: is matched by, and (with them) every time sample of its points. See `_painted_hidden`.
-_PAINTED_ANIMATED = ("points", "ids")
+#: is matched by, every time sample of its points (see `_painted_hidden`), and the direction
+#: and scale each point may carry (see `_painted_extras`).
+_PAINTED_ANIMATED = ("points", "ids", f"primvars:{_PAINTED_DIRECTION}", f"primvars:{_PAINTED_SCALE}")
 
 
 def _hash_painted(stage, paths) -> str:
