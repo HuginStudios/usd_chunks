@@ -360,6 +360,11 @@ def _push_driven_values(stage: Usd.Stage, param, layer: Sdf.Layer | None = None)
     # USD refuses to author into a muted layer; set_chunks_muted re-pushes on un-mute.
     if value is None or layer is None or stage.IsLayerMuted(layer.identifier):
         return
+    # Nor into one this stage doesn't hold: during a diff cook the chunk's layer is a scratch
+    # layer on the cook's own stage (chunk_cook.cooking_into). The framework authors every
+    # driven value again once the cook is done (ChunkBase.reauthor_driven_attrs).
+    if not stage.HasLocalLayer(layer):
+        return
     driven_var_selections = getattr(param, "_driven_var_selections", {})
     for path in paths:
         # Inside the recorded variant before the lookup: a prim that only exists in that

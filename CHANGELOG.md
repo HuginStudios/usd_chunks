@@ -9,6 +9,20 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Fixed
+
+- CAD Import instances a part placed more than once even when the part has a colour, as
+  most STEP files' parts do. Only a colour set on one placement keeps that placement
+  un-instanced now.
+- CAD Import made inside `chunk.change_block()` puts the asset at the location the script
+  gave, not at one taken from the file name. Picking a file still fills in the location
+  when it is empty or was filled in from the previous file.
+- A Light's colour set when it is made (`distant_light(color=...)`) goes into the Light's
+  own layer. It went into the network's root layer, where the Light could never change
+  it again.
+- A run with a Light in it no longer logs `ERROR Could not send notice ... is not in the
+  local LayerStack`.
+
 ## [1.0.0-rc.2] - 2026-11-19
 
 ### Added
