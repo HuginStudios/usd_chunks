@@ -473,6 +473,13 @@ class _Projector:
         # running, and every node of every iteration was re-deriving it.
         self._candidates: dict = {}
 
+    def lowest(self, up):
+        """How far along `up` the lowest corner of the surface is."""
+        s = self._surface
+        if not len(s):
+            return -np.inf
+        return float(min((s.v0 @ up).min(), (s.v1 @ up).min(), (s.v2 @ up).min()))
+
     def project(self, point):
         """(position, normal) on the surface, or (point, None) when it is out of reach."""
         landed, normals, found = self.project_many(np.asarray(point, dtype=np.float64)[None, :])
@@ -571,9 +578,13 @@ class _Nodes:
 
     `born` is the growth step each node was made in, 0 for the roots. It is the vine's clock:
     Growth % keeps the nodes born before a cut-off, and the `growth` primvar is it, scaled.
+
+    `hanging` marks the nodes of a tendril hanging in the air. They are not snapped back onto
+    the surface or lifted off it; their normal is the one their tip left the surface with,
+    which is the way their leaves face.
     """
 
-    __slots__ = ("parent", "_position", "_normal", "_direction", "_born", "_count")
+    __slots__ = ("parent", "_position", "_normal", "_direction", "_born", "_hanging", "_count")
 
     def __init__(self, capacity=256):
         capacity = max(int(capacity), 8)
@@ -582,6 +593,7 @@ class _Nodes:
         self._normal = np.zeros((capacity, 3), dtype=np.float64)
         self._direction = np.zeros((capacity, 3), dtype=np.float64)
         self._born = np.zeros(capacity, dtype=np.int64)
+        self._hanging = np.zeros(capacity, dtype=bool)
         self._count = 0
 
     @property
@@ -600,13 +612,17 @@ class _Nodes:
     def born(self):
         return self._born[: self._count]
 
+    @property
+    def hanging(self):
+        return self._hanging[: self._count]
+
     def _reserve(self, extra):
         capacity = len(self._position)
         if self._count + extra <= capacity:
             return
         while capacity < self._count + extra:
             capacity *= 2
-        for name in ("_position", "_normal", "_direction", "_born"):
+        for name in ("_position", "_normal", "_direction", "_born", "_hanging"):
             old = getattr(self, name)
             grown = np.zeros((capacity,) + old.shape[1:], dtype=old.dtype)
             grown[: self._count] = old[: self._count]
@@ -623,10 +639,10 @@ class _Nodes:
         self._count += 1
         return index
 
-    def add_many(self, positions, parents, normals, directions, born=0):
+    def add_many(self, positions, parents, normals, directions, born=0, hanging=False):
         """Append a whole growth iteration at once; the indices they were given.
 
-        `born` is the growth step, one for them all or one each.
+        `born` is the growth step and `hanging` the tendril flag, one for all or one each.
         """
         count = len(positions)
         if not count:
@@ -637,6 +653,7 @@ class _Nodes:
         self._normal[start:start + count] = normals
         self._direction[start:start + count] = directions
         self._born[start:start + count] = born
+        self._hanging[start:start + count] = hanging
         self.parent.extend(int(p) for p in parents)
         self._count += count
         return np.arange(start, start + count)
@@ -657,7 +674,7 @@ class _Nodes:
         parents = np.asarray(self.parent, dtype=np.int64)[index]
         twin = _Nodes(len(index))
         twin.add_many(self.position[index], renumber[parents], self.normal[index],
-                      self.direction[index], self.born[index])
+                      self.direction[index], self.born[index], self.hanging[index])
         return twin
 
     def __len__(self):
@@ -966,6 +983,78 @@ def _prune(nodes, min_length):
     return nodes.subset(keep)
 
 
+#: How hard a hanging tendril is pulled down each step, against carrying on the way it went.
+_GRAVITY = 0.45
+
+
+def _hang(nodes, projector, settings, seed):
+    """Drop a tendril from some of the vine's tips: it leaves the surface and hangs.
+
+    A share of the tips (Hang) each grow Hang Length further, first out from the surface and
+    then down under gravity. A tendril that would pass into the painted surface is pushed back
+    out onto it, so one that falls over a bulge drapes across it instead of through it. Past
+    the painted region there is no surface to collide with, and it falls freely.
+
+    Its nodes are born after the tip, so Growth % and the growth primvar grow them last.
+
+    Args:
+        nodes: The pruned skeleton.
+        projector: The painted surface, for collisions.
+        settings: From `_settings`: hang, hang_length, step and up are read.
+        seed: The random seed; tendrils draw from their own stream, so turning Hang on does not
+            change the vine they hang from.
+
+    Returns:
+        The skeleton with the tendrils added, or `nodes` itself when there are none.
+    """
+    if settings["hang"] <= 0.0 or settings["hang_length"] <= 0.0 or not len(nodes):
+        return nodes
+    rng = np.random.default_rng([seed, 1])
+    parents = np.asarray(nodes.parent, dtype=np.int64)
+    has_child = np.zeros(len(nodes), dtype=bool)
+    has_child[parents[parents >= 0]] = True
+    tips = np.flatnonzero(~has_child & (parents >= 0) & ~nodes.hanging)
+    tips = tips[rng.random(len(tips)) < settings["hang"]]
+    if not len(tips):
+        return nodes
+
+    step, up = settings["step"], settings["up"]
+    # About the radius of a vine at the default Thickness. Not Thickness itself: that is a
+    # drawing setting, and changing it must not grow the tendrils again.
+    clearance = step
+    steps = max(1, int(round(settings["hang_length"] / step)))
+    away = nodes.normal[tips].copy()
+    position = nodes.position[tips].copy()
+    # Out from the wall first, with a touch of the way the tip was heading. More of the tip's
+    # heading than that, and a tip that was climbing loops back over itself as it falls.
+    direction = away + nodes.direction[tips] * 0.15
+    direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
+    parent = tips.copy()
+    born = nodes.born[tips].copy()
+    # The ground, near enough: nothing hangs below the lowest point of what it grows on. A
+    # tendril reaching it stops, instead of falling on through the floor under the mesh.
+    floor = projector.lowest(up)
+    out = nodes.copy()
+    for _ in range(steps):
+        direction = direction + (-up) * _GRAVITY + rng.normal(scale=0.08, size=direction.shape)
+        direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
+        position = position + direction * step
+        landed, normals, found = projector.project_many(position)
+        inside = found & (_dot(position - landed, normals) < clearance)
+        if inside.any():
+            position[inside] = landed[inside] + normals[inside] * clearance
+            # Slide along the surface instead of pressing into it.
+            direction[inside] = direction[inside] - normals[inside] * np.minimum(
+                _dot(direction[inside], normals[inside]), 0.0)[:, None]
+        going = position @ up >= floor
+        if not going.any():
+            break
+        position, direction, away = position[going], direction[going], away[going]
+        parent, born = parent[going], born[going] + 1
+        parent = out.add_many(position, parent, away, direction, born, True)
+    return out
+
+
 def _growth_of(nodes):
     """When each node grew, from 0 (the roots) to 1 (the last tip), as an array."""
     last = int(nodes.born.max()) if len(nodes) else 0
@@ -987,7 +1076,10 @@ def _lift(nodes, radii, factor):
     """
     if factor == 0.0:
         return
-    nodes.position[:] += nodes.normal * (np.asarray(radii, dtype=np.float64) * factor)[:, None]
+    # Not the hanging nodes: they are in the air already, and lifting them along a normal that
+    # belongs to the wall they left would kink each tendril where it starts.
+    lift = np.asarray(radii, dtype=np.float64) * factor * ~nodes.hanging
+    nodes.position[:] += nodes.normal * lift[:, None]
 
 
 # ---------------------------------------------------------------------------
@@ -1102,7 +1194,8 @@ def _resurface(nodes, projector):
     if not len(nodes):
         return
     landed, normals, found = projector.project_many(nodes.position)
-    reached = np.flatnonzero(found)
+    # A hanging tendril is in the air on purpose; snapping it back would glue it to the wall.
+    reached = np.flatnonzero(found & ~nodes.hanging)
     nodes.position[reached] = landed[reached]
     nodes.normal[reached] = normals[reached]
 
@@ -1246,6 +1339,9 @@ def _settings(node, surface):
         "min_branch": max(1, int(number("min_branch"))),
         "max_nodes": max(2, min(_MAX_NODES, int(number("max_points")))),
         "base_width": base_width,
+        "hang": number("hang") / 100.0,
+        # A share of the painted region, like Thickness, so it reads the same at any scale.
+        "hang_length": region * number("hang_length") / 100.0,
         "taper": number("taper"),
         # A multiple of each node's own radius, applied per node -- not a distance. See `_lift`.
         "lift": number("lift"),
@@ -1348,7 +1444,7 @@ _GROWN: dict = {}
 
 #: The settings that change what grows. The rest only change how it is drawn.
 _GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "meander", "density", "roots",
-                    "min_branch", "max_nodes")
+                    "min_branch", "max_nodes", "hang", "hang_length")
 
 
 class _Grown:
@@ -1447,6 +1543,7 @@ def _grow_skeleton(surface, settings, seed, cloud):
     nodes = _grow(roots, attractors, projector, settings, rng)
     grown = len(nodes)
     nodes = _prune(nodes, settings["min_branch"])
+    nodes = _hang(nodes, projector, settings, seed)
     return _Grown(nodes, projector, len(roots), roots_note, hand_placed, grown)
 
 
@@ -1920,6 +2017,34 @@ def main():
     )
     chunk_api.add_param(grow)
 
+    # --- hanging ---
+    hang = _collapsed(chunk.Group("hang_grp", "Hanging", icon="sprout", flags=_GF))
+    hang.add_param(
+        chunk.Slider(
+            "hang",
+            "Hang %",
+            min_value=0.0,
+            max_value=100.0,
+            default_value=0.0,
+            flags=_PF.LABELED,
+            tooltip="Share of the vine tips that drop a tendril off the surface. It falls under\n"
+            "gravity and drapes over the painted mesh rather than through it, like ivy hanging\n"
+            "off a ledge. Past the painted part it falls freely.",
+        )
+    )
+    hang.add_param(
+        chunk.Slider(
+            "hang_length",
+            "Hang Length %",
+            min_value=1.0,
+            max_value=50.0,
+            default_value=12.0,
+            flags=_PF.LABELED,
+            tooltip="How long each hanging tendril is, as a percentage of the painted region.",
+        )
+    )
+    chunk_api.add_param(hang)
+
     # --- shape ---
     shape = _collapsed(chunk.Group("shape_grp", "Shape", icon="curve", flags=_GF))
     shape.add_param(
@@ -2137,6 +2262,8 @@ def config():
             run in parallel.
           - Wander: randomness per step.
           - Roots: how many vines to start when no painted points are wired.
+          - Hang % / Hang Length %: tendrils that fall off the vine tips and
+            drape over the mesh, like ivy hanging off a ledge.
           - Thickness %: width at the base, as a share of the painted region,
             so the defaults hold at any scene scale. Lift, leaf spacing and
             leaf size are all multiples of it.

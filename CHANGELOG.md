@@ -23,6 +23,9 @@ This file starts with the first release; development before that is in the commi
   of it and hiding it. Bare Base % leaves the oldest part of each vine without leaves, as
   on mature ivy. The leaf points carry the same `growth` primvar as the curves. Set Spread
   to 0 for the old placement.
+- Vine can hang tendrils off its tips (Hanging group: Hang %, Hang Length %). They fall
+  under gravity, drape over the painted mesh instead of passing through it, and stop at
+  the lowest point of the surface. Off by default.
 
 ### Changed
 
