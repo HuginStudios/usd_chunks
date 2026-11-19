@@ -66,10 +66,12 @@ import base64
 import hashlib
 import inspect
 import importlib.abc
+import json
 import logging
 import pickle
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from dataclasses import dataclass
 from timeit import default_timer as timer
@@ -244,6 +246,39 @@ def _run_pip(args, on_line=None) -> tuple[int, str]:
         if on_line is not None and line.strip():
             on_line(line.strip())
     return proc.wait(), "".join(lines)
+
+
+def _resolve_missing(requirements, on_line=None) -> list[str] | None:
+    """What pip would install for `requirements`, counting what the running Python has.
+
+    A dry run with a JSON report (pip 22.2 or newer). Packages the host already has, and
+    those in the dependency dir (on PYTHONPATH once the manager is initialized), are left
+    out: numpy for scipy, in Blender.
+
+    Args:
+        requirements: Requirement strings.
+        on_line: Called with each line pip prints, as for _run_pip.
+
+    Returns:
+        The packages to install as "name==version" pins, empty when everything is there
+        already; None when pip could not say.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        report = os.path.join(tmp, "report.json")
+        args = [python_executable(), "-m", "pip", "install", "--dry-run", "--quiet",
+                "--report", report, *requirements]
+        returncode, output = _run_pip(args, on_line)
+        if returncode != 0:
+            logger.info("pip could not resolve %s ahead of the install:\n%s",
+                        ", ".join(requirements), output.strip())
+            return None
+        try:
+            with open(report, encoding="utf-8") as f:
+                items = json.load(f).get("install", [])
+            return [f"{i['metadata']['name']}=={i['metadata']['version']}" for i in items]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            logger.info("pip's install report for %s could not be read", ", ".join(requirements))
+            return None
 
 
 def _legacy_dependency_dirs(base: str) -> list[str]:
@@ -550,11 +585,21 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if not self.initialized or not packages:
             return False
         packages = list(packages)
-        args = [python_executable(), "-m", "pip", "install", "-t", self.package_dir]
-        args.extend(packages)
+        target = [python_executable(), "-m", "pip", "install", "-t", self.package_dir]
 
         def run(on_line=None):
-            return _run_pip(args, on_line)
+            # With -t, pip ignores what the running Python already has and installs every
+            # dependency again: scipy brought a second numpy into the dependency dir, next
+            # to Blender's own. So ask pip first what it would install with the host's
+            # packages (and the dependency dir, on PYTHONPATH) counted, and install just
+            # that, pinned, without dependencies. If that resolve fails -- an old pip with
+            # no --report, say -- install the plain way.
+            pins = _resolve_missing(packages, on_line)
+            if pins is None:
+                return _run_pip(target + packages, on_line)
+            if not pins:
+                return 0, ""
+            return _run_pip(target + ["--no-deps"] + pins, on_line)
 
         scene = ChunkRegistry().scene
         returncode, output = scene.run_install(packages, chunk_name, run) if scene else run()
