@@ -789,6 +789,31 @@ def test_leaves_on_a_tendril_face_every_way_round_it(host) -> None:
     assert np.abs(normals[hanging, 0]).mean() > 0.3
 
 
+def test_tendrils_hang_to_different_lengths(host, monkeypatch) -> None:
+    """All the same length, tendrils hang in a row like a fringe cut straight."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    module = _loaded_vine(host)
+    hung = []
+    real = module._hang
+    monkeypatch.setattr(module, "_hang", lambda *args: hung.append(real(*args)) or hung[-1])
+    host.vine(hang=100.0, hang_length=20.0)
+
+    nodes = hung[-1]
+    parents = np.asarray(nodes.parent)
+    hanging = np.asarray(nodes.hanging)
+    # Each tendril starts at a hanging node whose parent is not one; count down its chain.
+    child = {int(p): i for i, p in enumerate(parents) if p >= 0 and hanging[i]}
+    lengths = []
+    for start in np.flatnonzero(hanging & ~hanging[np.maximum(parents, 0)]):
+        n, at = 1, int(start)
+        while at in child:
+            at, n = child[at], n + 1
+        lengths.append(n)
+
+    assert len(lengths) > 5
+    assert max(lengths) > 2 * min(lengths)
+
+
 def test_hanging_tendrils_grow_after_their_tips(host) -> None:
     """Along every curve, tendrils included, growth only goes up: each point grew after the
     one before it, so a growth animation drops a tendril once its tip has got there."""

@@ -9,6 +9,11 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Changed
+
+- Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
+  the shortest. All the same length, they hung like a fringe cut straight.
+
 ## [1.0.0-rc.2] - 2026-11-19
 
 ### Added

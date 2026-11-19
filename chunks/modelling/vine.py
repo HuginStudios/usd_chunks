@@ -1053,6 +1053,9 @@ def _hang(nodes, projector, settings, seed):
     sway *= _SWAY / np.maximum(np.linalg.norm(sway, axis=1), 1e-9)[:, None]
     phase = rng.uniform(0.0, 2.0 * np.pi, len(tips))
     pace = rng.uniform(0.6, 1.4, len(tips)) * 2.0 * np.pi * step / max(settings["hang_length"], step)
+    # Each tendril its own length, Hang Length the longest: all the same, they hung in a row
+    # like a fringe cut straight.
+    reach = np.maximum(1, np.round(steps * rng.uniform(_SHORTEST, 1.0, len(tips))))
     out = nodes.copy()
     for index in range(steps):
         wave = np.sin(phase + pace * index)[:, None]
@@ -1067,11 +1070,11 @@ def _hang(nodes, projector, settings, seed):
             # Slide along the surface instead of pressing into it.
             direction[inside] = direction[inside] - normals[inside] * np.minimum(
                 _dot(direction[inside], normals[inside]), 0.0)[:, None]
-        going = position @ up >= floor
+        going = (position @ up >= floor) & (index < reach)
         if not going.any():
             break
         position, direction, away = position[going], direction[going], away[going]
-        sway, phase, pace = sway[going], phase[going], pace[going]
+        sway, phase, pace, reach = sway[going], phase[going], pace[going], reach[going]
         parent, born = parent[going], born[going] + 1
         # Each leaf on a tendril faces its own way round the strand: all facing out the way the
         # tip left the wall, they read as a flat plastic ribbon.
@@ -1079,6 +1082,9 @@ def _hang(nodes, projector, settings, seed):
         parent = out.add_many(position, parent, facing, direction, born, True)
     return out
 
+
+#: The shortest a tendril grows, as a share of Hang Length.
+_SHORTEST = 0.3
 
 #: How far a tendril's sway pulls it sideways each step, against gravity's pull down.
 _SWAY = 0.22
@@ -2240,7 +2246,8 @@ def main():
             max_value=50.0,
             default_value=12.0,
             flags=_PF.LABELED,
-            tooltip="How long each hanging tendril is, as a percentage of the painted region.",
+            tooltip="How long the longest hanging tendrils are, as a percentage of the painted\n"
+            "region. Each tendril grows to its own length, down to a third of this.",
         )
     )
     chunk_api.add_param(hang)
