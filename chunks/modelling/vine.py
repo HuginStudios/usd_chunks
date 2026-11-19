@@ -1347,6 +1347,9 @@ def _settings(node, surface):
         "lift": number("lift"),
         "smooth": max(0, int(number("smooth"))),
         "growth": min(max(number("growth") / 100.0, 0.0), 1.0),
+        "animate": bool(node.get_param("animate").value),
+        "start_frame": number("start_frame"),
+        "end_frame": number("end_frame"),
         "form": node.get_param("curve_form").value,
         "leaves": bool(node.get_param("leaves").value),
         "leaf_spacing": base_width * number("leaf_spacing"),
@@ -1620,29 +1623,23 @@ def execute(node):
         _resurface(nodes, projector)
         grown.seated = (settings["smooth"], nodes.position.copy(), nodes.normal.copy())
     growth = _growth_of(nodes)
-    if settings["growth"] < 1.0:
-        keep = growth <= settings["growth"]
-        nodes, growth = nodes.subset(keep), growth[keep]
-        strands = _strands(nodes)
-        if not strands:
-            _bail(node, stage, layer, where, "nothing grown yet — raise Growth")
-            return
+    drawn = _draw(nodes, growth, settings["growth"], settings)
+    if drawn is None:
+        _bail(node, stage, layer, where, "nothing grown yet — raise Growth")
+        return
+    strands, leaves = drawn[0], drawn[4]
 
-    # Widths from the vine as it stands, so a part-grown one still tapers to its tips. Then
-    # lift, measured in radii; see `_lift`.
-    radii = _radii(nodes, settings["base_width"], settings["base_width"] * settings["taper"])
-    _lift(nodes, radii, settings["lift"])
-
-    leaves = (
-        _leaf_points(strands, nodes.position, nodes.normal, radii, growth, settings)
-        if settings["leaves"]
-        else (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
-    )
-
+    frames = _frames(settings)
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         UsdGeom.Scope.Define(stage, where[0])
-        _author_curves(stage, where[1], strands, nodes, radii, growth, settings, node)
-        _author_leaves(stage, where[2], leaves, settings, node)
+        # The default value is the vine at Growth %, for anything that reads without a time.
+        _author_curves(stage, where[1], drawn, settings, node)
+        _author_leaves(stage, where[2], drawn[4], settings, node)
+        for frame, fraction in frames:
+            at = _draw(nodes, growth, fraction, settings)
+            time = Usd.TimeCode(frame)
+            _author_curves(stage, where[1], at, settings, node, time)
+            _author_leaves(stage, where[2], at[4] if at else None, settings, node, time)
 
     hit_cap = grown.grown >= settings["max_nodes"]
     _report(
@@ -1650,9 +1647,59 @@ def execute(node):
         f"{grown.roots} vine{'s' if grown.roots != 1 else ''}"
         f"{' from painted points' if grown.hand_placed else ''} · "
         f"{len(strands)} branches · {len(leaves[0])} leaves"
+        + (f" · grows over frames {frames[0][0]:g}-{frames[-1][0]:g}" if frames else "")
         + (f"\ncapped at {settings['max_nodes']} points — raise Max Points" if hit_cap else "")
         + (f"\n{grown.roots_note}" if grown.roots_note else ""),
     )
+
+
+def _draw(nodes, growth, fraction, settings):
+    """The vine as drawn at one moment of its growth.
+
+    Shared by the still image and every animated frame, so frame N of an animation is exactly
+    what Growth % set to that frame's share draws.
+
+    Args:
+        nodes: The smoothed, re-seated skeleton. Not changed.
+        growth: When each node grew, from `_growth_of`.
+        fraction: How far grown, 0..1.
+        settings: From `_settings`.
+
+    Returns:
+        (strands, nodes, radii, growth, leaves) for what has grown, or None before anything
+        has: a root on its own is not a curve.
+    """
+    keep = growth <= fraction + 1e-12
+    cut, cut_growth = nodes.subset(keep), growth[keep]
+    strands = _strands(cut)
+    if not strands:
+        return None
+    # Widths from the vine as it stands, so a part-grown one still tapers to its tips. Then
+    # lift, measured in radii; see `_lift`.
+    radii = _radii(cut, settings["base_width"], settings["base_width"] * settings["taper"])
+    _lift(cut, radii, settings["lift"])
+    leaves = (
+        _leaf_points(strands, cut.position, cut.normal, radii, cut_growth, settings)
+        if settings["leaves"]
+        else (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
+    )
+    return strands, cut, radii, cut_growth, leaves
+
+
+def _frames(settings):
+    """(frame, growth fraction) for every frame of the animation; empty when it is off.
+
+    The vine grows from nothing at Start Frame to Growth % at End Frame, evenly.
+    """
+    if not settings["animate"]:
+        return []
+    start, end = settings["start_frame"], settings["end_frame"]
+    if end < start:
+        start, end = end, start
+    count = int(math.floor(end - start)) + 1
+    if count <= 1:
+        return [(float(start), settings["growth"])]
+    return [(start + i, settings["growth"] * i / (count - 1)) for i in range(count)]
 
 
 def _bail(node, stage, layer, where, message):
@@ -1676,14 +1723,37 @@ def _bail(node, stage, layer, where, message):
     _report(node, message)
 
 
-def _author_curves(stage, path, strands, nodes, radii, growth, settings, node):
+def _author_curves(stage, path, drawn, settings, node, time=Usd.TimeCode.Default()):
     """One BasisCurves holding every strand, with a `growth` primvar per point.
 
     `growth` is when each point grew, 0 at the roots to 1 at the last tip of the fully grown
     vine. A shader that hides points above a threshold animates the vine growing -- the
     same cut Growth % makes here, but at render time.
+
+    `drawn` is from `_draw`; None writes an empty curve set, which is a frame before anything
+    grew. The topology, points, widths, growth and extent are written at `time`.
     """
     smooth = settings["form"] == "Smooth"
+    curves = UsdGeom.BasisCurves.Define(stage, path)
+    if time.IsDefault():
+        curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic if smooth else UsdGeom.Tokens.linear)
+        if smooth:
+            curves.CreateBasisAttr().Set(UsdGeom.Tokens.bspline)
+        curves.CreateWrapAttr().Set(UsdGeom.Tokens.nonperiodic)
+        curves.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        colour = node.get_param("vine_color").value or (0.18, 0.42, 0.15)
+        UsdGeom.Primvar(curves.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
+        curves.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
+    growth_primvar = UsdGeom.PrimvarsAPI(curves).CreatePrimvar(
+        GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+    )
+    if drawn is None:
+        curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray(), time)
+        curves.CreatePointsAttr().Set(Vt.Vec3fArray(), time)
+        curves.CreateWidthsAttr().Set(Vt.FloatArray(), time)
+        growth_primvar.Set(Vt.FloatArray(), time)
+        return
+    strands, nodes, radii, growth = drawn[:4]
     diameters = np.asarray(radii, dtype=np.float64) * 2.0
     counts, points, widths, ages = [], [], [], []
     for chain in strands:
@@ -1703,29 +1773,20 @@ def _author_curves(stage, path, strands, nodes, radii, growth, settings, node):
     all_points = np.concatenate(points)
     all_widths = np.concatenate(widths)
 
-    curves = UsdGeom.BasisCurves.Define(stage, path)
-    curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic if smooth else UsdGeom.Tokens.linear)
-    if smooth:
-        curves.CreateBasisAttr().Set(UsdGeom.Tokens.bspline)
-    curves.CreateWrapAttr().Set(UsdGeom.Tokens.nonperiodic)
-    curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([int(c) for c in counts]))
+    curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([int(c) for c in counts]), time)
     curves.CreatePointsAttr().Set(
-        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(all_points, dtype=np.float32))
+        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(all_points, dtype=np.float32)), time
     )
     curves.CreateWidthsAttr().Set(
-        Vt.FloatArray.FromNumpy(np.ascontiguousarray(all_widths, dtype=np.float32))
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(all_widths, dtype=np.float32)), time
     )
-    curves.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
-    UsdGeom.PrimvarsAPI(curves).CreatePrimvar(
-        GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
-    ).Set(Vt.FloatArray.FromNumpy(np.ascontiguousarray(np.concatenate(ages), dtype=np.float32)))
-    colour = node.get_param("vine_color").value or (0.18, 0.42, 0.15)
-    UsdGeom.Primvar(curves.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
-    curves.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
-    _set_extent(curves, all_points, float(all_widths.max()) if len(all_widths) else 0.0)
+    growth_primvar.Set(
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(np.concatenate(ages), dtype=np.float32)), time
+    )
+    _set_extent(curves, all_points, float(all_widths.max()) if len(all_widths) else 0.0, time)
 
 
-def _author_leaves(stage, path, leaves, settings, node):
+def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Default()):
     """The leaf cloud, in the shape Scatter Points already reads.
 
     Authored even when it is empty, so the Leaf Points output resolves to a real prim the moment
@@ -1734,36 +1795,42 @@ def _author_leaves(stage, path, leaves, settings, node):
 
     Guide purpose: the points are data for Scatter Points, and a renderer that draws Points
     (V-Ray) would show each leaf as a ball. usdview shows them with Display Guide on.
+
+    `leaves` None is a frame before any leaf grew. Points, normals, widths, growth and extent
+    are written at `time`.
     """
+    if leaves is None:
+        leaves = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
     points, normals, growth = leaves
 
     def vec3f(array):
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(array, dtype=np.float32).reshape(-1, 3))
 
     cloud = UsdGeom.Points.Define(stage, path)
-    cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
-    cloud.CreatePointsAttr().Set(vec3f(points))
-    cloud.CreateNormalsAttr().Set(vec3f(normals))
-    cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)))
+    if time.IsDefault():
+        cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+        colour = node.get_param("leaf_color").value or (0.35, 0.62, 0.22)
+        UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
+        cloud.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
+    cloud.CreatePointsAttr().Set(vec3f(points), time)
+    cloud.CreateNormalsAttr().Set(vec3f(normals), time)
+    cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)), time)
     # The same clock as the curves' growth primvar, so a shader can grow leaves in with them.
     UsdGeom.PrimvarsAPI(cloud).CreatePrimvar(
         GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
-    ).Set(Vt.FloatArray.FromNumpy(np.ascontiguousarray(growth, dtype=np.float32)))
-    colour = node.get_param("leaf_color").value or (0.35, 0.62, 0.22)
-    UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
-    cloud.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
+    ).Set(Vt.FloatArray.FromNumpy(np.ascontiguousarray(growth, dtype=np.float32)), time)
     if len(points):
-        _set_extent(cloud, np.asarray(points), settings["leaf_size"])
+        _set_extent(cloud, np.asarray(points), settings["leaf_size"], time)
 
 
-def _set_extent(gprim, points, width):
+def _set_extent(gprim, points, width, time=Usd.TimeCode.Default()):
     """A bound that accounts for the width, since a curve is drawn fatter than its control points."""
     if not len(points):
         return
     pad = width * 0.5
     low = points.min(axis=0) - pad
     high = points.max(axis=0) + pad
-    gprim.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*low), Gf.Vec3f(*high)]))
+    gprim.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*low), Gf.Vec3f(*high)]), time)
 
 
 def _publish(node, name, value):
@@ -1799,6 +1866,9 @@ def _sync_params(node):
     """
     _show(node, "root_count", not (node.get_param("seed_points").value or "").strip())
     _show(node, "step", not node.get_param("auto_step").value)
+    animate = bool(node.get_param("animate").value)
+    _show(node, "start_frame", animate)
+    _show(node, "end_frame", animate)
     leaves = bool(node.get_param("leaves").value)
     _show(node, "leaf_spacing", leaves)
     _show(node, "leaf_spread", leaves)
@@ -2016,6 +2086,45 @@ def main():
         )
     )
     chunk_api.add_param(grow)
+
+    # --- animation ---
+    animation = _collapsed(chunk.Group("anim_grp", "Animation", icon="film", flags=_GF))
+    animate = chunk.Checkbox(
+        "animate",
+        "Animate Growth",
+        default_value=False,
+        flags=_PF.LABELED,
+        tooltip="Write the growth as an animation: nothing at Start Frame, Growth % at End\n"
+        "Frame. Every frame is what Growth % would draw at that point. Curves to Mesh sweeps\n"
+        "each frame, so the mesh grows too.",
+    )
+    animate.add_callback(_wiring_changed)
+    animation.add_param(animate)
+    animation.add_param(
+        chunk.Slider(
+            "start_frame",
+            "Start Frame",
+            min_value=0,
+            max_value=1000,
+            default_value=1,
+            is_int=True,
+            flags=_PF.LABELED,
+            tooltip="The frame the vine starts growing from its roots.",
+        )
+    )
+    animation.add_param(
+        chunk.Slider(
+            "end_frame",
+            "End Frame",
+            min_value=0,
+            max_value=1000,
+            default_value=100,
+            is_int=True,
+            flags=_PF.LABELED,
+            tooltip="The frame it reaches Growth %.",
+        )
+    )
+    chunk_api.add_param(animation)
 
     # --- hanging ---
     hang = _collapsed(chunk.Group("hang_grp", "Hanging", icon="sprout", flags=_GF))
@@ -2254,6 +2363,8 @@ def config():
           - Surface Mesh: the meshes the vines climb; several, or a pattern.
           - Growth %: how far the vines have grown, 0 to 100. Cuts them at one
             moment of their growth; changing it does not grow them again.
+          - Animate Growth / Start Frame / End Frame: write the growth as time
+            samples, from nothing to Growth %.
           - Auto Step / Step: the length of one growth step — how smoothly a
             vine curves. It does not change how thick one is.
           - Density: how thickly the vines fill what was painted.

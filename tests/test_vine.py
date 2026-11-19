@@ -671,6 +671,37 @@ def test_a_vine_at_no_growth_says_so(host) -> None:
     assert "raise Growth" in node.get_param("readout").value
 
 
+def test_an_animated_vine_grows_over_its_frames(host) -> None:
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(animate=True, start_frame=1, end_frame=11)
+    attr = host.curves().GetPointsAttr()
+
+    assert attr.GetTimeSamples() == [float(f) for f in range(1, 12)]
+    assert len(attr.Get(1)) == 0
+    counts = [len(attr.Get(f)) for f in range(1, 12)]
+    assert counts == sorted(counts) and counts[-1] > 0
+    assert np.array_equal(np.asarray(attr.Get(11)), np.asarray(attr.Get()))
+    assert len(host.leaves().GetPointsAttr().Get(11)) == len(host.leaves().GetPointsAttr().Get())
+    assert "grows over frames 1-11" in node.get_param("readout").value
+
+
+def test_each_animated_frame_is_what_growth_draws(host) -> None:
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine(seed=5, animate=True, start_frame=1, end_frame=11)
+    middle = np.asarray(host.curves().GetPointsAttr().Get(6))
+
+    host.vine(seed=5, growth=50.0, vine_path="/Still")
+
+    assert np.array_equal(middle, host.points("/Still/Curves"))
+
+
+def test_a_still_vine_writes_no_time_samples(host) -> None:
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine()
+
+    assert host.curves().GetPointsAttr().GetNumTimeSamples() == 0
+
+
 # ---------------------------------------------------------------------------
 # hanging
 # ---------------------------------------------------------------------------
