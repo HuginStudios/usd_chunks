@@ -41,6 +41,9 @@ This file starts with the first release; development before that is in the commi
   the defaults changed: Meander 0.8, Climb 0.15, Density 0.2, Influence 24, Kill Distance
   5. A saved Vine left at the old defaults grows the new way. To keep the old look, set
   Meander 0, Climb 0.35, Density 0.5, Influence 12 and Kill Distance 2.
+- Curves to Mesh sweeps vines faster and makes the same mesh: every strand goes through
+  one array pass instead of one at a time. A 20,000-point vine (793 strands): 290 ms →
+  80 ms.
 
 ### Fixed
 
