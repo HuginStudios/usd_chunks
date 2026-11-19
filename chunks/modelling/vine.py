@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 CURVES_PRIM = "Curves"
 LEAVES_PRIM = "Leaves"
 
+#: Per-point primvar on the curves: when the point grew, 0 at the roots to 1 at the last tip.
+GROWTH_PRIMVAR = "growth"
+
 _FORMS = ["Smooth", "Linear"]
 
 #: How much of the previous step's direction is carried into the next one.
@@ -58,6 +61,14 @@ _FORMS = ["Smooth", "Linear"]
 #: much past one it overwhelms the attractors and the vine walks straight out of the paint.
 #: This sits where a vine stops looking like a random walk and still goes where it is sent.
 _MOMENTUM = 0.6
+
+#: The most children one node grows. After that its attractors stop pulling on it.
+#:
+#: Momentum and climb can outweigh the pull of attractors that lie behind a node. Its child
+#: then lands to the side, no nearer to them, so they still pick the same node next step,
+#: and it sprouts again -- on a sphere, 50 to 80 stubs from one node, and a dense rock spent
+#: a third of its 20,000 points on one. A vine forks into two or three; four leaves room.
+_MAX_CHILDREN = 4
 
 #: Pipe-model exponent. Two is da Vinci's rule -- a branch's cross-section equals the sum of its
 #: children's -- which is the thinnest-looking of the usual choices and the right end for a vine,
@@ -544,9 +555,12 @@ class _Nodes:
     iteration over every attractor still pulling -- a list comprehension in the hot loop.
     `position`, `normal` and `direction` are views of the filled part, so indexed writes into
     them (the lift does one) land in the buffer.
+
+    `born` is the growth step each node was made in, 0 for the roots. It is the vine's clock:
+    Growth % keeps the nodes born before a cut-off, and the `growth` primvar is it, scaled.
     """
 
-    __slots__ = ("parent", "_position", "_normal", "_direction", "_count")
+    __slots__ = ("parent", "_position", "_normal", "_direction", "_born", "_count")
 
     def __init__(self, capacity=256):
         capacity = max(int(capacity), 8)
@@ -554,6 +568,7 @@ class _Nodes:
         self._position = np.zeros((capacity, 3), dtype=np.float64)
         self._normal = np.zeros((capacity, 3), dtype=np.float64)
         self._direction = np.zeros((capacity, 3), dtype=np.float64)
+        self._born = np.zeros(capacity, dtype=np.int64)
         self._count = 0
 
     @property
@@ -568,29 +583,38 @@ class _Nodes:
     def direction(self):
         return self._direction[: self._count]
 
+    @property
+    def born(self):
+        return self._born[: self._count]
+
     def _reserve(self, extra):
         capacity = len(self._position)
         if self._count + extra <= capacity:
             return
         while capacity < self._count + extra:
             capacity *= 2
-        for name in ("_position", "_normal", "_direction"):
-            grown = np.zeros((capacity, 3), dtype=np.float64)
-            grown[: self._count] = getattr(self, name)[: self._count]
+        for name in ("_position", "_normal", "_direction", "_born"):
+            old = getattr(self, name)
+            grown = np.zeros((capacity,) + old.shape[1:], dtype=old.dtype)
+            grown[: self._count] = old[: self._count]
             setattr(self, name, grown)
 
-    def add(self, position, parent, normal, direction):
+    def add(self, position, parent, normal, direction, born=0):
         self._reserve(1)
         index = self._count
         self._position[index] = position
         self._normal[index] = normal
         self._direction[index] = direction
+        self._born[index] = born
         self.parent.append(int(parent))
         self._count += 1
         return index
 
-    def add_many(self, positions, parents, normals, directions):
-        """Append a whole growth iteration at once; the indices they were given."""
+    def add_many(self, positions, parents, normals, directions, born=0):
+        """Append a whole growth iteration at once; the indices they were given.
+
+        `born` is the growth step, one for them all or one each.
+        """
         count = len(positions)
         if not count:
             return np.zeros(0, dtype=np.int64)
@@ -599,14 +623,28 @@ class _Nodes:
         self._position[start:start + count] = positions
         self._normal[start:start + count] = normals
         self._direction[start:start + count] = directions
+        self._born[start:start + count] = born
         self.parent.extend(int(p) for p in parents)
         self._count += count
         return np.arange(start, start + count)
 
     def copy(self):
         """A copy whose positions and normals can be moved without touching this one."""
-        twin = _Nodes(self._count)
-        twin.add_many(self.position, self.parent, self.normal, self.direction)
+        return self.subset(np.ones(self._count, dtype=bool))
+
+    def subset(self, keep):
+        """The nodes where `keep` is True, as a new skeleton, parents renumbered.
+
+        Every kept node's parent must be kept too, which holds for anything cut by age or
+        by pruning: a parent is older than its child and is on the path to it.
+        """
+        index = np.flatnonzero(keep)
+        renumber = np.full(self._count + 1, -1, dtype=np.int64)
+        renumber[index] = np.arange(len(index))
+        parents = np.asarray(self.parent, dtype=np.int64)[index]
+        twin = _Nodes(len(index))
+        twin.add_many(self.position[index], renumber[parents], self.normal[index],
+                      self.direction[index], self.born[index])
         return twin
 
     def __len__(self):
@@ -724,6 +762,11 @@ def _grow(roots, attractors, projector, settings, rng):
     towards = np.zeros((len(attractors), 3), dtype=np.float64)
     attractor_sq = _dot(attractors, attractors)
     pending = np.arange(len(nodes))
+    # Children per node, and the nodes that have grown all they may; see _MAX_CHILDREN. One
+    # spare slot at the end, so the -1 of an attractor with no nearest node reads as open.
+    slots = max(len(nodes), settings["max_nodes"]) + 1
+    children = np.zeros(slots, dtype=np.int64)
+    closed = np.zeros(slots, dtype=bool)
 
     up = settings["up"]
     step = settings["step"]
@@ -739,7 +782,9 @@ def _grow(roots, attractors, projector, settings, rng):
     # search over everything would give it, so the vine is the same.
     grid = _PointGrid(attractors, max(settings["influence"], settings["kill"]))
 
+    step_count = 0
     while len(pending) and len(nodes) < settings["max_nodes"]:
+        step_count += 1
         fresh = nodes.position[pending]
         # Neighbourhoods of nodes in nearby cells overlap. A mask removes the repeats and
         # sorts what is left in one pass, several times faster than np.unique on thousands.
@@ -773,7 +818,7 @@ def _grow(roots, attractors, projector, settings, rng):
 
             # Reached: an attractor a node has come this close to has done its job.
             alive[live[nearest_sq[live] <= kill_sq]] = False
-            pulls[live] = alive[live] & (nearest_sq[live] <= influence_sq)
+            pulls[live] = alive[live] & (nearest_sq[live] <= influence_sq) & ~closed[nearest[live]]
 
         pulling = np.flatnonzero(pulls)
         if not len(pulling):
@@ -809,8 +854,16 @@ def _grow(roots, attractors, projector, settings, rng):
         # ends there -- which is what keeps the vines inside the paint with no boundary test.
         reached = np.flatnonzero(found)
         pending = nodes.add_many(
-            landed[reached], owners[reached], landed_normals[reached], direction[reached]
+            landed[reached], owners[reached], landed_normals[reached], direction[reached], step_count
         )
+
+        # Owners are unique, so a plain += counts each one once.
+        parents = owners[reached]
+        children[parents] += 1
+        full = parents[children[parents] >= _MAX_CHILDREN]
+        if len(full):
+            closed[full] = True
+            pulls[pulling[closed[nearest[pulling]]]] = False
 
     return nodes
 
@@ -843,19 +896,14 @@ def _prune(nodes, min_length):
                 keep[child] = True
                 stack.append(child)
 
-    remap = {-1: -1}
-    kept = _Nodes()
-    for index in range(len(nodes)):
-        if not keep[index]:
-            continue
-        # A parent is always kept when its child is, so the lookup cannot miss.
-        remap[index] = kept.add(
-            nodes.position[index],
-            remap[nodes.parent[index]],
-            nodes.normal[index],
-            nodes.direction[index],
-        )
-    return kept
+    # A parent is always kept when its child is, so the renumbering cannot miss.
+    return nodes.subset(keep)
+
+
+def _growth_of(nodes):
+    """When each node grew, from 0 (the roots) to 1 (the last tip), as an array."""
+    last = int(nodes.born.max()) if len(nodes) else 0
+    return nodes.born / float(max(last, 1))
 
 
 def _lift(nodes, radii, factor):
@@ -1108,6 +1156,7 @@ def _settings(node, surface):
         # A multiple of each node's own radius, applied per node -- not a distance. See `_lift`.
         "lift": number("lift"),
         "smooth": max(0, int(number("smooth"))),
+        "growth": min(max(number("growth") / 100.0, 0.0), 1.0),
         "form": node.get_param("curve_form").value,
         "leaves": bool(node.get_param("leaves").value),
         "leaf_spacing": base_width * number("leaf_spacing"),
@@ -1364,16 +1413,27 @@ def execute(node):
         _bail(node, stage, layer, where, "nothing grew — try a larger Influence or more Density")
         return
 
-    # Smooth, put back on the surface, then lift -- in that order, so every control point ends
-    # up exactly its own radius off the skin. Widths come first because the lift is measured in
-    # radii; see `_lift`.
-    radii = _radii(nodes, settings["base_width"], settings["base_width"] * settings["taper"])
+    # Smooth and put back on the surface, the whole vine. Growth % cuts it after that, so a
+    # vine drawn part-grown sits exactly where the grown one does, and animating Growth does
+    # not make the older part wriggle as the tips move on.
     if grown.seated is not None and grown.seated[0] == settings["smooth"]:
         nodes.position[:], nodes.normal[:] = grown.seated[1], grown.seated[2]
     else:
         _smooth_nodes(nodes, strands, settings["smooth"])
         _resurface(nodes, projector)
         grown.seated = (settings["smooth"], nodes.position.copy(), nodes.normal.copy())
+    growth = _growth_of(nodes)
+    if settings["growth"] < 1.0:
+        keep = growth <= settings["growth"]
+        nodes, growth = nodes.subset(keep), growth[keep]
+        strands = _strands(nodes)
+        if not strands:
+            _bail(node, stage, layer, where, "nothing grown yet — raise Growth")
+            return
+
+    # Widths from the vine as it stands, so a part-grown one still tapers to its tips. Then
+    # lift, measured in radii; see `_lift`.
+    radii = _radii(nodes, settings["base_width"], settings["base_width"] * settings["taper"])
     _lift(nodes, radii, settings["lift"])
 
     leaves = (
@@ -1384,7 +1444,7 @@ def execute(node):
 
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         UsdGeom.Scope.Define(stage, where[0])
-        _author_curves(stage, where[1], strands, nodes, radii, settings, node)
+        _author_curves(stage, where[1], strands, nodes, radii, growth, settings, node)
         _author_leaves(stage, where[2], leaves, settings, node)
 
     hit_cap = grown.grown >= settings["max_nodes"]
@@ -1419,20 +1479,29 @@ def _bail(node, stage, layer, where, message):
     _report(node, message)
 
 
-def _author_curves(stage, path, strands, nodes, radii, settings, node):
-    """One BasisCurves holding every strand."""
+def _author_curves(stage, path, strands, nodes, radii, growth, settings, node):
+    """One BasisCurves holding every strand, with a `growth` primvar per point.
+
+    `growth` is when each point grew, 0 at the roots to 1 at the last tip of the fully grown
+    vine. A shader that hides points above a threshold animates the vine growing -- the
+    same cut Growth % makes here, but at render time.
+    """
     smooth = settings["form"] == "Smooth"
-    counts, points, widths = [], [], []
+    diameters = np.asarray(radii, dtype=np.float64) * 2.0
+    counts, points, widths, ages = [], [], [], []
     for chain in strands:
         # Already smoothed and re-seated on the surface, back when the normals could still be
         # refreshed to match -- see `_smooth_nodes`.
         chain_points = nodes.position[chain]
-        chain_widths = np.asarray([radii[i] * 2.0 for i in chain], dtype=np.float64)
+        chain_widths = diameters[chain]
+        chain_ages = growth[chain]
         if smooth:
             chain_points, chain_widths = _pin(chain_points, chain_widths)
+            chain_ages = np.concatenate((chain_ages[:1], chain_ages[:1], chain_ages, chain_ages[-1:], chain_ages[-1:]))
         counts.append(len(chain_points))
         points.append(chain_points)
         widths.append(chain_widths)
+        ages.append(chain_ages)
 
     all_points = np.concatenate(points)
     all_widths = np.concatenate(widths)
@@ -1450,6 +1519,9 @@ def _author_curves(stage, path, strands, nodes, radii, settings, node):
         Vt.FloatArray.FromNumpy(np.ascontiguousarray(all_widths, dtype=np.float32))
     )
     curves.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+    UsdGeom.PrimvarsAPI(curves).CreatePrimvar(
+        GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+    ).Set(Vt.FloatArray.FromNumpy(np.ascontiguousarray(np.concatenate(ages), dtype=np.float32)))
     colour = node.get_param("vine_color").value or (0.18, 0.42, 0.15)
     UsdGeom.Primvar(curves.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
     curves.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
@@ -1634,6 +1706,19 @@ def main():
             tooltip="Distance between points on a vine, in scene units — how far apart the\n"
             "growth makes its decisions. It changes how smoothly a vine curves, not how thick\n"
             "one is: that is Thickness, under Shape.",
+        )
+    )
+    grow.add_param(
+        chunk.Slider(
+            "growth",
+            "Growth %",
+            min_value=0.0,
+            max_value=100.0,
+            default_value=100.0,
+            flags=_PF.LABELED,
+            tooltip="How far the vines have grown, from the roots (0) to fully grown (100).\n"
+            "Cuts every vine at the same moment of its growth, so a low value is a young\n"
+            "vine, not a shorter one. Drawing only: changing it does not grow again.",
         )
     )
     grow.add_param(
@@ -1891,10 +1976,13 @@ def config():
         cloud carrying a surface normal per point. That cloud is the same shape
         the brush publishes, so feeding it to a Scatter Points chunk's Painted
         Points input instances real leaf geometry along the vine, laid flat on
-        the surface.
+        the surface. Every curve point carries a "growth" primvar, 0 at the
+        roots to 1 at the last tip, for shaders that animate the vine growing.
 
         Parameters:
           - Surface Mesh: the mesh the vines climb.
+          - Growth %: how far the vines have grown, 0 to 100. Cuts them at one
+            moment of their growth; changing it does not grow them again.
           - Auto Step / Step: the length of one growth step — how smoothly a
             vine curves. It does not change how thick one is.
           - Density: how thickly the vines fill what was painted.
