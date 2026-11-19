@@ -9,6 +9,8 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-11-19
+
 ### Added
 
 - Vine has a Growth % slider: how far the vines have grown, from the roots to fully grown.
