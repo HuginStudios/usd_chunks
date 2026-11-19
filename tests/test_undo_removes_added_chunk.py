@@ -54,17 +54,33 @@ def _drag(stage, scene):
     return transform
 
 
+def _layer_ids(stage):
+    return [layer.identifier for layer in stage.GetLayerStack()]
+
+
 def test_undoing_a_gizmo_drag_removes_its_chunk_and_the_move(env):
+    """The Transform chunk's own layer leaves the stack, and nothing else is added.
+
+    Compares layers by identity, not by count: in CI the stack has sometimes held two extra
+    layers at the start that the undo then took away, so a count said 5 != 7 though the
+    chunk's layer was gone.
+    """
     stage, scene, _registry, stack = env
-    layers_before = len(stage.GetLayerStack())
+    before = _layer_ids(stage)
     stack.note_input()
-    _drag(stage, scene)
+    transform = _drag(stage, scene)
+    tag = transform.get_layer_identifier()
+    made = [layer.identifier for layer in stage.GetLayerStack() if layer.GetDisplayName() == tag]
+    assert made, "the drag made no layer for its chunk"
+    chunk_layer = made[0]
     assert _ops(stage), "the drag did not move the cube"
 
     assert stack.undo()
 
     assert _names(scene) == ["Sublayer"]
-    assert len(stage.GetLayerStack()) == layers_before, "the chunk's layer is still in the stack"
+    after = _layer_ids(stage)
+    assert chunk_layer not in after, "the chunk's layer is still in the stack"
+    assert set(after) <= set(before), f"layers added by the drag remain: {set(after) - set(before)}"
     assert not _ops(stage), "the cube is still moved"
 
 
