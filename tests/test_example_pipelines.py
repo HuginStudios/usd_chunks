@@ -1,15 +1,17 @@
 """The pipeline examples in examples/scripts run as written and build what they say.
 
 One example per job the README lists: CAD to render, a product configurator, URDF for Isaac
-Sim, a batch over an asset library, a scattered biome, a breaking block and a fluid sim. Each
-is run from another directory into a folder of its own, the way a user runs it, and the
+Sim, a batch over an asset library, a scattered forest, a breaking block and a fluid sim.
+Each is run from another directory into a folder of its own, the way a user runs it, and the
 result is checked as USD. None of them renders here: the usd-core wheel has no usdrecord, so
 Render logs that and the rest still writes. An example whose optional library is missing
-(OpenCASCADE, MuJoCo, manifold3d, Taichi, fast-simplification) is skipped.
+(OpenCASCADE, MuJoCo, manifold3d, Taichi, fast-simplification) is skipped, and so is one
+whose downloaded assets (example_assets.py) aren't there: tests never download.
 """
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import runpy
 import sys
 from pathlib import Path
@@ -20,6 +22,11 @@ from pxr import Sdr, Usd, UsdGeom, UsdPhysics, UsdShade
 from usd_chunks import Scene
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "examples" / "scripts"
+# Loaded from its file, not put on sys.path: examples/scripts has modules (box, biome) that
+# should not shadow anything else in this process.
+_spec = importlib.util.spec_from_file_location("example_assets", SCRIPTS / "example_assets.py")
+assets = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(assets)
 
 cad = importlib.import_module("chunks.modelling.cad_import")
 reduce = importlib.import_module("chunks.modelling.poly_reduce")
@@ -34,13 +41,25 @@ needs_ocp = pytest.mark.skipif(not (cad._HAS_OCP and _HAS_MTLX),
                                reason="needs cadquery-ocp and USD's MaterialX definitions")
 
 
+def _downloaded(*models: str, so101: bool = False, textures: tuple[str, ...] = (), hdri: bool = True):
+    """Skip unless example_assets.py has already fetched these: a test never downloads."""
+    files = [assets.ROOT / "polyhaven" / m / f"{m}_1k.usdc" for m in models]
+    files += [assets.ROOT / "polyhaven" / t / f"{t}_diff_2k.jpg" for t in textures]
+    if so101:
+        files.append(assets.ROOT / "so101" / "so101_new_calib.urdf")
+    if hdri:
+        files.append(assets.ROOT / "polyhaven" / "hdri" / f"{assets.HDRIS[0]}_2k.exr")
+    missing = [f.name for f in files if not f.exists()]
+    return pytest.mark.skipif(bool(missing), reason=f"run examples/scripts/example_assets.py first: no {missing}")
+
+
 def _run(name: str, tmp_path_factory) -> Path:
     """Run examples/scripts/<name>.py into a fresh folder, from another working directory."""
     out = tmp_path_factory.mktemp(name)
     elsewhere = tmp_path_factory.mktemp("cwd")
     with pytest.MonkeyPatch.context() as mp:
         mp.chdir(elsewhere)
-        mp.syspath_prepend(str(SCRIPTS))  # biome_render imports biome from beside it
+        mp.syspath_prepend(str(SCRIPTS))  # the scripts import example_assets from beside them
         mp.setattr(sys, "argv", [str(SCRIPTS / f"{name}.py"), str(out)])
         runpy.run_path(str(SCRIPTS / f"{name}.py"), run_name="__main__")
     assert not any(elsewhere.iterdir()), f"{name} wrote into the working directory"
@@ -82,44 +101,54 @@ def urdf(tmp_path_factory) -> Path:
     return _run("urdf_to_isaac", tmp_path_factory)
 
 
+needs_so101 = _downloaded(so101=True, textures=("concrete_floor_02",))
+
+
+@needs_so101
 def test_urdf_robot_arrives_as_an_articulated_physics_rig(urdf) -> None:
-    stage = Usd.Stage.Open(str(urdf / "desk_arm_scene.usda"))
+    stage = Usd.Stage.Open(str(urdf / "so101_scene.usda"))
     assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
     assert stage.GetDefaultPrim().GetPath() == "/World"
-    base = stage.GetPrimAtPath("/World/desk_arm/base")
-    assert base.HasAPI(UsdPhysics.ArticulationRootAPI)
-    bodies = [p for p in Usd.PrimRange(stage.GetPrimAtPath("/World/desk_arm")) if p.HasAPI(UsdPhysics.RigidBodyAPI)]
-    assert len(bodies) == 5
+    assert stage.GetPrimAtPath("/World/so101/base_link").HasAPI(UsdPhysics.ArticulationRootAPI)
     revolute = [p for p in stage.Traverse() if p.IsA(UsdPhysics.RevoluteJoint)]
-    assert len(revolute) == 3
+    assert len(revolute) == 6, "the SO-101 has six moving joints, gripper included"
     assert stage.GetPrimAtPath("/World/physicsScene").IsA(UsdPhysics.Scene)
     assert stage.GetPrimAtPath("/World/anchor").IsA(UsdPhysics.FixedJoint)
+    assert stage.GetPrimAtPath("/World/floor").HasAPI(UsdPhysics.CollisionAPI)
+    assert _bound_material(stage, "/World/floor") == "/World/looks/concrete"
 
 
+@needs_so101
 def test_urdf_drives_hold_the_pose_they_target(urdf) -> None:
-    stage = Usd.Stage.Open(str(urdf / "desk_arm_scene.usda"))
-    elbow = stage.GetPrimAtPath("/World/desk_arm/forearm/joint_elbow")
-    assert elbow.GetAttribute("drive:angular:physics:targetPosition").Get() == pytest.approx(75.0)
-    assert elbow.GetAttribute("drive:angular:physics:stiffness").Get() == pytest.approx(400.0)
-    tool = _bound(stage, "/World/desk_arm/tool")
-    assert tool.GetMin()[2] > 0.2, "the posed arm reaches up, off the floor"
+    stage = Usd.Stage.Open(str(urdf / "so101_scene.usda"))
+    wrist = stage.GetPrimAtPath("/World/so101/wrist_link/joint_wrist_flex")
+    assert wrist.GetAttribute("drive:angular:physics:targetPosition").Get() == pytest.approx(65.0)
+    assert wrist.GetAttribute("drive:angular:physics:stiffness").Get() == pytest.approx(40.0)
+    jaw = _bound(stage, "/World/so101/moving_jaw_so101_v1_link")
+    assert jaw.GetMin()[2] > 0.0, "the posed arm reaches down to the block without going through the floor"
     _reopens_as_chunks(urdf / "urdf_network.usda", "Pose", "Render")
 
 
 # ---------------------------------------------------------------------------
-# Scattered biome
+# Scattered forest
 # ---------------------------------------------------------------------------
 
 
-def test_biome_render_lights_and_frames_the_forest(tmp_path_factory) -> None:
-    out = _run("biome_render", tmp_path_factory)
-    stage = Usd.Stage.Open(str(out / "biome_render.usda"))
-    for layer in ("trees", "bushes", "ferns", "grass"):
-        ids = UsdGeom.PointInstancer(stage.GetPrimAtPath(f"/biome/{layer}")).GetProtoIndicesAttr().Get()
-        assert ids, f"no {layer} were scattered"
-    assert stage.GetPrimAtPath("/cam").IsA(UsdGeom.Camera)
-    assert _bound_material(stage, "/ground") == "/looks/soil"
-    _reopens_as_chunks(out / "biome_render_network.usda", "Trees", "Grass", "Render")
+@_downloaded("fir_sapling", "dead_tree_trunk_02", "tree_stump_01", "boulder_01", "shrub_04", "nettle_plant",
+             "grass_medium_01", textures=("brown_mud_leaves_01",))
+def test_forest_scatters_every_layer_from_real_assets(tmp_path_factory) -> None:
+    out = _run("forest", tmp_path_factory)
+    stage = Usd.Stage.Open(str(out / "forest.usda"))
+    for layer in ("trees", "deadwood", "undergrowth", "grass"):
+        ids = UsdGeom.PointInstancer(stage.GetPrimAtPath(f"/forest/{layer}")).GetProtoIndicesAttr().Get()
+        assert ids, f"nothing was scattered in {layer}"
+    # The prototypes render with the preview network written for them, not Poly Haven's MaterialX.
+    twigs = UsdShade.Material(stage.GetPrimAtPath("/protos/fir_a/_materials/fir_sapling_twigs"))
+    source = twigs.GetSurfaceOutput().GetConnectedSources()[0][0].source
+    assert source.GetPath() == "/protos/fir_a/_materials/fir_sapling_twigs/look"
+    assert not stage.GetPrimAtPath("/protos/fir_a/fir_sapling_b").IsActive(), "only one variation is kept"
+    assert _bound_material(stage, "/ground") == "/looks/forest_floor"
+    _reopens_as_chunks(out / "forest_network.usda", "Trees", "Grass", "Render")
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +210,7 @@ def test_batch_makes_a_lighter_proxy_of_every_asset(tmp_path_factory) -> None:
 
 
 @pytest.mark.skipif(not (fracture._HAS_MANIFOLD and rbd._HAS_MUJOCO), reason="needs manifold3d and mujoco")
+@_downloaded("concrete_road_barrier", "barrel_03", textures=("concrete_floor_02", "rock_boulder_dry"))
 def test_boom_block_falls_and_breaks(tmp_path_factory) -> None:
     out = _run("boom", tmp_path_factory)
     stage = Usd.Stage.Open(str(out / "boom.usda"))
@@ -193,11 +223,12 @@ def test_boom_block_falls_and_breaks(tmp_path_factory) -> None:
     assert len(visible(1)) == 1, "it starts whole"
     assert len(visible(60)) > 5, "it has broken by the end"
     positions = pieces.GetPositionsAttr().Get(60)
-    heights = sorted(positions[i][1] for i in visible(60))
+    heights = sorted(positions[i][2] for i in visible(60))
     assert heights[len(heights) // 2] < 1.0, "most pieces came down (a few may still be flying)"
 
 
 @pytest.mark.skipif(not particles._HAS_TAICHI, reason="needs taichi")
+@_downloaded(textures=("grass_path_2",))
 def test_houses_stand_and_the_water_lands_on_the_ground(tmp_path_factory) -> None:
     out = _run("houses_and_water", tmp_path_factory)
     stage = Usd.Stage.Open(str(out / "houses_and_water.usda"))

@@ -2,12 +2,15 @@
 
     USD_CHUNK_DIRS=chunks python examples/scripts/houses_and_water.py
 
+  Mesh (grid)      a lawn, textured (Poly Haven; fetched the first time, see
+                   example_assets.py)
   House x3         three cottages from one chunk, each with its own roof, size and floors
   Mesh (Cube)      the block of water the sim starts from, hidden once the sim has it
   Particle Solver  MLS-MPM water (Taichi), thrown onto the ground in front of the houses
                    and baked as points over 48 frames
   lights, camera
-  Render           writes houses_and_water.0040.png
+  Render           writes houses_and_water.0022.png, as the water spreads: Aurora when it
+                   is installed, else Storm
 
 Change a house from the command line, for example a hip roof and two floors on the first:
 
@@ -20,6 +23,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import example_assets as assets
 
 from usd_chunks import Scene
 
@@ -39,11 +44,14 @@ if __name__ == "__main__":
     with Scene.new(path=str(OUT / "houses_network.usda")) as scene:
         last = scene.create.stage_settings(meters_per_unit=1.0, up_axis="Y", start_frame=1,
                                            end_frame=48)
-        last = scene.create.ground(last, prim_path="/World/ground", width1=40.0, height2=30.0,
-                                   grid_checker=False)
-        last = scene.create.preview_surface(last, mat_path="/World/looks/grass",
-                                            primpath_location="/World/ground",
-                                            diffuse_color=(0.2, 0.32, 0.12), roughness=0.9)
+        # A 60 m lawn, built 30 units wide and scaled 2x: its texture (Poly Haven, fetched the
+        # first time; see example_assets.py) repeats every 2 m.
+        last = scene.create.mesh(last, prim_path="/World/ground", mesh_type="grid", dimx1=2, dimy1=2,
+                                 width1=30.0, height2=30.0)
+        last = scene.create.transform(last, primpath_location="/World/ground", sx=2.0, sz=2.0)
+        last = scene.create.inline_usd(last, name="Lawn",
+                                       code=assets.ground_material("/World/looks/lawn", "grass_path_2"))
+        last = scene.create.bind_material(last, material_path="/World/looks/lawn", primpath_location="/World/ground")
 
         # One chunk type, three houses: each is its own node with its own values.
         x = -9.0
@@ -62,24 +70,29 @@ if __name__ == "__main__":
                                        tx=-4.0, ty=1.5, tz=3.0)
         water = scene.create.property_editor(water, prim="/World/fx/water_source",
                                              edits='visibility = "invisible"')
+        # Dark and glossy: water is mostly what it reflects.
         blue = scene.create.preview_surface(water, mat_path="/World/looks/water",
-                                            primpath_location="", diffuse_color=(0.1, 0.35, 0.7),
-                                            roughness=0.15)
+                                            primpath_location="", diffuse_color=(0.02, 0.07, 0.1),
+                                            roughness=0.05)
         sim = scene.create.particle_solver(blue, name="Water", source_prim="/World/fx/water_source",
                                            material="Water", collision_path="/World/ground",
-                                           margin=3.0, initial_velocity=(4.0, 0.0, 0.0),
-                                           grid_res=96, frame_count=48, sim_path="/World/fx/sim",
-                                           material_prim="/World/looks/water", point_scale=1.5)
+                                           margin=2.5, initial_velocity=(5.0, 0.0, 0.0),
+                                           grid_res=150, frame_count=48, sim_path="/World/fx/sim",
+                                           material_prim="/World/looks/water", point_scale=1.3,
+                                           render_as="Instanced Spheres")
 
-        sun = scene.create.distant_light(sim, primpath_location="/World/sun", intensity=1.5)
+        # Normalize makes Intensity the light that lands, not the brightness of the sun's disc.
+        sun = scene.create.distant_light(sim, primpath_location="/World/sun", intensity=3.0, normalize=True)
         aim_sun = scene.create.transform(sun, primpath_location="/World/sun", rx=-40.0, ry=-35.0)
-        sky = scene.create.dome_light(aim_sun, primpath_location="/World/sky", intensity=0.5)
+        sky = scene.create.dome_light(aim_sun, primpath_location="/World/sky", intensity=0.8,
+                                      file=assets.hdri().as_posix())
         cam = scene.create.camera(sky, primpath_location="/World/cam", tx=8.0, ty=9.0, tz=34.0,
                                   focalLength=28.0, clippingRange=(0.1, 1000.0),
                                   aim_at_point=True, aim_point=(2.0, 2.5, 0.0))
         render = scene.create.render(cam, camera="/World/cam", mode="Command", image_width=1280,
-                                     frames="40", camera_light=False,
-                                     output_image=str(OUT / "houses_and_water.####.png"))
+                                     frames="22", camera_light=False,
+                                     output_image=str(OUT / "houses_and_water.####.png"),
+                                     **assets.render_params(OUT))
         scene.set_output(render)
 
         scene.save()

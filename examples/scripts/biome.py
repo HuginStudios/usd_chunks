@@ -60,8 +60,7 @@ def scatter(scene, upstream, name, proto, count, spacing, density="", near=None,
         **params)
 
 
-def build(scene):
-    """Build the biome into *scene* and return its last chunk, the Grass scatter."""
+with Scene.new() as scene:
     ground = scene.create.mesh(prim_path="/ground", mesh_type="grid", dimx1=80, dimy1=80,
                                width1=80.0, height2=80.0)
     protos = scene.create.inline_usd(ground, code=PROTOS)
@@ -73,12 +72,8 @@ def build(scene):
     # Grow Near: (layer, radius, inside, outside, clear radius)
     bushes = scatter(scene, trees, "Bushes", "bush", 400, 1.4, near=("trees", 4.5, 1.0, 0.08, 1.0))
     ferns = scatter(scene, bushes, "Ferns", "fern", 1500, 0.5, near=("bushes", 2.5, 1.0, 0.1, 0.4))
-    return scatter(scene, ferns, "Grass", "grass", 8000, 0.15, near=("trees", 5.0, 0.1, 1.0, 0.0))
+    grass = scatter(scene, ferns, "Grass", "grass", 8000, 0.15, near=("trees", 5.0, 0.1, 1.0, 0.0))
 
-
-if __name__ == "__main__":
-    with Scene.new() as scene:
-        grass = build(scene)
-        scene.set_output(grass)
-        scene.save("biome_network.usda")
-        scene.export("biome.usda")
+    scene.set_output(grass)
+    scene.save("biome_network.usda")
+    scene.export("biome.usda")

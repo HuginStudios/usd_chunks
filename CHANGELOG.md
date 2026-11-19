@@ -13,11 +13,12 @@ This file starts with the first release; development before that is in the commi
 
 - Pipeline examples: seven scripts in `examples/scripts/` and a guide,
   [Pipeline examples](docs/pipeline-examples.md). CAD to render (STEP, MaterialX, Render),
-  a product configurator (variants, one render per option), URDF for Isaac Sim, a batch
-  over an asset library, a scattered biome, a block that breaks as it lands, and houses
-  with a water sim. Each saves its network and exports plain USD; all but the batch
-  render an image.
-  `examples/scripts/biome.py` now has a `build(scene)` function the others can reuse.
+  a product configurator (variants, one render per option), the SO-101 arm from URDF for
+  Isaac Sim, a batch over an asset library, a forest scattered from Poly Haven assets, a
+  block that breaks as it lands, and houses with a water sim. Each saves its network and
+  exports plain USD; all but the batch render an image, in Aurora when it is installed.
+  `examples/scripts/example_assets.py` fetches the free assets they use (Poly Haven, CC0;
+  SO-ARM100, Apache 2.0) once, and makes Poly Haven's plants render in Storm and Aurora.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

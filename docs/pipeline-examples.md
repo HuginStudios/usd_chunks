@@ -9,9 +9,9 @@ from the command line.
 | --- | --- | --- |
 | [CAD to render](#cad-to-render) | `cad_to_render.py` | CAD Import, MaterialX, lights, camera, Render |
 | [Product configurator](#product-configurator) | `configurator.py` | Variant sets, materials bound inside a variant, one render per option |
-| [URDF for Isaac Sim](#urdf-for-isaac-sim) | `urdf_to_isaac.py` | URDF Import, Pose Articulation, a sim-ready physics scene |
+| [URDF for Isaac Sim](#urdf-for-isaac-sim) | `urdf_to_isaac.py` | The SO-101 arm: URDF Import, Pose Articulation, a sim-ready physics scene |
 | [Batch an asset library](#batch-an-asset-library) | `batch_library.py` | `usdchunks batch` over a folder, Poly Reduce |
-| [Scatter a biome](#scatter-a-biome) | `biome_render.py` | Scatter Points in layers, rendered |
+| [Scatter a forest](#scatter-a-forest) | `forest.py` | Scatter Points in layers, with Poly Haven firs, logs, shrubs and grass |
 | [Break something](#break-something) | `boom.py` | Fracture and the RBD Solver |
 | [Buildings and water](#buildings-and-water) | `houses_and_water.py` | House, Particle Solver |
 
@@ -38,6 +38,22 @@ argument: `python examples/scripts/boom.py C:/tmp/boom`.
 - **A full USD build:** usdview's, Houdini's or Blender's Python. It renders, and it has
   MaterialX. Use it for the CAD and configurator scripts, and for the images.
 
+**Assets.** The URDF, forest, boom and houses scripts use free assets: models, textures and
+an HDRI from [Poly Haven](https://polyhaven.com) (CC0) and the SO-101 arm from
+[SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) (Apache 2.0). Each script fetches
+what it needs the first time it runs, into `examples/assets/downloads/`. To fetch all of it
+at once (about 230 MB), or to keep it somewhere else:
+
+```
+USD_CHUNK_EXAMPLE_ASSETS=D:/assets/examples python examples/scripts/example_assets.py
+```
+
+`example_assets.py` also makes Poly Haven's models render. Their USD files come from
+Blender, with MaterialX networks that Storm draws black and that crash Aurora, and preview
+networks without the leaf cut-outs. `prototypes()` writes each asset as a reference with a
+plain UsdPreviewSurface made from its own textures, keeps one variation of a set (Poly Haven
+puts them side by side), and hands that to Inline USD.
+
 **Optional libraries.** Some chunks need a library the first time they cook: CAD Import
 needs `cadquery-ocp`, Fracture `manifold3d`, the RBD Solver `mujoco`, Particle Solver
 `taichi` and Poly Reduce `fast-simplification`. The chunk asks before it installs. Set
@@ -48,6 +64,20 @@ needs `cadquery-ocp`, Fracture `manifold3d`, the RBD Solver `mujoco`, Particle S
 That runs USD's `usdrecord` in its own process, which makes its own OpenGL context, so
 Storm works from a terminal too. Use an absolute `output_image`: a relative one is taken from
 the working directory, not from the network's folder.
+
+The URDF, forest, boom and houses scripts render with **Aurora**, the path tracer in the
+2026-11 USD bundle, when it is installed, and with Storm otherwise. Aurora gives soft shadows
+and light that bounces. Two things to know:
+
+- Aurora reads its own settings (samples, denoiser, the HDRI as the background) only from
+  the session layer, not from the stage. `example_assets.render_params()` writes them to a
+  small file and passes it with `--sessionLayer` in the Render chunk's Extra Args.
+- Aurora reads a Dome Light's image path as written, so give it an absolute path.
+
+**A Distant Light needs Normalize.** Its Intensity is the brightness of the sun's disc, not
+the light that lands. A disc a degree wide at Intensity 3 lights almost nothing, in Storm or
+Aurora. Turn on Normalize, and Intensity is the light that lands:
+`scene.create.distant_light(..., intensity=3.0, normalize=True)`.
 
 ## CAD to render
 
@@ -141,7 +171,7 @@ options in it, with no usd_chunks installed.
 
 ## URDF for Isaac Sim
 
-![An orange three-joint arm posed on a grey floor](assets/examples/urdf_to_isaac.jpg)
+![The yellow SO-101 arm reaching for a blue block on a concrete floor](assets/examples/urdf_to_isaac.jpg)
 
 ```
 python examples/scripts/urdf_to_isaac.py
@@ -149,27 +179,39 @@ python examples/scripts/urdf_to_isaac.py
 
 ```
 Stage Settings (Z up) → URDF Import → Pose Articulation → Property Editor → Inline USD
-  → lights → Camera → Render
+  → Mesh (floor) → Transform → Inline USD → Bind Material → lights → Camera → Render
 ```
 
-URDF Import turns a URDF robot into UsdPhysics: each link is a rigid body with its mass,
-each collision shape gets `CollisionAPI`, each joint becomes a `PhysicsRevoluteJoint`,
+The robot is the [SO-101](https://github.com/TheRobotStudio/SO-ARM100), an open 6-axis arm
+with STL meshes. URDF Import turns it into UsdPhysics: each link is a rigid body with its
+mass, each collision shape gets `CollisionAPI`, each joint becomes a `PhysicsRevoluteJoint`,
 `PhysicsPrismaticJoint` or `PhysicsFixedJoint` with its limits, and the base gets
-`ArticulationRootAPI`. Pose Articulation has one slider per moving joint, named after the
-link that joint moves. It also sets each joint drive's target angle.
+`ArticulationRootAPI`. The URDF's colours become materials.
+
+Pose Articulation has one slider per moving joint, named after the link that joint moves:
+`shoulder_link` turns the arm, `upper_arm_link`, `lower_arm_link` and `wrist_link` bend it,
+`moving_jaw_so101_v1_link` opens the gripper. It also sets each joint drive's target angle.
 
 What the example adds for a simulator:
 
 - **Stiffness on the drives.** URDF carries joint damping but no stiffness, so a drive would
-  hold nothing. A Property Editor sets `float drive:angular:physics:stiffness = 400` on the
-  three joints.
-- **A physics scene, a floor, and a fixed joint** bolting the base to the world, written as
-  plain USD with Inline USD. Leave the fixed joint out for a mobile robot.
+  hold nothing. A Property Editor sets `float drive:angular:physics:stiffness = 40` on the
+  six joints.
+- **A physics scene, a fixed joint** bolting the base to the world, a block to pick up and a
+  collider on the floor, written as plain USD with Inline USD. Leave the fixed joint out for
+  a mobile robot.
 
-Open `out/desk_arm_scene.usda` in Isaac Sim and press Play. For your own robot, set
-`file_path` to its `.urdf` and Mesh Root to the folder that `package://` paths are found
-in. Robots in centimetre stages need `scale=100`. URDF Import converts STL meshes itself.
-Other mesh formats are only referenced, so they show only where USD can read that format.
+Open `out/so101_scene.usda` in Isaac Sim and press Play. Try another pose without opening
+anything:
+
+```
+usdchunks run examples/scripts/out/urdf_network.usda Pose.shoulder_link=20 Pose.wrist_link=30 -o arm.usda
+```
+
+For your own robot, set `file_path` to its `.urdf` and Mesh Root to the folder that
+`package://` paths are found in. Robots in centimetre stages need `scale=100`. URDF Import
+converts STL meshes itself. Other mesh formats are only referenced, so they show only where
+USD can read that format.
 
 ## Batch an asset library
 
@@ -200,47 +242,60 @@ prim *is* a Mesh comes in through Reference as an Xform, and Poly Reduce finds n
 it. The [batch skill](https://github.com/HuginStudios/usd_chunks/blob/main/skills/usd-chunks-batch/SKILL.md)
 has every flag.
 
-## Scatter a biome
+## Scatter a forest
 
-![A forest of stand-in cone trees, bushes, ferns and grass on soil](assets/examples/biome_render.jpg)
-
-```
-python examples/scripts/biome_render.py
-```
-
-`biome.py` builds the forest: a Noise Field makes clearings, and four Scatter Points layers
-grow from each other (bushes near trees, ferns near bushes, grass away from trees). The
-render script adds a soil material, a sun, a sky, a camera and a Render. It reuses the
-same network by calling `biome.build(scene)`.
-
-Try a new set of clearings without touching the script:
+![Young firs with shrubs, nettles and grass on a forest floor, under a cloudy sky](assets/examples/forest.jpg)
 
 ```
-usdchunks run examples/scripts/out/biome_render_network.usda NoiseField.seed=7
+python examples/scripts/forest.py
 ```
 
-Point each layer's `prototypes` at real assets for a real forest.
+A Noise Field makes clearings, and four Scatter Points layers grow from each other: young
+firs on the noise, logs, stumps and rocks near the trees, shrubs and nettles under them, and
+grass out in the open. Every layer reads the one before through Grow Near, so there is no
+field to paint.
+
+- The prototypes are Poly Haven assets, written by `example_assets.prototypes()` into one
+  Inline USD under `/protos`, hidden. Each layer lists its prototypes with a weight and a
+  scale: a young fir is 1.2 m, scaled 3.5 to 6 times.
+- The forest floor is a texture on an 80 m grid. Aurora ignores a UsdTransform2d, so the
+  grid is built 32 units wide and scaled 2.5 times: the texture repeats every 2.5 m.
+- Instanced triangles add up: 220 firs of 150,000 triangles each is 34 million. Scatter
+  Points warns past 20 million. Aurora has crashed past about 60 million; use Poly Reduce on
+  a heavy prototype, or fewer instances.
+
+Try another forest from the command line:
+
+```
+usdchunks run examples/scripts/out/forest_network.usda Clearings.seed=7 Trees.max_count=300
+```
+
+`biome.py` is the same idea with stand-in shapes, and needs no download.
 
 ## Break something
 
-![Stone pieces scattered on a grey floor after a block broke apart](assets/examples/boom.jpg)
+![A stone block breaking apart as it lands in a concrete yard, by road barriers and barrels](assets/examples/boom.jpg)
 
 ```
 python examples/scripts/boom.py
 ```
 
 ```
-Ground → Cube → Transform → Preview Surface ×2 → Fracture → RBD Solver → lights → Camera → Render
+Stage Settings → Mesh (yard) → Inline USD (props) → Transforms → Cube → Transform
+  → materials → Fracture → RBD Solver → lights → Camera → Render
 ```
 
-A 1 m stone block is dropped from 5 m. **Fracture** breaks it in advance into a tree of
+A 1 m stone block is dropped from 5 m into a concrete yard, by Poly Haven road barriers and
+barrels. **Fracture** breaks it in advance into a tree of
 pieces that fit together exactly, with one material on the outside and another on the
 cuts. The **RBD Solver** drops it with MuJoCo. When an impact is stronger than a piece's
 Strength, the piece breaks into its children. The whole fall is baked as animation on a
 PointInstancer. Open `out/boom.usda` in usdview and scrub the timeline.
 
 - Strength is in multiples of a piece's own weight. Lower means it breaks more easily; the
-  example uses 1.
+  example uses 0.6.
+- Fracture keeps the source's UVs, so a texture on the block carries onto the pieces. The
+  cut faces get the inside material.
 - Break Kick is how fast new pieces spring apart.
 - Headless (scripts, `usdchunks run`), the solver bakes when it cooks. In a UI, press
   **Run Simulation**.
@@ -253,7 +308,7 @@ usdchunks run examples/scripts/out/boom_network.usda Fracture.seed=3 RBD.strengt
 
 ## Buildings and water
 
-![Three cottages, red, yellow and blue, with a pool of blue water in front](assets/examples/houses_and_water.jpg)
+![Three cottages, red, yellow and blue, on a lawn, with water spreading in front of them](assets/examples/houses_and_water.jpg)
 
 ```
 python examples/scripts/houses_and_water.py
@@ -265,10 +320,14 @@ Taichi, on the GPU when there is one), baked as points over 48 frames.
 
 - Without a Container, the sim's box is the source block grown by Margin, and it reaches
   down to the colliders under it (here the ground). Its walls are solid but invisible, so
-  give the water room: the example uses `margin=3.0`.
+  give the water room: the example uses `margin=2.5`.
 - A Container gives the box from a prim's bounds instead. The box is always made a cube,
   and a hidden prim has no bounds, so keep the container visible while the sim reads it.
 - Give `material_prim` a material, or a renderer draws the points in their display colour.
+- Aurora draws meshes and instancers, not points, so the example sets Render As to
+  Instanced Spheres. The water is still a cloud of small balls: there is no chunk yet that
+  turns particles into a surface. Dark and glossy reads best, as water is mostly what it
+  reflects.
 
 ```
 usdchunks run examples/scripts/out/houses_network.usda Cottage1.roof_style=Hip Cottage1.floors=2
