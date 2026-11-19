@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: after installing a chunk's packages, the status bar names the package and how
+  many chunks cooked again ("Installed scipy; 4 chunk(s) recooked"). It said "0 chunk node
+  type(s) now available", which read like a failure.
 - Blender: the dialog that offers to install a chunk's packages names the packages without
   their version ranges, and the nodes in the open network that wait for them: "OK to
   install scipy for scatter_points (Bushes, Ferns, Grass, Trees)?". It showed
