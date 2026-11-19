@@ -319,6 +319,26 @@ def test_a_wired_but_unpainted_field_grows_nothing(host) -> None:
     assert "nothing painted" in node.get_param("readout").value
 
 
+def test_vines_grow_over_every_picked_surface(host) -> None:
+    """A wall and the one beside it are one place to grow. Only the first pick was read."""
+    second = _wall(host.stage, "/World/Wall2")
+    UsdGeom.Xformable(second.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(SIZE * 2.0, 0.0, 0.0))
+    _paint(host.mesh, lambda p: 1.0)
+    _paint(second, lambda p: 1.0)
+
+    host.vine(surface_prim=f"{WALL}, /World/Wall2", root_count=6)
+    x = host.points()[:, 0]
+
+    assert (x < SIZE + 0.5).any()
+    assert (x > SIZE * 2.0 - 0.5).any()
+
+
+def test_a_prim_picked_with_its_parent_is_read_once() -> None:
+    assert vine._outermost(["/World", "/World/Wall", "/Other/Rock", "/WorldX"]) == [
+        "/World", "/Other/Rock", "/WorldX"
+    ]
+
+
 def test_with_no_field_wired_the_whole_mesh_is_fair_game(host) -> None:
     host.vine(density_primvar="")
     points = host.points()

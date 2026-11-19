@@ -15,6 +15,10 @@ This file starts with the first release; development before that is in the commi
   Every vine is cut at the same moment, so a low value is a young vine. Changing it does
   not grow the vine again. Each curve point also carries a `growth` primvar, 0 at the roots
   to 1 at the last tip, so a shader can animate the vine growing.
+- Vine grows over every mesh picked in Surface Mesh, or matched by a pattern like
+  `/World/Walls/*`, and crosses from one to the next where they touch. It read only the
+  first. Roots, Min Branch, Smoothing and Max Points are sliders now; saved values load as
+  they were.
 
 ### Changed
 

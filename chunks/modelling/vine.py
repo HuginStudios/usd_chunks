@@ -116,6 +116,19 @@ class _Surface:
         zero1 = np.zeros(0, dtype=np.float64)
         return cls(zero3, zero3, zero3, zero3, zero1, zero1, zero1)
 
+    @classmethod
+    def join(cls, parts):
+        """Several surfaces as one."""
+        parts = [part for part in parts if len(part)]
+        if not parts:
+            return cls.empty()
+        if len(parts) == 1:
+            return parts[0]
+        return cls(*(
+            np.concatenate([getattr(part, name) for part in parts])
+            for name in ("v0", "v1", "v2", "n", "w0", "w1", "w2")
+        ))
+
     def __len__(self):
         return len(self.v0)
 
@@ -244,14 +257,14 @@ def _collect_surface(prim, primvar_name):
         _face_outward(mesh, p, n, (i0, i1, i2), len(points))
         parts.append(_Surface(v0, v1, v2, n, weights[i0], weights[i1], weights[i2]))
 
-    if not parts:
-        return _Surface.empty()
-    if len(parts) == 1:
-        return parts[0]
-    return _Surface(*(
-        np.concatenate([getattr(part, name) for part in parts])
-        for name in ("v0", "v1", "v2", "n", "w0", "w1", "w2")
-    ))
+    return _Surface.join(parts)
+
+
+def _outermost(paths):
+    """`paths` without any that sit under another one, which would add its meshes twice."""
+    picked = [Sdf.Path(path) for path in paths]
+    return [str(path) for path in picked
+            if not any(other != path and path.HasPrefix(other) for other in picked)]
 
 
 # ---------------------------------------------------------------------------
@@ -1380,7 +1393,11 @@ def execute(node):
     # part of what this cook is growing on.
     upstream = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
     field = (node.get_param("density_primvar").value or "").strip()
-    surface = _collect_surface(upstream.GetPrimAtPath(paths[0]), field).painted()
+    # Every picked prim, not only the first: a wall and the pillar beside it are one place to
+    # grow, and a vine crosses from one to the other where they touch.
+    surface = _Surface.join(
+        [_collect_surface(upstream.GetPrimAtPath(path), field) for path in _outermost(paths)]
+    ).painted()
     if not surface:
         _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
         return
@@ -1622,8 +1639,9 @@ def main():
             "surface_prim",
             "Surface Mesh",
             flags=_PF.LABELED | _PF.PRIM_SELECTION,
-            tooltip="The mesh the vines climb — or any prim above one. Point this and the\n"
-            "Scatter Brush at the same thing.",
+            tooltip="The meshes the vines climb — or prims above them. Pick several, or use a\n"
+            "pattern like /World/Walls/*, and the vines grow over all of them, crossing where\n"
+            "they touch. Point the Scatter Brush at the same thing.",
         )
     )
     chunk_api.add_param(
@@ -1758,10 +1776,11 @@ def main():
         )
     )
     grow.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "root_count",
             "Roots",
             min_value=1,
+            max_value=50,
             default_value=5,
             is_int=True,
             flags=_PF.LABELED,
@@ -1770,7 +1789,7 @@ def main():
         )
     )
     grow.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "min_branch",
             "Min Branch",
             min_value=1,
@@ -1845,7 +1864,7 @@ def main():
         )
     )
     shape.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "smooth",
             "Smoothing",
             min_value=0,
@@ -1923,7 +1942,7 @@ def main():
         )
     )
     advanced.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "max_points",
             "Max Points",
             min_value=16,
@@ -1964,9 +1983,6 @@ def config():
         description="""
         Grows climbing vines over the painted part of a mesh, with points for leaves along them.
 
-        Vine — grows climbing vines across the part of a mesh a Scatter Brush
-        painted.
-
         Wire a Scatter Brush's Density Field output into this chunk's Density
         Field input, with both pointed at the same mesh, and vines fill exactly
         what was painted. Wire its Painted Points output into Painted Points as
@@ -1980,7 +1996,7 @@ def config():
         roots to 1 at the last tip, for shaders that animate the vine growing.
 
         Parameters:
-          - Surface Mesh: the mesh the vines climb.
+          - Surface Mesh: the meshes the vines climb; several, or a pattern.
           - Growth %: how far the vines have grown, 0 to 100. Cuts them at one
             moment of their growth; changing it does not grow them again.
           - Auto Step / Step: the length of one growth step — how smoothly a
