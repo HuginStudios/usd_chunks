@@ -86,3 +86,13 @@ def test_animated_the_mesh_and_the_leaves_grow_in_together(animated) -> None:
     assert [len(stems.Get(f)) > 0 for f in (1, 24, 48)] == [False, True, True]
     assert len(stems.Get(24)) < len(stems.Get(48))
     assert shown[0] == 0 and 0 < shown[1] < shown[2] == leaves
+
+
+def test_the_saved_network_carries_the_paint(tmp_path) -> None:
+    """Reopened in usdview, every chunk cooks again. The brush's paint has to be in the file
+    for that cook to find it, and a brush records it when its stroke ends -- as a viewport
+    stroke does. Without that the reopened wall had no paint and nothing grew."""
+    network, _result = ivy_wall.build(str(tmp_path / "net.usda"), str(tmp_path / "ivy.usda"))
+    text = Path(network).read_text(encoding="utf-8")
+
+    assert "chunk:paint:weights" in text

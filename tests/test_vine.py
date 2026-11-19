@@ -834,6 +834,23 @@ def test_leaves_alternate_either_side_of_the_stem(host) -> None:
     assert np.mean(turns < 0.0) > 0.8
 
 
+def test_each_leaf_says_which_way_it_points_and_how_big_it_is(host) -> None:
+    """Scatter Points turns and sizes each leaf by these: out from its stem along the wall,
+    and smaller toward the tip it is growing toward."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine(leaf_young=0.3)
+    primvars = UsdGeom.PrimvarsAPI(host.leaves().GetPrim())
+    direction = np.asarray(primvars.GetPrimvar("direction").Get(), dtype=np.float64)
+    scale = np.asarray(primvars.GetPrimvar("scale").Get(), dtype=np.float64)
+    count = len(host.leaves().GetPointsAttr().Get())
+
+    assert len(direction) == len(scale) == count
+    assert np.allclose(np.linalg.norm(direction, axis=1), 1.0, atol=1e-5)
+    # Along the wall, which is the y = 0 plane: no part of it points off the wall.
+    assert np.abs(direction[:, 1]).max() < 1e-4
+    assert scale.min() == pytest.approx(0.3, abs=0.05) and scale.max() == pytest.approx(1.0)
+
+
 def test_a_bare_base_keeps_leaves_off_the_oldest_stems(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine()

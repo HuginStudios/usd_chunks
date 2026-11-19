@@ -1341,6 +1341,33 @@ def _painted_points(stage, points_path, up=None):
     return positions, facing[:len(positions)]
 
 
+#: Per-point primvars a painted cloud may carry. Vine writes both on its leaf points.
+#: direction: which way the Up Along Surface axis points on that instance, instead of up the
+#: surface -- the way a leaf leaves its stem. scale: multiplies that instance's scale.
+_PAINTED_DIRECTION = "direction"
+_PAINTED_SCALE = "scale"
+
+
+def _painted_extras(stage, points_path, count):
+    """A painted cloud's direction and scale primvars: ((count, 3) or None, (count,) or None).
+
+    Either is None when the cloud does not carry it, one value per point, at the default time.
+    """
+    prim = stage.GetPrimAtPath(points_path) if points_path and stage is not None else None
+    if not prim or not prim.IsValid() or not count:
+        return None, None
+    primvars = UsdGeom.PrimvarsAPI(prim)
+
+    def read(name, width):
+        primvar = primvars.GetPrimvar(name)
+        values = primvar.Get() if primvar and primvar.HasValue() else None
+        if values is None or len(values) != count:
+            return None
+        return np.asarray(values, dtype=np.float64).reshape((count, width) if width > 1 else (count,))
+
+    return read(_PAINTED_DIRECTION, 3), read(_PAINTED_SCALE, 1)
+
+
 def _painted_hidden(stage, points_path):
     """For an animated painted cloud: {time: indices of its points missing at that time}.
 
@@ -1961,7 +1988,7 @@ _ALIGN_UP_AXES = {
 }
 
 
-def _twist_up(base, normals, axis, up):
+def _twist_up(base, normals, axis, up, toward=None):
     """The turn about each instance's own up axis that points *axis* up the surface.
 
     After base, the prototype's up axis lies along the normal and *axis* somewhere in the
@@ -1974,6 +2001,9 @@ def _twist_up(base, normals, axis, up):
         normals: (N, 3) unit normals.
         axis: (3,) the prototype axis, at right angles to its up axis.
         up: (3,) world (and prototype) up.
+        toward: (N, 3) directions to point *axis* along instead of world up, one per
+            instance -- a painted cloud's direction primvar, such as the way each leaf
+            leaves its stem. None for world up.
 
     Returns:
         (N, 4) quaternions about the prototype's up axis, to apply before base.
@@ -1982,7 +2012,8 @@ def _twist_up(base, normals, axis, up):
     length = np.linalg.norm(n, axis=1, keepdims=True)
     n = np.divide(n, length, out=np.zeros_like(n), where=length > 1e-12)
     turned = _rotate_arrays(base, np.broadcast_to(np.asarray(axis, dtype=np.float64), n.shape))
-    target = up[None, :] - np.einsum("ij,j->i", n, up)[:, None] * n
+    aim = np.broadcast_to(up, n.shape) if toward is None else np.asarray(toward, dtype=np.float64)
+    target = aim - np.einsum("ij,ij->i", n, aim)[:, None] * n
     length = np.linalg.norm(target, axis=1)
     on_slope = length > 1e-6
     target[on_slope] /= length[on_slope, None]
@@ -1992,7 +2023,8 @@ def _twist_up(base, normals, axis, up):
     return np.column_stack([np.cos(half), up[None, :] * np.sin(half)[:, None]])
 
 
-def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng, align_up="Off"):
+def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng, align_up="Off",
+                  toward=None):
     """The loop's _compute_orientation then _apply_random_rotation, for every instance at once.
 
     The random numbers come off *rng* one Python call at a time, in the loop's order -- a
@@ -2013,6 +2045,7 @@ def _orientations(count, mode, normals, protos, assignment, world_up, axis, amou
             of one per instance, as painted points seed each their own.
         align_up: Align to Normal only: the prototype axis turned up the surface ("+X", ...),
             or "Off".
+        toward: (count, 3) directions that axis follows instead of up the surface, or None.
 
     Returns:
         (count, 4) float64 quaternions, (real, i, j, k).
@@ -2050,7 +2083,8 @@ def _orientations(count, mode, normals, protos, assignment, world_up, axis, amou
         base = _align_quats(up, normals)
         turn_axis = np.asarray(_ALIGN_UP_AXES.get(align_up, (0.0, 0.0, 0.0)))
         if np.abs(np.cross(turn_axis, up)).sum() > 1e-6:  # an axis along up has nothing to turn
-            base = _quat_mul_arrays(base, _twist_up(base, np.asarray(normals, dtype=np.float64), turn_axis, up))
+            base = _quat_mul_arrays(
+                base, _twist_up(base, np.asarray(normals, dtype=np.float64), turn_axis, up, toward))
     elif random_mode:
         u1, u2, u3 = shoemake.T
         s1, s2 = np.sqrt(1 - u1), np.sqrt(u1)
@@ -2733,8 +2767,9 @@ _POINT_ARRAYS = ("positions", "orientations", "scales", "protoIndices", "points"
 
 
 #: What a painted cloud carries beyond its default points that changes the cook: the ids it
-#: is matched by, and (with them) every time sample of its points. See `_painted_hidden`.
-_PAINTED_ANIMATED = ("points", "ids")
+#: is matched by, every time sample of its points (see `_painted_hidden`), and the direction
+#: and scale each point may carry (see `_painted_extras`).
+_PAINTED_ANIMATED = ("points", "ids", f"primvars:{_PAINTED_DIRECTION}", f"primvars:{_PAINTED_SCALE}")
 
 
 def _hash_painted(stage, paths) -> str:
@@ -2980,6 +3015,7 @@ def execute(node):
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
     placed, placed_normals = _painted_points(scratch_stage, points_input, world_up)
+    placed_toward, placed_scale = _painted_extras(scratch_stage, points_input, len(placed))
     sizes = None  # scales the sampler already drew, when spacing follows scale
 
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
@@ -3181,6 +3217,8 @@ def execute(node):
             else:
                 scale_rngs = itertools.repeat(scale_rng, count)
             s_all = sizes if sizes else [_draw_scale(r, scale_min, scale_max, scale_bias) for r in scale_rngs]
+            if placed and placed_scale is not None:
+                s_all = list(np.asarray(s_all, dtype=np.float64) * placed_scale)
             normals_np = _vectors(normals, count)
             positions_np = _vectors(positions, count).astype(np.float32)
             if abs(normal_offset) > 1e-9:
@@ -3189,7 +3227,8 @@ def execute(node):
             out_positions = Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions_np))
             out_indices = Vt.IntArray.FromNumpy(np.asarray(assignment, dtype=np.int32))
             quats = _orientations(count, orient_mode, normals_np, protos, assignment, world_up,
-                                  rand_axis, rand_amount, orient_rng, align_up)
+                                  rand_axis, rand_amount, orient_rng, align_up,
+                                  placed_toward if placed else None)
             # Through float32 as the loop's Gf.Quatf did, then half, (i, j, k, real) for Vt.
             out_orients = Vt.QuathArray.FromNumpy(
                 np.ascontiguousarray(quats[:, [1, 2, 3, 0]].astype(np.float32).astype(np.float16)))
@@ -3204,7 +3243,8 @@ def execute(node):
         if count and not (fast or arrays) and scatter_mode != "Stack" and orient_mode == "Align to Normal":
             loop_rngs = [random.Random(seed + 7 + i) for i in range(count)] if placed else orient_rng
             loop_quats = _orientations(count, orient_mode, _vectors(normals, count), protos, assignment,
-                                       world_up, rand_axis, rand_amount, loop_rngs, align_up)
+                                       world_up, rand_axis, rand_amount, loop_rngs, align_up,
+                                       placed_toward if placed else None)
 
         for i in range(0 if fast or arrays else count):
             pidx = int(assignment[i])
@@ -3222,6 +3262,8 @@ def execute(node):
                 scale_rng = random.Random(seed + 13 + i)
                 orient_rng = random.Random(seed + 7 + i)
             s = sizes[i] if sizes else _draw_scale(scale_rng, scale_min, scale_max, scale_bias)
+            if placed and placed_scale is not None:
+                s *= float(placed_scale[i])
             nrm = normals[i]
 
             if scatter_mode == "Stack":
@@ -3905,7 +3947,10 @@ def main():
             "it points straight up and on a slope uphill. A strand modelled hanging along -X\n"
             "takes +X: it then hangs down whatever wall it is on. Off: the prototype is\n"
             "only tipped onto the surface, and how it is turned on it depends on which\n"
-            "way the surface faces. Surfaces facing straight up or down are left as Off.",
+            "way the surface faces. Surfaces facing straight up or down are left as Off.\n"
+            "Painted points that carry a direction (a Vine's leaf points do) point this axis\n"
+            "along it instead: set it to a leaf's tip axis and each leaf points away from\n"
+            "its stem.",
         )
     )
     var_grp.get_param("orient_mode").add_callback(_on_orient_changed)

@@ -28,6 +28,7 @@ def _leaf(points=24, size=0.07):
     outline.
     """
     centre = (0.0, 0.0, size * 0.5)
+    cup = 0.006 / (size * 0.5) ** 2           # the leaf's face is y = cup * r^2
     outline = []
     for i in range(points):
         angle = 2.0 * math.pi * i / points
@@ -35,8 +36,14 @@ def _leaf(points=24, size=0.07):
         lobe = 0.62 + 0.38 * abs(math.cos(2.5 * angle)) ** 3 + 0.12 * max(math.cos(angle), 0.0)
         radius = size * 0.5 * lobe
         x, z = math.sin(angle) * radius, centre[2] + math.cos(angle) * radius
-        outline.append((x, 0.006 * (radius / (size * 0.5)) ** 2, z))
+        outline.append((x, cup * radius * radius, z))
     verts = [centre] + outline
+    # The cup's own normals, so the leaf shades smooth rather than as a fan of facets.
+    normals = []
+    for x, _y, z in verts:
+        nx, nz = -2.0 * cup * x, -2.0 * cup * (z - centre[2])
+        length = math.sqrt(nx * nx + 1.0 + nz * nz)
+        normals.append((nx / length, 1.0 / length, nz / length))
     faces = [i for k in range(points) for i in (0, 1 + k, 1 + (k + 1) % points)]
     st = [(0.5 + x / size, z / size) for x, _y, z in verts]
 
@@ -56,6 +63,7 @@ def Xform "protos"
         int[] faceVertexCounts = [{", ".join(["3"] * points)}]
         int[] faceVertexIndices = [{", ".join(str(i) for i in faces)}]
         point3f[] points = [{vec(verts)}]
+        normal3f[] normals = [{vec(normals)}] (interpolation = "vertex")
         texCoord2f[] primvars:st = [{vec(st)}] (interpolation = "vertex")
         uniform token subdivisionScheme = "none"
     }}
@@ -83,7 +91,8 @@ def build(network="ivy_wall_network.usda", result="ivy_wall.usda", animate=False
                 brush, surface_prim="/World/wall", vine_path="/World/ivy",
                 density_primvar=brush.get_param("density_name"),
                 density=0.5, thickness=0.6, hang=15.0, hang_length=15.0, leaf_spacing=2.5,
-                leaf_spread=1.2, leaf_bare=15.0, **({"animate": True, "start_frame": 1, "end_frame": 48} if animate else {}),
+                leaf_spread=0.4, leaf_bare=15.0,
+                **({"animate": True, "start_frame": 1, "end_frame": 48} if animate else {}),
             )
             tube = scene.create.curves_to_mesh(
                 ivy, curves_prim=ivy.get_param("out_curves"), primpath_location="/World/ivy/Stems",
@@ -99,8 +108,10 @@ def build(network="ivy_wall_network.usda", result="ivy_wall.usda", animate=False
             )
             leaves = scene.create.scatter_points(
                 leaf_look, points_prim=ivy.get_param("out_leaves"), inst_path="/World/ivy/Foliage",
-                prototypes=[{"proto_path": "/protos/leaf"}], scale_min=0.8, scale_max=1.5,
-                rand_axis="Y",
+                prototypes=[{"proto_path": "/protos/leaf"}], scale_min=0.8, scale_max=1.3,
+                # The leaf's tip (+Z) follows each leaf point's direction: out from its stem.
+                # A little random turn about its face keeps the rows from looking combed.
+                align_up="+Z", rand_axis="Y", rand_amount=25.0,
             )
             sun = scene.create.light(
                 leaves, primpath_location="/World/lights/sun", light_type="DistantLight",
@@ -123,8 +134,11 @@ def build(network="ivy_wall_network.usda", result="ivy_wall.usda", animate=False
             for y in range(5, 15, 3)
             for x in range(-19, 20, 2)
         ]
+        # Wrapped in start/stop as a viewport stroke is: letting go is when the brush records
+        # its paint on its own prim, so the saved network carries it, and recooks the chain.
+        brush.start_gizmo()
         gizmo.apply_stroke(brush, "paint", stroke)
-        ivy.execute()
+        brush.stop_gizmo()
         scene.save(network)
         scene.export(result)
     return network, result

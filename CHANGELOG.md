@@ -40,6 +40,10 @@ This file starts with the first release; development before that is in the commi
 - `examples/scripts/ivy_wall.py` and a Vines page in the docs: ivy on a stone wall, painted,
   grown, swept to a mesh, shaded and lit, ready to render in a renderer that draws no curves
   (Aurora). `animate=True` grows it over 48 frames.
+- Vine's leaves point away from their stem and are smaller toward each growing tip (Tip Leaf
+  Size). The leaf points carry a `direction` and a `scale` primvar; Scatter Points points
+  the Up Along Surface axis along a painted point's direction, when it has one, and
+  multiplies its scale by the painted scale.
 
 ### Changed
 
