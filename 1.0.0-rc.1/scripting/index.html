@@ -1,0 +1,2498 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://huginstudios.github.io/usd_chunks/1.0.0-rc.1/scripting/">
+      
+      
+        <link rel="prev" href="../runtime-chunks/">
+      
+      
+        <link rel="next" href="../surface_flow/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Scripting - USD Chunks</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#scripting" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="USD Chunks" class="md-header__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            USD Chunks
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Scripting
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="lime"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  USD Chunks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../blender/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Blender
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../breakage/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Breakage: fracture, emit, simulate
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks, params and groups
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-requirements/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks that need pip packages
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../core-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Output, View and ChunkGroup
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../example/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Example
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../expressions/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Expressions
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../fast-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Making a chunk fast
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../gizmo-host-contract/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunk gizmos: the host contract
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../graph-frontends/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a graph frontend
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../houdini/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Houdini
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../install/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Install
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../node-graph-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using the node graph
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../plugins/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Plugins
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../runtime-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Building a chunk at runtime
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Scripting
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../surface_flow/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Liquid on surfaces: condensation, runs, drips
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../undo/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Undo and redo
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../writing-a-chunk/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a chunk module
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="USD Chunks" class="md-nav__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    USD Chunks
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    USD Chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../blender/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blender
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../breakage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Breakage: fracture, emit, simulate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks, params and groups
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-requirements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks that need pip packages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../core-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output, View and ChunkGroup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fast-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Making a chunk fast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gizmo-host-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunk gizmos: the host contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph-frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a graph frontend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../houdini/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Houdini
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-graph-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using the node graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building a chunk at runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripting
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#in-usdview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In usdview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#in-a-terminal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In a terminal
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#get-a-scene" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Get a scene
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#make-chunks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make chunks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#set-params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set params
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#connect-chunks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connect chunks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-one-chain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build one chain
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backdrops-and-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backdrops and notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#with-blocks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        with blocks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="with blocks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#department-layers-side-by-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Department layers side by side
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#save-and-cook" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Save and cook
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Save and cook">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-a-big-network-fast" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build a big network fast
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Build a big network fast">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#write-the-network-without-cooking-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write the network without cooking it
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inside-usdview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inside usdview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#live-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live sessions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Examples">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#five-boxes-in-a-row" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Five boxes in a row
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#open-a-saved-network-and-change-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open a saved network and change it
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-light-with-its-values-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A light with its values set
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-small-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A small set
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#under-the-hood" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Under the hood
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../surface_flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Liquid on surfaces: condensation, runs, drips
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../undo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Undo and redo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../writing-a-chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a chunk module
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_21" >
+        
+          
+          <label class="md-nav__link" for="__nav_21" id="__nav_21_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_21_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_21">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SUMMARY
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_core
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_flags/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_flags
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_notice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_notice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_resources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_resources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_stage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_stage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="scripting">Scripting<a class="headerlink" href="#scripting" title="Permanent link">⚓︎</a></h1>
+<p>You can build a network from Python instead of the node graph. A script makes the same
+chunks the graph does. What it builds opens as a graph, and a script can add to a graph
+you already have.</p>
+<p>The short version, with the common jobs in one table, is the build-network skill:
+<code>skills/usd-chunks-build-network/SKILL.md</code> in the repository. This page is the full reference.</p>
+<h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">⚓︎</a></h2>
+<h3 id="in-usdview">In usdview<a class="headerlink" href="#in-usdview" title="Permanent link">⚓︎</a></h3>
+<p>Open the Python interpreter (<strong>Window &gt; Interpreter</strong>) and paste this:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Scene</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">with</span> <span class="n">Scene</span><span class="o">.</span><span class="n">current</span><span class="p">()</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">box</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">prim_path</span><span class="o">=</span><span class="s2">"/geo/box"</span><span class="p">,</span> <span class="n">width</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">),</span> <span class="n">ty</span><span class="o">=</span><span class="mf">3.0</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The box shows up in the viewport, and the nodes show up in the graph. There is nothing to
+set up: if the Chunks panel works, this works too.</p>
+<h3 id="in-a-terminal">In a terminal<a class="headerlink" href="#in-a-terminal" title="Permanent link">⚓︎</a></h3>
+<p>Before you run a script, you need <strong>a Python with USD</strong> and usd_chunks installed in it.
+Use usdview's own Python, or install usd_chunks with
+<code>python -m pip install -e "./usd_chunks[standalone]"</code>, which adds <code>usd-core</code>. See
+<a href="../install/#quick-start">Install</a>.</p>
+<p>The chunks that come with usd_chunks are found by themselves. To use your own chunks too,
+set <code>USD_CHUNK_DIRS</code> to their folders, the same as for usdview.</p>
+<p>Save this as <code>box.py</code>:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Scene</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">with</span> <span class="n">Scene</span><span class="o">.</span><span class="n">new</span><span class="p">()</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">box</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">prim_path</span><span class="o">=</span><span class="s2">"/geo/box"</span><span class="p">,</span> <span class="n">width</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">),</span> <span class="n">ty</span><span class="o">=</span><span class="mf">3.0</span><span class="p">)</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"box_network.usda"</span><span class="p">)</span>   <span class="c1"># the network: opens as a graph</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">export</span><span class="p">(</span><span class="s2">"box.usda"</span><span class="p">)</span>         <span class="c1"># the result: plain USD, no Chunk prims</span>
+</span></code></pre></div>
+<p>Then run it:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>python box.py
+</span></code></pre></div>
+<p>Use <code>Scene.current()</code> in usdview and <code>Scene.new()</code> in a script. See
+<a href="#get-a-scene">Get a scene</a>.</p>
+<h2 id="get-a-scene">Get a scene<a class="headerlink" href="#get-a-scene" title="Permanent link">⚓︎</a></h2>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th>Gives you</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Scene.new()</code></td>
+<td>A new, empty scene of your own.</td>
+</tr>
+<tr>
+<td><code>Scene.open(path)</code></td>
+<td>A saved network, loaded and cooked.</td>
+</tr>
+<tr>
+<td><code>Scene.current()</code></td>
+<td>The scene that is running now, such as usdview's. <code>None</code> if there is none.</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>Scene()</code> is the same as <code>Scene.new()</code>.</li>
+<li><code>Scene(stage)</code> works on a stage you already have.</li>
+<li>A scene from <code>Scene.new()</code> is in metres (<code>metersPerUnit</code> 1). A Stage Settings chunk sets
+  other units; a stage you pass in, or a network you open, keeps its own.</li>
+<li>Only one scene can be live at a time. Leaving the <code>with</code> block closes a scene from
+  <code>Scene.new()</code> or <code>Scene.open()</code>. Without <code>with</code>, call <code>scene.close()</code> when you are done.</li>
+<li>Inside usdview, <code>Scene.new()</code> and <code>Scene.open()</code> raise an error. Use <code>Scene.current()</code>.</li>
+</ul>
+<h2 id="make-chunks">Make chunks<a class="headerlink" href="#make-chunks" title="Permanent link">⚓︎</a></h2>
+<p><code>scene.create</code> has one function per chunk:</p>
+<ul>
+<li><strong>Every chunk module, by its file name.</strong> <code>transform.py</code> is <code>scene.create.transform()</code>.
+  Your own chunks in <code>USD_CHUNK_DIRS</code> work the same way.</li>
+<li><strong>Every menu entry, by its label in snake_case.</strong> Mesh's "Cube" entry is
+  <code>scene.create.cube()</code>. Light's "Rect Light" is <code>scene.create.rect_light()</code>.</li>
+</ul>
+<p>Each function returns the chunk it made.</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">box</span><span class="p">,</span>                                          <span class="c1"># input: box runs first</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">"Lift"</span><span class="p">,</span>                                  <span class="c1"># node name (optional)</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">),</span> <span class="c1"># a param: wired to follow it</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">ty</span><span class="o">=</span><span class="mf">3.0</span><span class="p">,</span>                                       <span class="c1"># a value: set</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>To find what you can make and set:</p>
+<table>
+<thead>
+<tr>
+<th>To see</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Every chunk you can make</td>
+<td><code>usdchunks list</code> (or <code>usdchunks list &lt;word&gt;</code>), or <code>dir(scene.create)</code></td>
+</tr>
+<tr>
+<td>What a chunk is for, and every param it takes</td>
+<td><code>usdchunks show transform</code>, or <code>help(scene.create.transform)</code></td>
+</tr>
+<tr>
+<td>A chunk's param names</td>
+<td><code>usdchunks show transform</code>, or <code>[p.name for p in chunk.get_params()]</code> (group names are in the list too)</td>
+</tr>
+<tr>
+<td>Every chunk, in the order it was made</td>
+<td><code>scene.chunks_in_order()</code> (<code>scene.get_chunks()</code> lists the newest first)</td>
+</tr>
+</tbody>
+</table>
+<p>If the chunk name is in a string, use <code>scene.add("transform", box, ty=3.0)</code>. This also
+works for a file name that is not a Python name, like <code>my-node.py</code>.</p>
+<p>If a module and a menu entry have the same name, you get the module. If two menu entries
+have the same label, neither is in <code>scene.create</code>. Make the module and set its params
+instead.</p>
+<h2 id="set-params">Set params<a class="headerlink" href="#set-params" title="Permanent link">⚓︎</a></h2>
+<p>Pass params by name when you make the chunk. Params inside groups are found by name too.</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">lift</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">ty</span><span class="o">=</span><span class="mf">3.0</span><span class="p">)</span>
+</span></code></pre></div>
+<p>To change them later:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">scene</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">lift</span><span class="p">,</span> <span class="n">ty</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">lift</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"ty"</span><span class="p">)</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mf">5.0</span>     <span class="c1"># the same thing</span>
+</span></code></pre></div>
+<p>Chunks cook again by themselves when a value changes.</p>
+<p>A list param (Sublayer's <code>imports</code>, Scatter Points' <code>prototypes</code>) holds rows. Give it a
+Python list, one item per row. A dict sets a row's params by name, and the ones left out
+take their defaults. Where a row holds one param, the item can be just its value:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">sets</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">sublayer</span><span class="p">(</span><span class="n">imports</span><span class="o">=</span><span class="p">[</span><span class="s2">"lighting.usda"</span><span class="p">,</span> <span class="s2">"set.usda"</span><span class="p">])</span>   <span class="c1"># first is strongest</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">rocks</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">scatter_points</span><span class="p">(</span><span class="n">prototypes</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="p">{</span><span class="s2">"proto_path"</span><span class="p">:</span> <span class="s2">"/assets/rock"</span><span class="p">,</span> <span class="s2">"proto_weight"</span><span class="p">:</span> <span class="mf">200.0</span><span class="p">},</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="p">{</span><span class="s2">"proto_path"</span><span class="p">:</span> <span class="s2">"/assets/bush"</span><span class="p">},</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="p">])</span>
+</span></code></pre></div>
+<p>The list then has exactly those rows: setting it again with <code>scene.set</code> replaces them all.
+To change one param of one row and leave the rest, name it <code>list.row.param</code>. A list with
+fewer rows grows to hold the row you name:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">scene</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">rocks</span><span class="p">,</span> <span class="o">**</span><span class="p">{</span><span class="s2">"prototypes.1.proto_weight"</span><span class="p">:</span> <span class="mf">50.0</span><span class="p">})</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">scene</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">sets</span><span class="p">,</span> <span class="o">**</span><span class="p">{</span><span class="s2">"imports.2.sublayer_path"</span><span class="p">:</span> <span class="s2">"props.usda"</span><span class="p">})</span>   <span class="c1"># adds row 2</span>
+</span></code></pre></div>
+<p><code>usdchunks show &lt;chunk&gt;</code> lists each row's params.</p>
+<p>Each value you set cooks what it affects straight away, so setting several cooks several
+times. Set them inside <code>chunk.change_block()</code> and they count as one change: what they
+affect cooks once, when the block ends, with every value in place.</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">chunk</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">with</span> <span class="n">chunk</span><span class="o">.</span><span class="n">change_block</span><span class="p">():</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">lift</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"tx"</span><span class="p">)</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mf">1.0</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">lift</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"ty"</span><span class="p">)</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mf">2.0</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># lift, and everything after it, cooked once</span>
+</span></code></pre></div>
+<p>Blocks can nest. An inner block joins the outermost one.</p>
+<h2 id="connect-chunks">Connect chunks<a class="headerlink" href="#connect-chunks" title="Permanent link">⚓︎</a></h2>
+<p>There are two kinds of wire, the same two the graph draws.</p>
+<p><strong>The input port</strong> sets the order chunks run in. Pass a chunk's inputs first when you make
+it. You can pass more than one.</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">lift</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">)</span>      <span class="c1"># box -&gt; Transform</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">both</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">merge</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">)</span>         <span class="c1"># a and b -&gt; Merge; b wins</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">scene</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">b</span><span class="p">,</span> <span class="n">c</span><span class="p">)</span>                     <span class="c1"># b -&gt; c, for chunks that already exist</span>
+</span></code></pre></div>
+<p>Into a Merge, the last input wins, the same as a chunk chained after the others. Where <code>a</code>
+and <code>b</code> both author the same prim, <code>b</code>'s value is the one you get. <code>scene.connect(x, both)</code>
+wires one more branch in the same way: <code>x</code> takes slot 0, the strongest, as a wire dropped on
+the Merge in the graph does. To put it lower, give a slot: <code>scene.connect(x, both, slot=2)</code>.
+<code>scene.get_inputs(both)</code> lists the branches, strongest first.</p>
+<p><strong>Which chunks made a prim</strong> is what the node graph shows when you select one. Scripts ask
+with <code>get_chunk_stack</code>, the chunk version of <code>prim.GetPrimStack()</code>:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">stack</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">get_chunk_stack</span><span class="p">(</span><span class="s2">"/World/box"</span><span class="p">)</span>   <span class="c1"># [lift, box]: strongest first</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">scene</span><span class="o">.</span><span class="n">set_selected_chunks</span><span class="p">(</span><span class="n">stack</span><span class="p">)</span>              <span class="c1"># select them in the node graph</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">scene</span><span class="o">.</span><span class="n">get_chunk_prims</span><span class="p">(</span><span class="n">lift</span><span class="p">)</span>                   <span class="c1"># the other way: [Sdf.Path("/World/box")]</span>
+</span></code></pre></div>
+<p><code>scene.trace_prim(path)</code> says who did what: <code>.made_by</code> (the chunk that made it),
+<code>.changed_by</code> (the chunks that changed it, in the order their changes apply) and <code>.via</code> (for
+a prim inside an asset a chunk brought in: the asset's prim and that chunk).</p>
+<p><strong>A param wire</strong> makes one param follow another's value. Pass the param as the value:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">))</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">scene</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">lift</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">))</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">lift</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"primpath_location"</span><span class="p">)</span><span class="o">.</span><span class="n">connect_value</span><span class="p">(</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">))</span>
+</span></code></pre></div>
+<p>All three lines do the same thing. Both kinds of wire are saved with the network.</p>
+<h2 id="build-one-chain">Build one chain<a class="headerlink" href="#build-one-chain" title="Permanent link">⚓︎</a></h2>
+<p>In usdview, only the chunks wired into the graph's Output cook, or into the active View
+while one is active. The rest are switched off. So build your network as one chain: give
+each chunk the one before it as its input.</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">ground</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">ground</span><span class="p">(</span><span class="n">prim_path</span><span class="o">=</span><span class="s2">"/set/ground"</span><span class="p">)</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">box</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">ground</span><span class="p">,</span> <span class="n">prim_path</span><span class="o">=</span><span class="s2">"/set/box"</span><span class="p">)</span>                              <span class="c1"># ground -&gt; box</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">),</span> <span class="n">ty</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>  <span class="c1"># box -&gt; Transform</span>
+</span></code></pre></div>
+<p>A chunk you make without an input starts a new, separate chain. It stays off until the
+Output or a View points at it. This is on purpose, so you can build a side branch and look
+at it later.</p>
+<p>To end the graph at a chunk, use <code>scene.set_output()</code>. To look at a chunk, use
+<code>scene.set_view()</code>:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">lift</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">),</span> <span class="n">ty</span><span class="o">=</span><span class="mf">3.0</span><span class="p">)</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="n">scene</span><span class="o">.</span><span class="n">set_output</span><span class="p">(</span><span class="n">lift</span><span class="p">)</span>        <span class="c1"># the graph now ends at lift, and it cooks</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="n">scene</span><span class="o">.</span><span class="n">set_view</span><span class="p">(</span><span class="n">box</span><span class="p">)</span>           <span class="c1"># look at box for now, in View 2</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="n">scene</span><span class="o">.</span><span class="n">set_view</span><span class="p">(</span><span class="n">lift</span><span class="p">,</span> <span class="n">view</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>  <span class="c1"># and at lift in View 3</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scene.set_output(chunk)</code></td>
+<td>What <strong>Set Output</strong> does in the graph: the Output's wire moves to <code>chunk</code>, no View stays active, and the graph cooks to the Output. A graph with no Output gets one.</td>
+</tr>
+<tr>
+<td><code>scene.set_view(chunk)</code></td>
+<td>What <strong>Set View</strong> does: the View's old input is replaced, that View becomes active, and what it reaches cooks. It uses a View already showing <code>chunk</code>, else the first View the graph doesn't have yet, else the active one.</td>
+</tr>
+<tr>
+<td><code>scene.set_view(chunk, view=3)</code></td>
+<td>The same, in View 3. Views are numbered 2 and 3, as in the graph, since 1 is the Output.</td>
+</tr>
+</tbody>
+</table>
+<p><code>usdchunks run</code> cooks to the Output, and a ChunkGroup delivers its Output, so end a script
+with <code>scene.set_output()</code>. Use <code>scene.set_view()</code> to look at something along the way.</p>
+<p>A script's own <code>Scene.new()</code> has no Output or View, so all its chunks cook, until you call
+one of these. Build one chain there too: the saved network then works when you open it in
+usdview.</p>
+<h2 id="backdrops-and-notes">Backdrops and notes<a class="headerlink" href="#backdrops-and-notes" title="Permanent link">⚓︎</a></h2>
+<p>A backdrop frames chunks in the graph, and a sticky note says what part of it is for. See
+<a href="../node-graph-basics/#backdrops-and-sticky-notes">Backdrops and sticky notes</a>.</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="n">frame</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">add_backdrop</span><span class="p">([</span><span class="n">box</span><span class="p">,</span> <span class="n">lift</span><span class="p">],</span> <span class="n">title</span><span class="o">=</span><span class="s2">"Geometry"</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">"Green"</span><span class="p">)</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="n">note</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">add_note</span><span class="p">(</span><span class="s2">"Builds the box and lifts it"</span><span class="p">,</span> <span class="n">at</span><span class="o">=</span><span class="n">box</span><span class="p">)</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="n">scene</span><span class="o">.</span><span class="n">set_backdrop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">"Box"</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.6</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">))</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="n">scene</span><span class="o">.</span><span class="n">set_backdrop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">around</span><span class="o">=</span><span class="p">[</span><span class="n">box</span><span class="p">,</span> <span class="n">lift</span><span class="p">,</span> <span class="n">cap</span><span class="p">])</span>   <span class="c1"># fit it around these</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="n">scene</span><span class="o">.</span><span class="n">chunks_in_backdrop</span><span class="p">(</span><span class="n">frame</span><span class="p">)</span>                      <span class="c1"># [box, lift, cap]</span>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="n">scene</span><span class="o">.</span><span class="n">get_backdrops</span><span class="p">()</span>                                <span class="c1"># [frame, note]</span>
+</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="n">scene</span><span class="o">.</span><span class="n">remove_backdrop</span><span class="p">(</span><span class="n">note</span><span class="p">)</span>                          <span class="c1"># the chunks stay</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scene.add_backdrop(chunks, title=, color=)</code></td>
+<td>A backdrop around the chunks, in their graph. Or give <code>rect=(x, y, w, h)</code> instead of chunks.</td>
+</tr>
+<tr>
+<td><code>scene.add_note(text, at=)</code></td>
+<td>A note just above a chunk, or at an <code>(x, y)</code>.</td>
+</tr>
+<tr>
+<td><code>scene.get_backdrops(context=None, notes=True)</code></td>
+<td>The backdrops and notes in a graph. <code>context</code> is a ChunkGroup; None is the graph new chunks go in.</td>
+</tr>
+<tr>
+<td><code>scene.set_backdrop(b, title=, color=, rect=, around=)</code></td>
+<td>Change any of them. What you leave out stays.</td>
+</tr>
+<tr>
+<td><code>scene.chunks_in_backdrop(b)</code></td>
+<td>The chunks in it: the ones that move with it in the graph.</td>
+</tr>
+<tr>
+<td><code>scene.remove_backdrop(b)</code></td>
+<td>Delete it.</td>
+</tr>
+</tbody>
+</table>
+<p>A colour is a name (Grey, Red, Orange, Yellow, Green, Teal, Blue, Purple) or <code>(r, g, b)</code>
+from 0 to 1. Graph coordinates have y pointing down, as on screen. Each call returns or
+takes the backdrop's USD prim (or its prim path). <code>backdrops.read(prim)</code> from
+<code>usd_chunks.graph</code> gives its title, colour, rect and whether it is a note.</p>
+<h2 id="with-blocks"><code>with</code> blocks<a class="headerlink" href="#with-blocks" title="Permanent link">⚓︎</a></h2>
+<p><code>with chunk:</code> says where the chunks made inside it go.</p>
+<ul>
+<li><strong>A chunkgroup</strong>: they go inside the group.</li>
+<li><strong>Any other chunk</strong>: it becomes their input. Each chunk made inside runs after it, unless
+  you give it inputs of your own.</li>
+</ul>
+<p>Use a group to keep chunks together:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="n">props</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">chunkgroup</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">"Props"</span><span class="p">)</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="k">with</span> <span class="n">props</span><span class="p">:</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    <span class="n">crate</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">prim_path</span><span class="o">=</span><span class="s2">"/props/crate"</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Use an Edit Target to write into a layer. The chunks after an Edit Target write into its
+layer:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="n">shot</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="n">layer_name</span><span class="o">=</span><span class="s2">"shot"</span><span class="p">)</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="k">with</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">edit_target</span><span class="p">(</span><span class="n">shot</span><span class="p">,</span> <span class="n">edit_target</span><span class="o">=</span><span class="s2">"shot"</span><span class="p">):</span>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="n">ground</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">ground</span><span class="p">(</span><span class="n">prim_path</span><span class="o">=</span><span class="s2">"/set/ground"</span><span class="p">)</span>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">rect_light</span><span class="p">(</span><span class="n">ground</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="s2">"/set/key"</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The ground and the light go into the <code>shot</code> layer. A Layer chunk only makes the layer. The
+Edit Target is what sends edits to it.</p>
+<h3 id="department-layers-side-by-side">Department layers side by side<a class="headerlink" href="#department-layers-side-by-side" title="Permanent link">⚓︎</a></h3>
+<p>A Layer chunk goes into whatever layer is being edited where it is wired. So a second Layer
+wired after a chunk inside the first one's Edit Target lands <em>inside</em> the first layer:
+lighting nested in layout, not beside it. For department layers that sit side by side, end
+each department with an Edit Target back to <code>Session Layer</code>, and wire the next Layer after
+that:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">world</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">prim</span><span class="p">(</span><span class="n">primpath_location</span><span class="o">=</span><span class="s2">"/World"</span><span class="p">,</span> <span class="n">prim_type</span><span class="o">=</span><span class="s2">"Xform"</span><span class="p">)</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="n">layout</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="n">world</span><span class="p">,</span> <span class="n">layer_name</span><span class="o">=</span><span class="s2">"layout"</span><span class="p">)</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="n">into</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">edit_target</span><span class="p">(</span><span class="n">layout</span><span class="p">,</span> <span class="n">edit_target</span><span class="o">=</span><span class="s2">"layout"</span><span class="p">)</span>
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="n">box</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">into</span><span class="p">,</span> <span class="n">prim_path</span><span class="o">=</span><span class="s2">"/World/box"</span><span class="p">)</span>
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="n">back</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">edit_target</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">edit_target</span><span class="o">=</span><span class="s2">"Session Layer"</span><span class="p">)</span>   <span class="c1"># out of layout</span>
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="n">lighting</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="n">back</span><span class="p">,</span> <span class="n">layer_name</span><span class="o">=</span><span class="s2">"lighting"</span><span class="p">)</span>
+</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="n">into</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">edit_target</span><span class="p">(</span><span class="n">lighting</span><span class="p">,</span> <span class="n">edit_target</span><span class="o">=</span><span class="s2">"lighting"</span><span class="p">)</span>
+</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a><span class="n">key</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">distant_light</span><span class="p">(</span><span class="n">into</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="s2">"/World/key"</span><span class="p">,</span> <span class="n">intensity</span><span class="o">=</span><span class="mf">3.0</span><span class="p">)</span>
+</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a><span class="n">back</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">edit_target</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">edit_target</span><span class="o">=</span><span class="s2">"Session Layer"</span><span class="p">)</span>   <span class="c1"># out of lighting</span>
+</span></code></pre></div>
+<p><code>layout</code> and <code>lighting</code> are now both sublayers of the session layer, the box is in <code>layout</code>
+and the light in <code>lighting</code>. An Export USD chunk after the last <code>back</code> writes each to its
+own file, <code>layout.usda</code> and <code>lighting.usda</code>.</p>
+<p>The session layer is then the shot: the stage settings and the departments as sublayers.
+<code>export_usd(back, output_dir=".", session_file_name="shot", bake_all=True)</code> writes it as
+<code>shot.usda</code>, plain USD without the network. <code>examples/scripts/shot_departments.py</code> is a
+whole shot built this way, on a set file, and runs as written.</p>
+<h2 id="save-and-cook">Save and cook<a class="headerlink" href="#save-and-cook" title="Permanent link">⚓︎</a></h2>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scene.save(path)</code></td>
+<td>Writes the network: Chunk prims and wires. It opens as a graph.</td>
+</tr>
+<tr>
+<td><code>scene.export(path)</code></td>
+<td>Writes the result as plain USD, without the Chunk prims.</td>
+</tr>
+<tr>
+<td><code>scene.execute()</code></td>
+<td>Runs every chunk. You rarely need it: chunks cook when they are made and when a value changes.</td>
+</tr>
+<tr>
+<td><code>scene.commit()</code></td>
+<td>Runs the chunks that write files, such as Export USD.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="file-paths">File paths<a class="headerlink" href="#file-paths" title="Permanent link">⚓︎</a></h3>
+<p>A file path in a param (a Sublayer's, a Reference's, a texture's) follows USD's rules,
+with the network file as the file it is written in:</p>
+<ul>
+<li><strong><code>inputs/set.usda</code></strong>, with no <code>./</code> or <code>../</code>, is a USD search path. It is found in the
+  network's folder, from whatever directory the network runs in.</li>
+<li><strong><code>../inputs/set.usda</code></strong> is relative to the network file, as it would be in any USD file.</li>
+<li><strong>An absolute path</strong> works only on a machine where that file is, so it logs a warning.
+  Saving writes one that sits under the network's folder relative to it (Stage Settings'
+  <strong>Relative File Paths</strong>, on by default; <code>scene.save(path, relative_paths=False)</code> turns it
+  off for one save).</li>
+</ul>
+<p>A network that isn't saved yet has no folder, so its relative paths are found from the
+working directory until it is. Give <code>Scene.new</code> the file you will save to, and they are
+found from that folder from the start:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="k">with</span> <span class="n">Scene</span><span class="o">.</span><span class="n">new</span><span class="p">(</span><span class="n">path</span><span class="o">=</span><span class="s2">"shots/sh010/shot_network.usda"</span><span class="p">)</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>    <span class="n">street</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">reference</span><span class="p">(</span><span class="n">file_path</span><span class="o">=</span><span class="s2">"../../sets/street.usda"</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="s2">"/set"</span><span class="p">)</span>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>    <span class="o">...</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">save</span><span class="p">()</span>      <span class="c1"># to the path given to Scene.new</span>
+</span></code></pre></div>
+<p>Saving to another folder keeps each relative path naming the same file. A file that is not
+found logs a warning naming the folders it was looked for in.</p>
+<h2 id="build-a-big-network-fast">Build a big network fast<a class="headerlink" href="#build-a-big-network-fast" title="Permanent link">⚓︎</a></h2>
+<p>Each chunk you make cooks what it affects straight away. In a long network that is often the
+whole chain above it, again and again. Make the chunks inside <code>chunk.change_block()</code> instead:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="k">with</span> <span class="n">chunk</span><span class="o">.</span><span class="n">change_block</span><span class="p">():</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>    <span class="o">...</span>  <span class="c1"># make and wire hundreds of chunks</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="c1"># here everything has cooked, once</span>
+</span></code></pre></div>
+<p>Inside the block each chunk cooks once as it is made, before it is wired, and nothing else
+cooks. When the block ends, what changed since then cooks once, upstream first: about two cooks
+per chunk. A readout you read inside the block is from that first, unwired cook. A 336-chunk
+network took 250 s this way, against 17-27 minutes.</p>
+<h3 id="write-the-network-without-cooking-it">Write the network without cooking it<a class="headerlink" href="#write-the-network-without-cooking-it" title="Permanent link">⚓︎</a></h3>
+<p>To only write a network, open the scene lazily. Nothing cooks until you ask for a result:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="k">with</span> <span class="n">Scene</span><span class="p">(</span><span class="n">stage</span><span class="p">,</span> <span class="n">lazy</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>      <span class="c1"># or Scene.open(path, lazy=True)</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>    <span class="n">stand</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">noise_field</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># marked, not cooked</span>
+</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="n">pines</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">scatter_points</span><span class="p">(</span><span class="n">stand</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">sun</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">distant_light</span><span class="p">(</span><span class="n">pines</span><span class="p">,</span> <span class="n">intensity</span><span class="o">=</span><span class="mf">30.0</span><span class="p">)</span>
+</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">cook</span><span class="p">(</span><span class="n">pines</span><span class="p">)</span>                       <span class="c1"># cooks Stand and Pines, nothing else</span>
+</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">pines</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"readout"</span><span class="p">)</span><span class="o">.</span><span class="n">value</span><span class="p">)</span> <span class="c1"># fresh</span>
+</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"forest_network.usda"</span><span class="p">)</span>       <span class="c1"># writes the network, as it stands</span>
+</span></code></pre></div>
+<ul>
+<li><code>scene.cook(chunk)</code> cooks that chunk and what is still marked above it. Do this before
+  you read a result: an OUTPUT param, or prims a chunk wrote. The chunk itself always
+  cooks, even when nothing marked it, so it also picks up what a script changed behind the
+  framework's back (a Scatter Brush's painted field, set as a Python attribute). It works
+  the same in an eager Scene. <code>scene.cook()</code> with no chunk cooks everything.</li>
+<li><code>export</code> and <code>commit</code> cook everything first, each chunk once.</li>
+<li><code>save</code> writes the network as it stands. It does not cook it.</li>
+<li>Leaving the block cooks nothing. Closing the scene removes every result anyway.</li>
+</ul>
+<p>Some chunks build params in their cook, such as a Light's schema inputs. They take the
+values you give at <code>create</code> in that first cook, the same way a saved network's values come
+back when you open it. A save cooks only those chunks, alone, without what is above them,
+so their values are saved. The catch: a misspelled param name raises at the chunk's first
+cook, not at <code>create</code>.</p>
+<p>The woodland forest network (40 chunks, 8.5M instances) took about 12 minutes to write
+the old way. Lazily it takes 6 s.</p>
+<h2 id="inside-usdview">Inside usdview<a class="headerlink" href="#inside-usdview" title="Permanent link">⚓︎</a></h2>
+<p><code>Scene.current()</code> gives you the scene usdview is running. What you make goes into it:</p>
+<ul>
+<li>The chunks go into the graph you are looking at. If you have gone into a chunkgroup,
+  they go into that group.</li>
+<li>The first node goes to the middle of the graph view. The next ones go in a row to its
+  right. Each <code>with</code> block starts a new row.</li>
+<li>Leaving the <code>with</code> block does not close usdview's scene.</li>
+<li>If the graph has no Output yet, it adds one at the end of your chain.</li>
+<li>If the graph already has an Output, new chunks start switched off, the same as nodes you
+  make in the graph: they are not in the Output's chain yet. To cook them, call
+  <code>scene.set_output(last)</code> with the chain's last chunk, or <code>scene.set_view(last)</code> to look
+  at it. In the graph, you can instead select that node and press <strong>V</strong>, which makes a
+  View. Press <strong>2</strong> or <strong>3</strong> to switch between Views, and <strong>1</strong> to go back to the Output.</li>
+</ul>
+<h2 id="live-sessions">Live sessions<a class="headerlink" href="#live-sessions" title="Permanent link">⚓︎</a></h2>
+<p>A live session keeps a network open, and you change its params from another terminal or
+a script. Each change cooks only what it reaches, then commits again, so a Render chunk
+renders again. Opening the file and the first cook happen once, not on every change.</p>
+<p>Start one:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>usdchunks<span class="w"> </span>run<span class="w"> </span>shot.usda<span class="w"> </span>--live
+</span></code></pre></div>
+<p>It cooks the network as <code>run</code> does, then waits. Ctrl+C ends it. From another terminal:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>usdchunks<span class="w"> </span>send<span class="w"> </span>shot.usda<span class="w"> </span>Fill.intensity<span class="o">=</span><span class="m">8</span><span class="w"> </span>Sky.intensity<span class="o">=</span><span class="m">2</span><span class="w"> </span>--wait
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>usdchunks<span class="w"> </span>send<span class="w"> </span>shot.usda<span class="w"> </span>--list<span class="w">     </span><span class="c1"># every param you can set, with its type</span>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>usdchunks<span class="w"> </span>send<span class="w"> </span>shot.usda<span class="w"> </span>--reset<span class="w">    </span><span class="c1"># clear every value sent so far</span>
+</span></code></pre></div>
+<p><code>--wait</code> returns once the session has cooked the change, and rendered it if the network
+renders. Without it, <code>send</code> returns as soon as the values are written.</p>
+<p>The same from Python, for a script that tries values one after another:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">live</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="k">for</span> <span class="n">strength</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">):</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a>    <span class="n">live</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="s2">"shot.usda"</span><span class="p">,</span> <span class="p">{</span><span class="s2">"Fill.intensity"</span><span class="p">:</span> <span class="n">strength</span><span class="p">},</span> <span class="n">wait</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>    <span class="o">...</span>  <span class="c1"># look at the render</span>
+</span></code></pre></div>
+<p>Name a param as <code>run</code> takes it: <code>Chunk.param</code>. The last part is enough when only one of the
+chunk's params ends with it, so <code>Fill.intensity</code> finds the Light's <code>attr_grp.inputs:intensity</code>.
+When two chunks in different groups share a name, <code>--list</code> shows their params under the
+prim path instead, such as <code>/chunks/Group/Fill.attr_grp.inputs:intensity</code>, and
+<code>/chunks/Group/Fill.intensity</code> finds it. A name <code>send</code> cannot find gets the closest
+matches in the error.</p>
+<p>The session and <code>send</code> share two files beside the network:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Written by</th>
+<th>Holds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shot.live.usda</code></td>
+<td><code>send</code></td>
+<td>The values, as USD overs on the Chunk prims.</td>
+</tr>
+<tr>
+<td><code>shot.live.json</code></td>
+<td>the session</td>
+<td>Every param it can set, and which change it has finished.</td>
+</tr>
+</tbody>
+</table>
+<p>The session holds <code>shot.live.usda</code> as a sublayer of its session layer and reloads it when
+the file changes. A value arrives as an edit on the stage, the same as one made in the
+graph. The network file itself is never written.</p>
+<p>The values stay in <code>shot.live.usda</code> after the session ends, and the next session opens with
+them. <code>--reset</code> clears them. To keep them, set them in the network.</p>
+<p>While a session runs, the Render chunk keeps its renderer between renders. The renderer
+builds its scene once and then updates only what a change touched. The renderer's whole
+scene stays in memory for as long as the session runs.</p>
+<p>Two limits:</p>
+<ul>
+<li><code>send</code> sets only the params the session lists. A chunk can build some params only when
+  their group is opened (Render Settings does, for each renderer's settings). Such a param
+  is listed once the network has a value for it.</li>
+<li>A value in <code>shot.live.usda</code> is stronger than a change to the same param in the graph.
+  Clear it with <code>--reset</code> to edit that param in the graph again.</li>
+</ul>
+<h2 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">⚓︎</a></h2>
+<h3 id="five-boxes-in-a-row">Five boxes in a row<a class="headerlink" href="#five-boxes-in-a-row" title="Permanent link">⚓︎</a></h3>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Scene</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="k">with</span> <span class="n">Scene</span><span class="o">.</span><span class="n">new</span><span class="p">()</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a>    <span class="n">last</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">prim_path</span><span class="o">=</span><span class="s2">"/geo/box0"</span><span class="p">)</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a>    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">5</span><span class="p">):</span>
+</span><span id="__span-24-6"><a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a>        <span class="n">box</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">last</span><span class="p">,</span> <span class="n">prim_path</span><span class="o">=</span><span class="sa">f</span><span class="s2">"/geo/box</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="__span-24-7"><a id="__codelineno-24-7" name="__codelineno-24-7" href="#__codelineno-24-7"></a>        <span class="n">last</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">),</span> <span class="n">tx</span><span class="o">=</span><span class="n">i</span> <span class="o">*</span> <span class="mf">3.0</span><span class="p">)</span>
+</span><span id="__span-24-8"><a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">export</span><span class="p">(</span><span class="s2">"boxes.usda"</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="open-a-saved-network-and-change-it">Open a saved network and change it<a class="headerlink" href="#open-a-saved-network-and-change-it" title="Permanent link">⚓︎</a></h3>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Scene</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a><span class="k">with</span> <span class="n">Scene</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">"box_network.usda"</span><span class="p">)</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a>    <span class="n">lift</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">get_chunk</span><span class="p">(</span><span class="s2">"Transform"</span><span class="p">)</span>
+</span><span id="__span-25-5"><a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">lift</span><span class="p">,</span> <span class="n">ty</span><span class="o">=</span><span class="mf">10.0</span><span class="p">)</span>
+</span><span id="__span-25-6"><a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">export</span><span class="p">(</span><span class="s2">"box_high.usda"</span><span class="p">)</span>
+</span></code></pre></div>
+<p><code>scene.get_chunk(name)</code> finds a chunk by its node name.</p>
+<h3 id="a-light-with-its-values-set">A light with its values set<a class="headerlink" href="#a-light-with-its-values-set" title="Permanent link">⚓︎</a></h3>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Scene</span>
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>
+</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="k">with</span> <span class="n">Scene</span><span class="o">.</span><span class="n">new</span><span class="p">()</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>
+</span><span id="__span-26-4"><a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">rect_light</span><span class="p">(</span><span class="n">primpath_location</span><span class="o">=</span><span class="s2">"/set/key"</span><span class="p">,</span> <span class="n">intensity</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span> <span class="n">exposure</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+</span><span id="__span-26-5"><a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">export</span><span class="p">(</span><span class="s2">"light.usda"</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="a-small-set">A small set<a class="headerlink" href="#a-small-set" title="Permanent link">⚓︎</a></h3>
+<p>Ground, three colored boxes, a sky light and a camera, in one chain:</p>
+<div class="language-py highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Scene</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="n">colors</span> <span class="o">=</span> <span class="p">[(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">),</span> <span class="p">(</span><span class="mf">0.2</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">),</span> <span class="p">(</span><span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)]</span>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="k">with</span> <span class="n">Scene</span><span class="o">.</span><span class="n">new</span><span class="p">()</span> <span class="k">as</span> <span class="n">scene</span><span class="p">:</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>    <span class="n">last</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">ground</span><span class="p">(</span><span class="n">prim_path</span><span class="o">=</span><span class="s2">"/set/ground"</span><span class="p">)</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a>    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">r</span><span class="p">,</span> <span class="n">g</span><span class="p">,</span> <span class="n">b</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">colors</span><span class="p">):</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a>        <span class="n">box</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">cube</span><span class="p">(</span><span class="n">last</span><span class="p">,</span> <span class="n">prim_path</span><span class="o">=</span><span class="sa">f</span><span class="s2">"/set/box</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a>        <span class="n">path</span> <span class="o">=</span> <span class="n">box</span><span class="o">.</span><span class="n">get_param</span><span class="p">(</span><span class="s2">"prim_path"</span><span class="p">)</span>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a>        <span class="n">moved</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="n">path</span><span class="p">,</span> <span class="n">tx</span><span class="o">=</span><span class="n">i</span> <span class="o">*</span> <span class="mf">2.0</span> <span class="o">-</span> <span class="mf">2.0</span><span class="p">,</span> <span class="n">ty</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a>        <span class="n">last</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">set_display_color</span><span class="p">(</span><span class="n">moved</span><span class="p">,</span> <span class="n">prim_path</span><span class="o">=</span><span class="n">path</span><span class="p">,</span> <span class="n">color_r</span><span class="o">=</span><span class="n">r</span><span class="p">,</span> <span class="n">color_g</span><span class="o">=</span><span class="n">g</span><span class="p">,</span> <span class="n">color_b</span><span class="o">=</span><span class="n">b</span><span class="p">)</span>
+</span><span id="__span-27-12"><a id="__codelineno-27-12" name="__codelineno-27-12" href="#__codelineno-27-12"></a>    <span class="n">sky</span> <span class="o">=</span> <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">dome_light</span><span class="p">(</span><span class="n">last</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="s2">"/set/sky"</span><span class="p">)</span>
+</span><span id="__span-27-13"><a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">create</span><span class="o">.</span><span class="n">camera</span><span class="p">(</span><span class="n">sky</span><span class="p">,</span> <span class="n">primpath_location</span><span class="o">=</span><span class="s2">"/set/cam"</span><span class="p">,</span> <span class="n">ty</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="mf">10.0</span><span class="p">)</span>
+</span><span id="__span-27-14"><a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a>
+</span><span id="__span-27-15"><a id="__codelineno-27-15" name="__codelineno-27-15" href="#__codelineno-27-15"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"set_network.usda"</span><span class="p">)</span>
+</span><span id="__span-27-16"><a id="__codelineno-27-16" name="__codelineno-27-16" href="#__codelineno-27-16"></a>    <span class="n">scene</span><span class="o">.</span><span class="n">export</span><span class="p">(</span><span class="s2">"set.usda"</span><span class="p">)</span>
+</span></code></pre></div>
+<p>More examples are in <code>examples/scripts/</code>.</p>
+<h2 id="under-the-hood">Under the hood<a class="headerlink" href="#under-the-hood" title="Permanent link">⚓︎</a></h2>
+<p><code>scene.create</code> is a short way to make chunks. It calls
+<code>ChunkRegistry().get_chunk_module(name)</code>, then the module's <code>create()</code> or <code>load()</code>, then
+<code>scene.add_chunk(chunk)</code>. The loader, paste and the graph use these calls too. Use them
+directly if you need to make a chunk without adding it to the scene
+(<code>chunk.create_chunks(name, anonymous=True)</code>). To build a network, use <code>scene.create</code>.</p>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 12, 2026 21:53:02 UTC">November 12, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 27, 2026 19:33:26 UTC">September 27, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "navigation.sections", "navigation.expand", "navigation.path", "toc.integrate", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotation", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>

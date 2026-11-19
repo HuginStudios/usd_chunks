@@ -1,0 +1,2299 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://huginstudios.github.io/usd_chunks/1.0.0-rc.1/writing-a-chunk/">
+      
+      
+        <link rel="prev" href="../undo/">
+      
+      
+        <link rel="next" href="../reference/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Writing a chunk module - USD Chunks</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#writing-a-chunk-module" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="USD Chunks" class="md-header__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            USD Chunks
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Writing a chunk module
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="lime"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  USD Chunks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../blender/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Blender
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../breakage/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Breakage: fracture, emit, simulate
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks, params and groups
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../chunk-requirements/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunks that need pip packages
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../core-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Output, View and ChunkGroup
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../example/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Example
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../expressions/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Expressions
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../fast-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Making a chunk fast
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../gizmo-host-contract/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chunk gizmos: the host contract
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../graph-frontends/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a graph frontend
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../houdini/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Houdini
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../install/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Install
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../node-graph-basics/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using the node graph
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../plugins/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Plugins
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../runtime-chunks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Building a chunk at runtime
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../scripting/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Scripting
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../surface_flow/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Liquid on surfaces: condensation, runs, drips
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../undo/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Undo and redo
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Writing a chunk module
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="USD Chunks" class="md-nav__button md-logo" aria-label="USD Chunks" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    USD Chunks
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    USD Chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../blender/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blender
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../breakage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Breakage: fracture, emit, simulate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks, params and groups
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chunk-requirements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunks that need pip packages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../core-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output, View and ChunkGroup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fast-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Making a chunk fast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gizmo-host-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chunk gizmos: the host contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph-frontends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a graph frontend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../houdini/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Houdini
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-graph-basics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using the node graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-chunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building a chunk at runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scripting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../surface_flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Liquid on surfaces: condensation, runs, drips
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../undo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Undo and redo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a chunk module
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a chunk module
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#main" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        main()
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="main()">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#icons-in-the-node-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Icons in the node graph
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        config()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        execute()
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="execute()">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#caching-a-slow-cook" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caching a slow cook
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#opening-without-cooking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening without cooking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#long-bakes-sim_bake" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Long bakes: sim_bake
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skipping-cooks-nothing-reached" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Skipping cooks nothing reached
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        commit()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lofting-params-a-module-builds-at-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lofting params a module builds at runtime
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery-recap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discovery, recap
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_21" >
+        
+          
+          <label class="md-nav__link" for="__nav_21" id="__nav_21_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_21_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_21">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/SUMMARY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SUMMARY
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_core
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_flags/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_flags
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_notice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_notice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_resources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_resources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/chunk_stage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    usd_chunks.chunk_stage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="writing-a-chunk-module">Writing a chunk module<a class="headerlink" href="#writing-a-chunk-module" title="Permanent link">⚓︎</a></h1>
+<blockquote>
+<p>In short: a chunk is a Python module. <code>main()</code> sets up its params, <code>execute(node)</code> does
+the work, and <code>config()</code> holds details like its <code>description</code> and <code>category</code>.</p>
+</blockquote>
+<p>This page is about writing a new chunk. To make and wire chunks you already have from
+Python, see <a href="../scripting/">Scripting</a>.</p>
+<p>A chunk module is a plain <code>.py</code> file. Put it anywhere in a
+<a href="../install/#environment-variables"><code>USD_CHUNK_DIRS</code></a> folder and it's found automatically.
+You don't need to register it, write a <code>plugInfo.json</code>, or import it anywhere.</p>
+<p>A module can define up to four top-level functions. Only <code>main()</code> is required.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Required</th>
+<th>Called</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>main()</code></td>
+<td>yes</td>
+<td>Once per <strong>instance</strong>, to build a <code>Chunk</code> object. Each node you add to the graph, and each chunk prim loaded from a file, is a separate <code>main()</code> call.</td>
+</tr>
+<tr>
+<td><code>config()</code></td>
+<td>no</td>
+<td>Once, when the module is found, for its settings (<a href="#config"><code>ChunkConfig</code></a>).</td>
+</tr>
+<tr>
+<td><code>execute(node)</code></td>
+<td>no</td>
+<td>Every time the chunk cooks. See <a href="#execute"><code>execute()</code></a>.</td>
+</tr>
+<tr>
+<td><code>commit(node)</code></td>
+<td>no</td>
+<td>Once per chunk, after everything has finished cooking. See <a href="#commit"><code>commit()</code></a>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="main"><code>main()</code><a class="headerlink" href="#main" title="Permanent link">⚓︎</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">chunk</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">button</span> <span class="o">=</span> <span class="n">chunk</span><span class="o">.</span><span class="n">Button</span><span class="p">(</span><span class="s2">"add_cube"</span><span class="p">,</span> <span class="s2">"Add Cube"</span><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">button</span><span class="o">.</span><span class="n">add_callback</span><span class="p">(</span><span class="n">add_cube</span><span class="p">)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">chunk_api</span> <span class="o">=</span> <span class="n">chunk</span><span class="o">.</span><span class="n">Chunk</span><span class="p">(</span><span class="s2">"Add Cubes"</span><span class="p">)</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">chunk_api</span><span class="o">.</span><span class="n">add_param</span><span class="p">(</span><span class="n">button</span><span class="p">)</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="k">return</span> <span class="n">chunk_api</span>
+</span></code></pre></div>
+<p><code>main()</code> takes no arguments and must return a <a class="autorefs autorefs-internal" title="            Chunk" href="../reference/chunk/#usd_chunks.chunk.Chunk"><code>chunk.Chunk</code></a>.
+A <code>Chunk</code> is a <code>Group</code> that also keeps track of its layer, its DAG node and its exec ports.
+Create its params and groups here, and add their callbacks with <code>add_param</code> and
+<code>add_callback</code>.</p>
+<p><strong><code>main()</code> runs once per instance, not once when the module is found.</strong> Finding the module
+only imports it and checks that <code>main()</code> exists. After that, <code>main()</code> is called every time
+a chunk is created: once for each node you add, and once for each saved chunk prim when a
+file is opened. So anything slow in <code>main()</code>, like building a lookup table, runs again for
+every node. If that matters, cache it at module level.</p>
+<p><strong>Don't change the stage in <code>main()</code>.</strong> It runs <em>before</em> the chunk has its prim and its
+own layer, so anything it writes lands in the wrong place. Anything that changes the stage
+goes in a callback, in <code>execute()</code>, or in <code>commit()</code>.</p>
+<p><strong>Callbacks hear their own chunk, never another one.</strong> Chunks talk to each other only
+through wires: an exec input, or an <code>@Node.param@</code> expression. Both are drawn in the graph
+and saved in the file. A change in a chunk above yours reaches your chunk as a cook of your
+<code>execute()</code>, not as a notice. So:</p>
+<ul>
+<li><code>add_callback(..., sender=...)</code> takes your own chunk or one of its params. Another chunk's
+  param raises a <code>ValueError</code>.</li>
+<li><code>listen_globally=True</code> is for the stage and the host only: stage edits, prim selection,
+  the viewport camera. Listening globally to another chunk's notices (<code>CHUNK_CHANGED</code>,
+  <code>PARAM_CHANGED</code>, ...) raises a <code>ValueError</code>.</li>
+<li>A param can't depend on another chunk's param through <code>add_dependency</code>. Use
+  <code>connect_value</code>, which writes the expression for you.</li>
+</ul>
+<p><strong>A stage listener stays small.</strong> When you do listen to the stage or the host:</p>
+<ul>
+<li>Read the stage and set only your own chunk's params. Never author USD in the callback.
+  <code>execute()</code> authors from the params, so the change reaches the chunks wired below.
+  Camera's Lock to Free Camera works this way: the freecam sets translate and rotate.</li>
+<li>Write only when the value actually changed. Every write can cook your chunk.</li>
+<li>Wait for <code>CHUNK_LOADED</code> before writing. Saved values are restored after <code>main()</code>, and a
+  write before then can overwrite them.</li>
+<li>Return early on rounds that can't matter to you. A stage listener runs on every stage
+  change, for every instance of your chunk.</li>
+</ul>
+<p>Most of the time you don't need a listener at all. A menu of what's on the stage (the
+cameras, a prim's variant sets, the SkelRoots) is only needed when someone opens it. Give
+your module a <code>menu_items</code> hook instead, and every frontend asks it as the menu opens:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">menu_items</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">param_name</span><span class="p">):</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="k">if</span> <span class="n">param_name</span> <span class="o">==</span> <span class="s2">"camera"</span><span class="p">:</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>        <span class="k">return</span> <span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">GetPath</span><span class="p">())</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">get_stage</span><span class="p">()</span><span class="o">.</span><span class="n">Traverse</span><span class="p">()</span> <span class="k">if</span> <span class="n">p</span><span class="o">.</span><span class="n">IsA</span><span class="p">(</span><span class="n">UsdGeom</span><span class="o">.</span><span class="n">Camera</span><span class="p">)]</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="k">return</span> <span class="kc">None</span>   <span class="c1"># this menu keeps its items</span>
+</span></code></pre></div>
+<p>The current value always stays listed, so a saved pick survives until the stage offers it.</p>
+<p>A chunk that follows the host application's own scene (Blender's objects, say) defines
+<code>host_changed(node)</code>. The host calls it, debounced, after the user edits the scene; the
+module decides whether what it reads moved and calls <code>node.execute()</code> if so. Blender's
+add-on calls it today; see <code>chunks/modelling/blender_import.py</code>.</p>
+<p><a href="../example/"><code>docs/example.md</code></a> has a longer example with notes on the param types,
+groups, flags and callback signatures you can use in <code>main()</code>.</p>
+<h3 id="icons-in-the-node-graph">Icons in the node graph<a class="headerlink" href="#icons-in-the-node-graph" title="Permanent link">⚓︎</a></h3>
+<p>A node shows an icon in its header, and a group can show one beside its name. Only the
+chunk decides them; nothing else picks one, so a chunk or group that sets no icon shows
+none.</p>
+<p>The node's icon goes in <code>config()</code>, so every node of the chunk gets it:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">config</span><span class="p">():</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="k">return</span> <span class="n">chunk</span><span class="o">.</span><span class="n">DefaultConfig</span><span class="p">(</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>        <span class="n">category</span><span class="o">=</span><span class="n">chunk</span><span class="o">.</span><span class="n">StandardCategory</span><span class="o">.</span><span class="n">MODELLING</span><span class="p">,</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>        <span class="n">icon</span><span class="o">=</span><span class="s2">"posts"</span><span class="p">,</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="p">)</span>
+</span></code></pre></div>
+<p>A group's icon goes on the group, in <code>main()</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">run_grp</span> <span class="o">=</span> <span class="n">chunk</span><span class="o">.</span><span class="n">Group</span><span class="p">(</span><span class="s2">"Run"</span><span class="p">,</span> <span class="n">icon</span><span class="o">=</span><span class="s2">"ruler"</span><span class="p">,</span> <span class="n">flags</span><span class="o">=</span><span class="n">_GF</span><span class="p">)</span>
+</span></code></pre></div>
+<p><code>icon</code> takes either:</p>
+<ul>
+<li>the name of a built-in icon: a file name, without <code>.svg</code>, from
+  <code>usd_chunks/resources/icons/node/</code> (<code>sun</code>, <code>move</code>, <code>rotate</code>, <code>cube</code>, <code>camera</code>, <code>eye</code>, ...).
+  Built-in icons are drawn in one colour, and each has a default colour.</li>
+<li>a path to your own image file (<code>.svg</code> or <code>.png</code>), drawn as it is.</li>
+</ul>
+<p>On a group or a param, anything else raises a <code>ValueError</code>.</p>
+<p><strong>Which icon a node shows,</strong> first match wins:</p>
+<ol>
+<li>The icon on the chunk's prim in USD (see below), for that one node.</li>
+<li><code>icon</code> set on the chunk in <code>main()</code> (<code>chunk_api.icon = "sun"</code>), for every node of it.</li>
+<li><code>icon</code> in <code>config()</code>.</li>
+</ol>
+<p><strong>Per node, in USD.</strong> A node's icon and colour can also be set on its chunk prim, through
+USD's own <code>UsdUINodeGraphNodeAPI</code>. These are saved in the file, and the node updates as soon
+as they change:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pxr</span><span class="w"> </span><span class="kn">import</span> <span class="n">Gf</span><span class="p">,</span> <span class="n">Sdf</span><span class="p">,</span> <span class="n">UsdUI</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">api</span> <span class="o">=</span> <span class="n">UsdUI</span><span class="o">.</span><span class="n">NodeGraphNodeAPI</span><span class="o">.</span><span class="n">Apply</span><span class="p">(</span><span class="n">chunk_prim</span><span class="p">)</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">api</span><span class="o">.</span><span class="n">CreateIconAttr</span><span class="p">()</span><span class="o">.</span><span class="n">Set</span><span class="p">(</span><span class="n">Sdf</span><span class="o">.</span><span class="n">AssetPath</span><span class="p">(</span><span class="s2">"camera"</span><span class="p">))</span>          <span class="c1"># a built-in name or an image path</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">api</span><span class="o">.</span><span class="n">CreateDisplayColorAttr</span><span class="p">()</span><span class="o">.</span><span class="n">Set</span><span class="p">(</span><span class="n">Gf</span><span class="o">.</span><span class="n">Vec3f</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">))</span>  <span class="c1"># the icon's colour</span>
+</span></code></pre></div>
+<p>The lookup is <code>usd_chunks/chunk_icons.py</code>, so any graph frontend can show the same icons.</p>
+<h2 id="config"><code>config()</code><a class="headerlink" href="#config" title="Permanent link">⚓︎</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">chunk</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">config</span><span class="p">():</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="k">return</span> <span class="n">chunk</span><span class="o">.</span><span class="n">DefaultConfig</span><span class="p">(</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">category</span><span class="o">=</span><span class="n">chunk</span><span class="o">.</span><span class="n">StandardCategory</span><span class="o">.</span><span class="n">MODELLING</span><span class="p">,</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">"""</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="s2">        Resets a prim's transform: clears every authored transform op.</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="s2">        Writes an empty xformOpOrder on the prim, so none of its transform ops apply.</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="s2">        """</span><span class="p">,</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    <span class="p">)</span>
+</span></code></pre></div>
+<p>The description opens with one <strong>summary line</strong>, then a blank line, then the details. The
+summary line says what jobs the chunk does, in the words someone asking for them would use,
+in at most 90 characters, without repeating the chunk's name. It sums up the text below it,
+so it claims nothing that text doesn't say. <code>usdchunks list</code> and the
+create menu's search show only that line, so it decides whether a person or an agent finds
+the chunk at all.</p>
+<p><code>config()</code> returns a <a class="autorefs autorefs-internal" title="            DefaultConfig" href="../reference/chunk/#usd_chunks.chunk.DefaultConfig"><code>chunk.DefaultConfig</code></a>, a small
+subclass of <a class="autorefs autorefs-internal" title="            ChunkConfig" href="../reference/chunk_core/#usd_chunks.chunk_core.ChunkConfig"><code>chunk_core.ChunkConfig</code></a>. It describes how
+the chunk is loaded and how it shows up in menus. A module without <code>config()</code> gets the
+defaults below.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>category</code></td>
+<td><code>"Chunks"</code></td>
+<td>Where the chunk appears in the create menu. Use a <a class="autorefs autorefs-internal" title="            StandardCategory" href="../reference/chunk/#usd_chunks.chunk.StandardCategory"><code>StandardCategory</code></a> member (<code>MODELLING</code>, <code>DYNAMICS</code>, <code>TRANSFORM</code>, <code>UTILS</code>, <code>RIGS</code>, <code>USER</code>, <code>EXAMPLES</code>, <code>USD</code>, <code>PROPERTIES</code>, <code>USD_RENDER</code>, <code>USD_LAYER</code>, <code>CORE</code>, <code>MATERIALS</code>, <code>MTLX</code>) or a plain string for your own.</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td><code>"Chunk description..."</code></td>
+<td>Shown in tooltips and the create menu. <code>ChunkGroup</code>'s <code>doc</code> param uses the same text to describe what a saved network does, for a person or an AI reading the file.</td>
+</tr>
+<tr>
+<td><code>load_for_plugin</code></td>
+<td><code>None</code></td>
+<td>Only load the chunk in one host plugin (e.g. <code>"chunk_usdview"</code>), if it only works there.</td>
+</tr>
+<tr>
+<td><code>hosts</code></td>
+<td><code>[]</code></td>
+<td>The applications the chunk runs in, each a name with an optional minimum version: <code>["houdini&gt;=21.5", "blender&gt;=5.1"]</code>. Empty or not set: every host. Elsewhere the chunk is skipped. Import a host-only module (<code>bpy</code>, <code>hou</code>) under <code>try</code>/<code>except ImportError</code>, so other hosts can still read <code>config()</code>.</td>
+</tr>
+<tr>
+<td><code>requirements</code></td>
+<td><code>[]</code></td>
+<td>pip packages the module needs, e.g. <code>["numpy&gt;=2,&lt;3"]</code>. If one is missing and the module fails to import, it's skipped instead of crashing. usdview and <code>usdchunks run</code> ask whether to install the missing ones into <code>USD_CHUNK_DEPENDENCY_DIR</code> (see <a href="../install/#environment-variables"><code>USD_CHUNK_AUTO_INSTALL</code></a>).</td>
+</tr>
+<tr>
+<td><code>required_modules</code></td>
+<td><code>[]</code></td>
+<td>Other chunk <em>modules</em> that must be loaded for this one to work.</td>
+</tr>
+<tr>
+<td><code>interactive</code></td>
+<td><code>False</code></td>
+<td>The chunk writes to a file layer that is kept, instead of its own layer being rebuilt on every cook. Use it for a chunk that makes a one-off edit rather than something that is re-cooked.</td>
+</tr>
+<tr>
+<td><code>cache_cook</code></td>
+<td><code>False</code></td>
+<td>Keep this chunk's cooked result on disk and read it back instead of cooking again, when nothing it depends on has changed. For a slow cook whose result depends only on its params, the files they name and the stage's units. See <a href="#caching-a-slow-cook">Caching a slow cook</a>.</td>
+</tr>
+<tr>
+<td><code>cache_always</code></td>
+<td><code>False</code></td>
+<td><code>cache_cook</code> that can't be turned off: no <strong>Cache Result</strong> checkbox, <code>USD_CHUNKS_COOK_CACHE=0</code> doesn't apply, and quick cooks are stored too. For a result that is expensive or impossible to remake anywhere else, such as Blender Import's.</td>
+</tr>
+<tr>
+<td><code>cook_on_open</code></td>
+<td><code>False</code></td>
+<td>Cook this chunk every time a network opens, instead of reading back the result kept when it was saved. For a result that depends on something no key can see: the clock, an unseeded random, a web request. See <a href="#opening-without-cooking">Opening without cooking</a>.</td>
+</tr>
+<tr>
+<td><code>hidden</code></td>
+<td><code>False</code></td>
+<td>Left out of the create menu. For a type that is only saved and loaded, never created by hand, like <code>runtime</code>, the type a chunk built in Python is saved as (see <a href="../runtime-chunks/">Building a chunk at runtime</a>). It still has to be a registered module, because that's how loading a file knows what to rebuild.</td>
+</tr>
+<tr>
+<td><code>terminal</code></td>
+<td><code>False</code></td>
+<td>The chunk has no <code>outputs:chunk</code>, so it ends an exec chain. The <a href="../core-chunks/#view">View</a> and <a href="../core-chunks/#output">Output</a> chunks use this.</td>
+</tr>
+<tr>
+<td><code>exec_inputs</code></td>
+<td><code>1</code></td>
+<td>How many numbered exec input ports the chunk has. <code>1</code> is the normal case: one <code>inputs:chunk</code> port, which can still take several wires. With more than <code>1</code>, each slot gets its own port and it matters which wire goes where. For example, Stage Expression Switch has a normal path on slot 0 and a matched path on slot 1, and only one of them runs.</td>
+</tr>
+<tr>
+<td><code>dynamic_exec_inputs</code></td>
+<td><code>False</code></td>
+<td>The chunk adds a new numbered exec input port for each wire connected to it, plus one empty port for the next one. For chunks like Merge or Switch, where each incoming branch needs its own port. Unlike <code>exec_inputs</code>, the number of ports isn't fixed.</td>
+</tr>
+<tr>
+<td><code>outputs</code></td>
+<td><code>[]</code></td>
+<td>Extra typed output ports beyond <code>outputs:chunk</code>, as <code>[(name, SdfTypeName), ...]</code>.</td>
+</tr>
+<tr>
+<td><code>variants</code></td>
+<td><code>[]</code></td>
+<td>Extra entries in the chunk's submenu in the create menu, as <code>[(label, {param: value}), ...]</code>, or a function that returns that list. Use a function when the list is slow to build (for example, listing a shader registry). It then only runs the first time the menu is shown, not every time chunks are loaded.</td>
+</tr>
+<tr>
+<td><code>gizmos</code></td>
+<td><code>[]</code></td>
+<td>Viewport handles that control this chunk's params. See <a href="../gizmo-host-contract/">Chunk gizmos: the host contract</a>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Keep <code>config()</code> self-contained.</strong> When the module is found, <code>config()</code> is run on its
+own, with only the module's <code>usd_chunks</code> imports done. This way, reading a module's config
+never runs the rest of its code. If <code>config()</code> uses a constant or helper from the module,
+the first try fails with <code>NameError</code>. The registry then tries once more after running the
+module's top-level assignments and <code>def</code>s. If any of those need a non-<code>usd_chunks</code> import,
+that fails too, and the module falls back to the <code>DefaultConfig()</code> defaults: wrong
+category, generic description, and only a warning in the log. If <code>config()</code> needs
+something slow to build, pass a function to <code>variants</code> (see the table above) instead of a
+constant built in the module.</p>
+<h2 id="execute"><code>execute()</code><a class="headerlink" href="#execute" title="Permanent link">⚓︎</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">execute</span><span class="p">(</span><span class="n">node</span><span class="p">:</span> <span class="n">chunk</span><span class="o">.</span><span class="n">Chunk</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="o">...</span>
+</span></code></pre></div>
+<p><code>execute</code> is a <strong>reserved name</strong> at module level. Don't use it for a normal callback, or
+it will be called every time the chunk cooks.</p>
+<p>If a module has <code>execute(node)</code>, it runs every time the chunk cooks: when something it
+depends on changes (<code>add_dependency</code>), when the chunk is loaded from a file, or when the
+exec chain is run again. On load, param <em>values</em> are restored, but callbacks don't run
+again (see below). <code>node</code> is the chunk itself, the same object <code>main()</code> returned. So
+<code>execute</code> usually calls <code>node.get_stage()</code> or <code>node.get_edit_context()</code> and then changes
+the stage.</p>
+<p>It runs with a <code>Usd.EditContext</code> already set to the chunk's own layer (unless the chunk is
+<code>interactive</code>, which writes somewhere else). Every <code>execute()</code> starts from an empty layer,
+so write the whole result every time. It must give the same result every time it runs with
+the same inputs, in the same order: a prim written in dict or set order moves about. It
+can run many times while the graph cooks, so keep it fast.</p>
+<p>The framework then changes the chunk's layer only where the result differs (a diff cook):
+a prim that comes out the same sends no change, and a changed value is set in place, so the
+viewport updates it rather than building it again. For that, the cook runs on a stage of
+the layers upstream of the chunk, writing into a scratch layer. Read and write through
+<code>node.get_stage()</code> and <code>node.get_edit_context()</code>, never the scene's stage
+(<code>node.get_scene_stage()</code>), which doesn't hold that layer; keep the scene's stage for the
+scene's own bookkeeping, such as wiring chunk prims. Key anything kept between cooks on
+<code>node.get_layer_identifier()</code>, not the edit layer's identifier. A chunk that changes the
+layer stack or what is muted, or sublayers its own layer, is cleared and rewritten instead.
+<code>USD_CHUNKS_DIFF_COOK=0</code> turns diff cooks off.</p>
+<p>You write <code>execute(node)</code>; you don't call it directly. To run a chunk again, call
+<code>chunk.execute()</code>: it re-executes the chunk and everything that depends on it, the same as
+when a param changes. Changing a param or a wire already does this, so a module only needs
+it when its result is out of date in a way no param change says -- say, it restored params
+its first cook could not see.</p>
+<p>An <code>execute</code> that sets many params -- a Wedge writing a variant's ranges -- sets them inside
+<code>with chunk.change_block():</code>. Then what they drive cooks once, after the last one, rather
+than once per value.</p>
+<p>A common pattern is a chunk that does its real work in a param callback, with <code>execute</code>
+only there to redo that work after the file is opened. This is why <code>execute</code> exists,
+instead of doing everything in callbacks:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">_run</span><span class="p">(</span><span class="n">owner</span><span class="p">,</span> <span class="n">notice</span><span class="p">,</span> <span class="n">sender</span><span class="p">):</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="o">...</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">UsdGeom</span><span class="o">.</span><span class="n">Xformable</span><span class="p">(</span><span class="n">prim</span><span class="p">)</span><span class="o">.</span><span class="n">ClearXformOpOrder</span><span class="p">()</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="k">def</span><span class="w"> </span><span class="nf">execute</span><span class="p">(</span><span class="n">node</span><span class="p">:</span> <span class="n">chunk</span><span class="o">.</span><span class="n">Chunk</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="sd">"""load_chunks calls this once per chunk after bulk-restoring its param values, so a</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="sd">    reloaded chunk actually redoes its work — the real logic lives in _run, a Button</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="sd">    callback, which load's value-restore deliberately does not trigger."""</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">_run</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>    <span class="n">chunk_api</span> <span class="o">=</span> <span class="n">chunk</span><span class="o">.</span><span class="n">Chunk</span><span class="p">(</span><span class="s2">"Reset Transform"</span><span class="p">)</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    <span class="o">...</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>    <span class="n">run_btn</span><span class="o">.</span><span class="n">add_callback</span><span class="p">(</span><span class="n">_run</span><span class="p">)</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>    <span class="k">return</span> <span class="n">chunk_api</span>
+</span></code></pre></div>
+<p>(the full version is <a href="https://github.com/HuginStudios/usd_chunks/blob/main/chunks/transforms/reset_transform.py"><code>chunks/transforms/reset_transform.py</code></a>).
+A save only stores a chunk's <strong>data</strong> (params, values and wiring), never the code that
+ran (see <a href="../runtime-chunks/#what-a-save-keeps"><em>What a save keeps</em></a>). <code>execute</code> is what
+makes a chunk do its work again after the file is opened.</p>
+<h3 id="caching-a-slow-cook">Caching a slow cook<a class="headerlink" href="#caching-a-slow-cook" title="Permanent link">⚓︎</a></h3>
+<p>Before caching a slow cook, check whether it needs to be slow. Authoring thousands of prims
+through the Usd API, or looping over points in Python, is usually 10× or more slower than it
+has to be. See <a href="../fast-chunks/">Making a chunk fast</a>.</p>
+<p>Because a cook with the same inputs always gives the same layer, a slow one doesn't have to
+run again. Set <code>cache_cook=True</code> in <code>config()</code> and the result is kept on disk and read back
+the next time the inputs match, including after the file is closed and opened again:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">config</span><span class="p">():</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="k">return</span> <span class="n">chunk</span><span class="o">.</span><span class="n">DefaultConfig</span><span class="p">(</span><span class="n">cache_cook</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The cache compares everything it can see:</p>
+<ul>
+<li>every param's value (an expression counts as the value it resolves to), except labels
+  and OUTPUT params, which the cook writes;</li>
+<li>the size and modification time of any file a param names;</li>
+<li>the module's own code and the files next to it;</li>
+<li>the stage's up axis and <code>metersPerUnit</code>.</li>
+</ul>
+<p>If the result also depends on something that is not a param, for example geometry read
+from an upstream chunk or files named inside another file, add a <code>cache_key(node)</code>
+function that returns it. Anything that can be <code>repr()</code>ed works. Return <code>None</code> when it
+can't be worked out, and the chunk cooks as usual:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">cache_key</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="k">return</span> <span class="p">[</span><span class="n">mesh_checksum</span><span class="p">(</span><span class="n">prim</span><span class="p">)</span> <span class="k">for</span> <span class="n">prim</span> <span class="ow">in</span> <span class="n">input_meshes</span><span class="p">(</span><span class="n">node</span><span class="p">)]</span>
+</span></code></pre></div>
+<p>Poly Reduce returns a checksum of the meshes it reads, and URDF Import returns the size and
+date of each mesh file the <code>.urdf</code> names.</p>
+<p>Some results are not made in a cook: a simulation bakes when you press Run, on a worker
+thread. To cache one, take the entry when the work starts and store the layer when it is
+done. The next cook with the same inputs reads it back, also after the file is opened
+again. Taking the entry first means a param changed during the bake does not relabel it:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">cache_key</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>    <span class="k">return</span> <span class="n">sim_bake</span><span class="o">.</span><span class="n">input_key</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>  <span class="c1"># None in ordinary cooks: no automatic caching</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">entry</span> <span class="o">=</span> <span class="n">sim_bake</span><span class="o">.</span><span class="n">cache_entry</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">sim_bake</span><span class="o">.</span><span class="n">digest</span><span class="p">(</span><span class="n">job</span><span class="p">))</span>  <span class="c1"># None when caching is off</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="k">if</span> <span class="n">entry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">entry</span><span class="o">.</span><span class="n">restore</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">layer</span><span class="p">):</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>    <span class="o">...</span>                               <span class="c1"># read back: no bake</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="o">...</span>                                   <span class="c1"># else bake into the chunk's layer, then</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="k">if</span> <span class="n">entry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>    <span class="n">entry</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">layer</span><span class="p">)</span>
+</span></code></pre></div>
+<p><code>cache_key</code> answers only while <code>cache_entry</code> asks, because working out a bake's inputs can
+take seconds, too slow for every cook. The RBD Solver and the Particle Solver do this.</p>
+<p>Each chunk of such a module gets a <strong>Cache Result</strong> checkbox, on by default, to switch
+caching off for that one node. Only cooks that take longer than about 50 ms are stored,
+since reading a result back takes time too. A cook that changes its own input params, or
+adds params, is never stored. For where the cache lives and how to switch it off, see
+<a href="../install/#environment-variables"><code>USD_CHUNKS_COOK_CACHE</code></a>.</p>
+<h3 id="opening-without-cooking">Opening without cooking<a class="headerlink" href="#opening-without-cooking" title="Permanent link">⚓︎</a></h3>
+<p>A saved network holds the chunks and their wires, not their results. So when you save, each
+chunk's layer is also kept in the cook cache, and when the network is opened again, each
+chunk reads its layer back instead of cooking, as long as nothing it depends on has changed.
+This is for every chunk; <code>cache_cook</code> is not needed.</p>
+<p>A chunk's result is read back only if all of these are the same as when it was saved:</p>
+<ul>
+<li>everything <code>cache_cook</code> compares (its params, the files they name, its module's code, the
+  stage's units);</li>
+<li>its exec wires and what the framework keeps on its chunk prim;</li>
+<li>the same for every chunk upstream of it;</li>
+<li>the network file's own prims and time range, and the size and date of the files it
+  sublayers or references.</li>
+</ul>
+<p>Otherwise it cooks, as it always did. A chunk whose last cook also wrote outside its own
+layer (into the session layer, like a MaterialX Shader's input wires) or changed the layer
+stack always cooks. So does a module that sets <code>cook_on_open=True</code>.</p>
+<p>To switch it off, set <a href="../install/#environment-variables"><code>USD_CHUNKS_OPEN_CACHE=0</code></a>.</p>
+<h3 id="long-bakes-sim_bake">Long bakes: <code>sim_bake</code><a class="headerlink" href="#long-bakes-sim_bake" title="Permanent link">⚓︎</a></h3>
+<p>A simulation that takes seconds or minutes must not stop the host. Write the bake as a
+generator and hand it to <code>sim_bake.run</code>. Read the scene first, then <code>yield sim_bake.WORKER</code>:
+what follows runs on a worker thread, so it must not touch USD. <code>yield sim_bake.MAIN</code> comes
+back to the main thread to write the result:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">usd_chunks</span><span class="w"> </span><span class="kn">import</span> <span class="n">sim_bake</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="k">def</span><span class="w"> </span><span class="nf">bake</span><span class="p">(</span><span class="n">ctx</span><span class="p">):</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>    <span class="n">job</span> <span class="o">=</span> <span class="n">read_inputs</span><span class="p">(</span><span class="n">stage</span><span class="p">)</span>          <span class="c1"># main thread</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="k">yield</span> <span class="n">sim_bake</span><span class="o">.</span><span class="n">WORKER</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">result</span> <span class="o">=</span> <span class="n">solve</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">progress</span><span class="o">=</span><span class="n">ctx</span><span class="o">.</span><span class="n">progress</span><span class="p">,</span> <span class="n">cancelled</span><span class="o">=</span><span class="n">ctx</span><span class="o">.</span><span class="n">cancelled</span><span class="p">)</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>    <span class="k">yield</span> <span class="n">sim_bake</span><span class="o">.</span><span class="n">MAIN</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="n">write_result</span><span class="p">(</span><span class="n">stage</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>       <span class="c1"># main thread</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="k">return</span> <span class="n">result</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="n">sim_bake</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">bake</span><span class="p">,</span> <span class="n">report</span><span class="o">=</span><span class="n">show_in_readout</span><span class="p">,</span> <span class="n">finish</span><span class="o">=</span><span class="n">when_done</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Headless and under test there is no event loop to come back to, so the bake runs straight
+through. <code>sim_bake.cancel(node)</code> stops it.</p>
+<p>Some engines hold Python's GIL while they compute (Taichi does), which stops the UI even from
+a thread. Call the solve through <code>sim_bake.in_subprocess(ctx, solve, **job)</code> to run it in a
+separate Python process. <code>promote</code>, <code>keep</code> and <code>restore</code> handle the bake's layer: put it in
+front of the layers it animates, and put it back after the next cook rewrites it.</p>
+<p>For smaller work of your own -- a download, a wait before re-running -- get back to the main
+thread with <code>node.get_scene().call_later(fn, delay=0.0)</code>. It works in every host (usdview,
+Blender) and from any thread, and returns a function that cancels the call, which is all a
+debounce needs:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">_schedule</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>    <span class="n">cancel</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="s2">"_pending"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>    <span class="k">if</span> <span class="n">cancel</span><span class="p">:</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>        <span class="n">cancel</span><span class="p">()</span>                      <span class="c1"># a newer change: the last wait no longer counts</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="n">node</span><span class="o">.</span><span class="n">_pending</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">get_scene</span><span class="p">()</span><span class="o">.</span><span class="n">call_later</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">rerun</span><span class="p">(</span><span class="n">node</span><span class="p">),</span> <span class="n">delay</span><span class="o">=</span><span class="mf">0.6</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Don't import Qt for this. A chunk that imports PySide6 doesn't load in a host without it.</p>
+<h3 id="skipping-cooks-nothing-reached">Skipping cooks nothing reached<a class="headerlink" href="#skipping-cooks-nothing-reached" title="Permanent link">⚓︎</a></h3>
+<p>A change to a chunk dirties everything below it, but most of those chunks read nothing that
+changed: a Scatter below a Light doesn't care that the Light turned. So a
+chunk that only the chunks above it changed doesn't cook unless one of them changed a prim
+it reads.</p>
+<p>What a chunk reads is not declared anywhere. During a cook, <code>node.get_stage()</code> returns a
+stage that only holds the chunk's <strong>inputs</strong> (the prims its prim path params name, such as
+PRIM_SELECTION params and <code>primpath_location</code>) and the prims its last cook wrote. So:</p>
+<ul>
+<li>Read the prims you need through a prim path param, not a path written into the code. A
+  chunk that looks up anything else, or walks the whole stage (<code>Traverse()</code>), is noticed,
+  cooked again on the whole stage, and never skipped from then on. It still works; it
+  just always cooks.</li>
+<li>Framework work on the scene, like muting a gate's branches, goes through
+  <code>node.get_scene_stage()</code>, which is always the whole scene. Module code shouldn't need it.</li>
+</ul>
+<p>Anything the framework can't account for makes the chunks below cook, as they always have:
+a rewire, a chunk disabled above, a change to which layers are muted or to the stage's
+expression variables, an Edit Target repointed.</p>
+<h2 id="commit"><code>commit()</code><a class="headerlink" href="#commit" title="Permanent link">⚓︎</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">commit</span><span class="p">(</span><span class="n">node</span><span class="p">:</span> <span class="n">chunk</span><span class="o">.</span><span class="n">Chunk</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>    <span class="o">...</span>
+</span></code></pre></div>
+<p><code>commit</code> is for a chunk whose job is writing a <em>file</em>, not writing to its own USD layer,
+for example Export USD or a render product chunk. It's separate from <code>execute</code> because they
+run at different times:</p>
+<ul>
+<li><code>execute</code> runs many times while the graph cooks and params change. It's the right place
+  for fast USD edits, and the wrong place for writing to disk.</li>
+<li><code>commit</code> runs once, <strong>after</strong> everything has finished cooking. <code>usdchunks run</code> calls it,
+  and so does <code>Scene.commit()</code> from Python. usdview doesn't call it on its own; a chunk like
+  Export USD has a button for that. Chunks commit in graph order, so a chunk that reads
+  another chunk's output sees the finished result.</li>
+</ul>
+<p>No edit context is set up for <code>commit</code>. It reads the final composed stage and writes to
+disk. Modules without <code>commit</code> are skipped, since most chunks have nothing to write. A
+disabled chunk, or one that isn't connected to the active <a href="../core-chunks/#view">view</a>,
+never commits.</p>
+<h2 id="lofting-params-a-module-builds-at-runtime">Lofting params a module builds at runtime<a class="headerlink" href="#lofting-params-a-module-builds-at-runtime" title="Permanent link">⚓︎</a></h2>
+<p>Lofting publishes a param's saved attribute on its group. A param flagged <code>TRANSIENT</code> has
+none: it's session state, rebuilt rather than saved. A module whose transient params should
+still be loftable (Property Editor's fields are) defines these:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">promote_param</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">param</span><span class="p">):</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">    </span><span class="sd">"""Return a saved param to loft in place of the transient `param`, or None."""</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">restore_params</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">prim</span><span class="p">):</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="sd">"""On load, before saved values are read back: build the promoted params again."""</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="k">def</span><span class="w"> </span><span class="nf">param_unlofted</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">param</span><span class="p">):</span>
+</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">    </span><span class="sd">"""`param` was just unlofted from its group."""</span>
+</span></code></pre></div>
+<p><code>promote_param</code> runs when a transient param is lofted, and the group publishes the param
+it returns. That param isn't in what <code>main()</code> builds, so on load <code>restore_params</code> builds it
+again from the chunk's prim, before its value and its link to the group are restored.
+Property Editor keeps the list of promoted attributes in a hidden saved param for this.</p>
+<h2 id="discovery-recap">Discovery, recap<a class="headerlink" href="#discovery-recap" title="Permanent link">⚓︎</a></h2>
+<p>Every folder in <code>USD_CHUNK_DIRS</code>, including subfolders, is searched for <code>.py</code> files.
+Any file with a top-level <code>main()</code> is registered under its file name. There are
+no other rules for folder layout or file names. <a href="../install/#environment-variables">Environment
+variables</a> explains which one wins when two folders have
+a chunk with the same name.</p>
+<p>To check what was found, run <code>usdchunks list</code> (or <code>usdchunks list &lt;word&gt;</code>). <code>usdchunks show
+&lt;name&gt;</code> prints a chunk as someone looking for one sees it: its description, its menu
+entries and every param, with its type, default and range.</p>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 17, 2026 12:41:08 UTC">November 17, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 29, 2026 16:05:32 UTC">September 29, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "navigation.sections", "navigation.expand", "navigation.path", "toc.integrate", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotation", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>
