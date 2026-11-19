@@ -19,6 +19,10 @@ This file starts with the first release; development before that is in the commi
   `/World/Walls/*`, and crosses from one to the next where they touch. It read only the
   first. Roots, Min Branch, Smoothing and Max Points are sliders now; saved values load as
   they were.
+- Vine leaves alternate left and right of the stem (Spread), instead of all sitting on top
+  of it and hiding it. Bare Base % leaves the oldest part of each vine without leaves, as
+  on mature ivy. The leaf points carry the same `growth` primvar as the curves. Set Spread
+  to 0 for the old placement.
 
 ### Changed
 

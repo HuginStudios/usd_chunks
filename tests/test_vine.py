@@ -675,6 +675,44 @@ def test_wider_leaf_spacing_leaves_fewer_leaves(host) -> None:
     assert len(host.leaves().GetPointsAttr().Get()) < dense
 
 
+def _leaf_cloud(host):
+    cloud = host.leaves()
+    growth = UsdGeom.PrimvarsAPI(cloud.GetPrim()).GetPrimvar(vine.GROWTH_PRIMVAR).Get()
+    return (np.asarray(cloud.GetPointsAttr().Get(), dtype=np.float64).reshape(-1, 3),
+            np.asarray(growth, dtype=np.float64))
+
+
+def test_leaves_alternate_either_side_of_the_stem(host) -> None:
+    """Down the middle, every instanced leaf covered the stem it grew from."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(leaf_spread=0.0)
+    middle, _ = _leaf_cloud(host)
+    node.get_param("leaf_spread").value = 2.0
+    spread, _ = _leaf_cloud(host)
+
+    moved = spread - middle
+    # Sideways along the wall, not off it: the wall is the y = 0 plane.
+    assert np.abs(moved[:, 1]).max() < 1e-4
+    distance = np.linalg.norm(moved, axis=1)
+    assert np.allclose(distance, distance[0], rtol=1e-3) and distance[0] > 0.0
+    # Neighbouring leaves go opposite ways far more often than not.
+    turns = np.sum(moved[:-1] * moved[1:], axis=1)
+    assert np.mean(turns < 0.0) > 0.8
+
+
+def test_a_bare_base_keeps_leaves_off_the_oldest_stems(host) -> None:
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine()
+    every, every_growth = _leaf_cloud(host)
+    node.get_param("leaf_bare").value = 50.0
+    some, some_growth = _leaf_cloud(host)
+
+    assert len(every_growth) == len(every)
+    assert every_growth.min() < 0.5
+    assert 0 < len(some) < len(every)
+    assert some_growth.min() >= 0.5
+
+
 def test_the_leaf_cloud_exists_even_with_leaves_turned_off(host) -> None:
     """Wiring an output is how you decide to use it, so it cannot require having used it --
     the same reason the brush publishes its points path before anything is painted."""
