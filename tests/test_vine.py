@@ -281,6 +281,30 @@ def test_a_vine_that_never_forked_is_its_own_tip_width() -> None:
     assert radii == [pytest.approx(0.05)] * 20
 
 
+def test_roots_do_not_start_on_an_underside() -> None:
+    """A stroke along the foot of a wall paints its buried bottom face too, and that face is
+    the lowest paint there is. Vines rooted on it grew out of sight."""
+    up = np.asarray([0.0, 1.0, 0.0])
+    bottom = np.asarray([[x, 0.0, 0.0] for x in range(5)], dtype=np.float64)
+    front = np.asarray([[x, 0.1, 0.2] for x in range(5)], dtype=np.float64)
+    points = np.concatenate((bottom, front))
+    normals = np.concatenate((np.tile(-up, (5, 1)), np.tile([0.0, 0.0, 1.0], (5, 1))))
+
+    chosen = vine._choose_roots(points, up, 3, 1.0, normals)
+
+    assert all(i >= 5 for i in chosen)
+    # With nothing else painted, an underside still grows.
+    assert vine._choose_roots(bottom, up, 2, 1.0, normals[:5])
+
+
+def test_asking_for_more_roots_than_there_is_room_for_never_repeats_one() -> None:
+    points = np.asarray([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]])
+
+    chosen = vine._choose_roots(points, np.asarray([0.0, 0.0, 1.0]), 5, 10.0)
+
+    assert sorted(chosen) == [0, 1, 2]
+
+
 def test_meander_noise_is_smooth_and_bounded() -> None:
     """Smooth is the point: neighbouring steps of a vine have to turn the same way, or the
     turning averages out into a jitter, which is all Wander ever gave."""
