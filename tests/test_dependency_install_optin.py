@@ -210,6 +210,8 @@ def test_the_scene_runs_pip_and_sees_its_output(deps, monkeypatch):
             return run(seen.append)
 
     def fake_pip(args, on_line=None):
+        if "--dry-run" in args:  # the resolve before the install: it fails, quietly
+            return 1, ""
         on_line("Collecting requests")
         on_line("Successfully installed requests-2.32.3")
         return 0, ""

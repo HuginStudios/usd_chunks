@@ -23,6 +23,11 @@ This file starts with the first release; development before that is in the commi
   the network opened and froze Blender for the whole download, with nothing on screen
   (biome example: open 22 s → 2.7 s). A host can take an install over the same way with
   the new `SceneSender.install_later()`.
+- Installing a chunk's packages no longer installs again what the host Python already has.
+  Installing scipy for Scatter Points in Blender also put a second numpy into the
+  dependency dir; now pip is asked first what is really missing, and only that is
+  installed (the folder: 189 MB → 134 MB). With a pip older than 22.2 it installs as
+  before.
 
 ## [1.0.0-rc.1] - 2026-11-19
 
