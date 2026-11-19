@@ -327,6 +327,47 @@ def test_with_no_field_wired_the_whole_mesh_is_fair_game(host) -> None:
     assert points[:, 0].max() - points[:, 0].min() > SIZE * 0.5
 
 
+def _boulder(stage, path, radius=5.0, rings=32):
+    """A lumpy ball standing on the ground, outward-wound: a surface that bends everywhere,
+    in and out, the way a scanned rock does."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    theta = np.linspace(0.0, np.pi, rings + 1)
+    phi = np.linspace(0.0, 2.0 * np.pi, rings, endpoint=False)
+    t, p = np.meshgrid(theta, phi, indexing="ij")
+    r = radius * (1.0 + 0.08 * np.sin(5 * t) * np.cos(7 * p) + 0.03 * np.sin(17 * t + 3 * p))
+    points = np.stack([r * np.sin(t) * np.cos(p), r * np.sin(t) * np.sin(p), r * np.cos(t) + radius], -1)
+    counts, indices = [], []
+    for i in range(rings):
+        for j in range(rings):
+            a, b = i * rings + j, i * rings + (j + 1) % rings
+            counts.append(4)
+            indices.extend([a, a + rings, b + rings, b])
+    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(points.reshape(-1, 3).astype(np.float32)))
+    mesh.GetFaceVertexCountsAttr().Set(counts)
+    mesh.GetFaceVertexIndicesAttr().Set(indices)
+    return mesh
+
+
+def test_no_node_sprouts_more_than_a_few_branches(host, monkeypatch) -> None:
+    """Momentum and climb can steer a node's child away from the attractors pulling on it.
+    They then stay with that node, and it sprouted again every step: 60-odd stubs from one
+    node on a boulder, and the vine ran into Max Points before it covered the paint."""
+    ball = _boulder(host.stage, "/World/Ball")
+    _paint(ball, lambda p: 1.0 if p[2] < 7.0 else 0.0)
+    module = _loaded_vine(host)
+    skeletons = []
+    real = module._grow
+    monkeypatch.setattr(module, "_grow", lambda *args: skeletons.append(real(*args)) or skeletons[-1])
+
+    host.vine(surface_prim="/World/Ball", density=1.0)
+
+    parents = np.asarray(skeletons[-1].parent)
+    children = np.bincount(parents[parents >= 0])
+    # A vine forks into two or three. A literal, not the module's constant, so this cannot
+    # pass by the limit being lifted.
+    assert children.max() <= 4
+
+
 def test_the_readout_says_what_grew(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(root_count=3)

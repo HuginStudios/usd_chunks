@@ -59,6 +59,14 @@ _FORMS = ["Smooth", "Linear"]
 #: This sits where a vine stops looking like a random walk and still goes where it is sent.
 _MOMENTUM = 0.6
 
+#: The most children one node grows. After that its attractors stop pulling on it.
+#:
+#: Momentum and climb can outweigh the pull of attractors that lie behind a node. Its child
+#: then lands to the side, no nearer to them, so they still pick the same node next step,
+#: and it sprouts again -- on a sphere, 50 to 80 stubs from one node, and a dense rock spent
+#: a third of its 20,000 points on one. A vine forks into two or three; four leaves room.
+_MAX_CHILDREN = 4
+
 #: Pipe-model exponent. Two is da Vinci's rule -- a branch's cross-section equals the sum of its
 #: children's -- which is the thinnest-looking of the usual choices and the right end for a vine,
 #: whose whole character is that it barely thickens.
@@ -724,6 +732,11 @@ def _grow(roots, attractors, projector, settings, rng):
     towards = np.zeros((len(attractors), 3), dtype=np.float64)
     attractor_sq = _dot(attractors, attractors)
     pending = np.arange(len(nodes))
+    # Children per node, and the nodes that have grown all they may; see _MAX_CHILDREN. One
+    # spare slot at the end, so the -1 of an attractor with no nearest node reads as open.
+    slots = max(len(nodes), settings["max_nodes"]) + 1
+    children = np.zeros(slots, dtype=np.int64)
+    closed = np.zeros(slots, dtype=bool)
 
     up = settings["up"]
     step = settings["step"]
@@ -773,7 +786,7 @@ def _grow(roots, attractors, projector, settings, rng):
 
             # Reached: an attractor a node has come this close to has done its job.
             alive[live[nearest_sq[live] <= kill_sq]] = False
-            pulls[live] = alive[live] & (nearest_sq[live] <= influence_sq)
+            pulls[live] = alive[live] & (nearest_sq[live] <= influence_sq) & ~closed[nearest[live]]
 
         pulling = np.flatnonzero(pulls)
         if not len(pulling):
@@ -811,6 +824,14 @@ def _grow(roots, attractors, projector, settings, rng):
         pending = nodes.add_many(
             landed[reached], owners[reached], landed_normals[reached], direction[reached]
         )
+
+        # Owners are unique, so a plain += counts each one once.
+        parents = owners[reached]
+        children[parents] += 1
+        full = parents[children[parents] >= _MAX_CHILDREN]
+        if len(full):
+            closed[full] = True
+            pulls[pulling[closed[nearest[pulling]]]] = False
 
     return nodes
 

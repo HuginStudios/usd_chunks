@@ -34,6 +34,11 @@ This file starts with the first release; development before that is in the commi
   dependency dir; now pip is asked first what is really missing, and only that is
   installed (the folder: 189 MB → 134 MB). With a pip older than 22.2 it installs as
   before.
+- Vine no longer runs into Max Points on curved surfaces. A node whose attractors sat
+  behind it sprouted a short stub every growth step, 50 to 80 from one node, and the stubs
+  used up the points before the paint was covered. A node now grows at most four branches.
+  Vines on rocks and other curved meshes cover more and cook faster (a dense rock:
+  3 s → 1.1 s); the same seed grows a slightly different vine than before.
 
 ## [1.0.0-rc.1] - 2026-11-19
 
