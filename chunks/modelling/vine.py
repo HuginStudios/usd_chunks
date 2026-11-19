@@ -33,6 +33,7 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (growth is array work over thousands 
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 
@@ -304,6 +305,9 @@ _KEY_OFFSETS = np.asarray(
 )
 
 
+#: Up to this many points are projected as one padded block; see `_Projector.project_many`.
+_ONE_BLOCK = 32
+
 #: Shared empty candidate list, for a cell whose neighbourhood holds no surface at all.
 _NO_TRIANGLES = np.zeros(0, dtype=np.int64)
 
@@ -354,7 +358,9 @@ class _PointGrid:
 
 
 def _dot(a, b):
-    return np.sum(a * b, axis=-1)
+    # np.add.reduce is what np.sum calls, without the wrapper -- a third of the cost of a
+    # small array's dot, and the projection takes six of them every growth step.
+    return np.add.reduce(a * b, axis=-1)
 
 
 def _closest_on_triangles(point, v0, v1, v2):
@@ -370,42 +376,44 @@ def _closest_on_triangles(point, v0, v1, v2):
     `(Q, 1, 3)` and `(Q, K, 3)`. Per-call numpy overhead was 310us against a median of 21
     triangles -- the arithmetic was never the cost, the three thousand calls were.
     """
-    ab = v1 - v0
-    ac = v2 - v0
-    ap = point - v0
-    d1 = _dot(ab, ap)
-    d2 = _dot(ac, ap)
-    bp = point - v1
-    d3 = _dot(ab, bp)
-    d4 = _dot(ac, bp)
-    cp = point - v2
-    d5 = _dot(ab, cp)
-    d6 = _dot(ac, cp)
-
-    va = d3 * d6 - d5 * d4
-    vb = d5 * d2 - d1 * d6
-    vc = d1 * d4 - d3 * d2
-    denom = va + vb + vc
-
+    # One errstate for the whole test rather than one per division: entering it costs about
+    # what the arithmetic on a growth step's few dozen triangles does.
     with np.errstate(divide="ignore", invalid="ignore"):
-        inv = np.where(np.abs(denom) > 1e-20, 1.0 / denom, 0.0)
-    out = v0 + ab * (vb * inv)[..., None] + ac * (vc * inv)[..., None]
-    # A degenerate triangle has no interior to land in; its first corner is as good as anything.
-    degenerate = np.abs(denom) <= 1e-20
-    out = np.where(degenerate[..., None], v0, out)
+        ab = v1 - v0
+        ac = v2 - v0
+        ap = point - v0
+        d1 = _dot(ab, ap)
+        d2 = _dot(ac, ap)
+        bp = point - v1
+        d3 = _dot(ab, bp)
+        d4 = _dot(ac, bp)
+        cp = point - v2
+        d5 = _dot(ab, cp)
+        d6 = _dot(ac, cp)
 
-    edge = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
-    if edge.any():
-        t = _safe_ratio(d1, d1 - d3)
-        out = np.where(edge[..., None], v0 + ab * t[..., None], out)
-    edge = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
-    if edge.any():
-        t = _safe_ratio(d2, d2 - d6)
-        out = np.where(edge[..., None], v0 + ac * t[..., None], out)
-    edge = (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
-    if edge.any():
-        t = _safe_ratio(d4 - d3, (d4 - d3) + (d5 - d6))
-        out = np.where(edge[..., None], v1 + (v2 - v1) * t[..., None], out)
+        va = d3 * d6 - d5 * d4
+        vb = d5 * d2 - d1 * d6
+        vc = d1 * d4 - d3 * d2
+        denom = va + vb + vc
+
+        inv = np.where(np.abs(denom) > 1e-20, 1.0 / denom, 0.0)
+        out = v0 + ab * (vb * inv)[..., None] + ac * (vc * inv)[..., None]
+        # A degenerate triangle has no interior to land in; its first corner is as good as any.
+        degenerate = np.abs(denom) <= 1e-20
+        out = np.where(degenerate[..., None], v0, out)
+
+        edge = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
+        if edge.any():
+            t = _safe_ratio(d1, d1 - d3)
+            out = np.where(edge[..., None], v0 + ab * t[..., None], out)
+        edge = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
+        if edge.any():
+            t = _safe_ratio(d2, d2 - d6)
+            out = np.where(edge[..., None], v0 + ac * t[..., None], out)
+        edge = (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
+        if edge.any():
+            t = _safe_ratio(d4 - d3, (d4 - d3) + (d5 - d6))
+            out = np.where(edge[..., None], v1 + (v2 - v1) * t[..., None], out)
 
     out = np.where(((d1 <= 0) & (d2 <= 0))[..., None], v0, out)
     out = np.where(((d3 >= 0) & (d4 <= d3))[..., None], v1, out)
@@ -414,8 +422,12 @@ def _closest_on_triangles(point, v0, v1, v2):
 
 
 def _safe_ratio(numerator, denominator):
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.clip(np.where(np.abs(denominator) > 1e-20, numerator / denominator, 0.0), 0.0, 1.0)
+    """numerator / denominator clamped to 0..1, and 0 where the denominator is ~0.
+
+    The caller holds the errstate that silences the division by zero `np.where` throws away.
+    """
+    ratio = np.where(np.abs(denominator) > 1e-20, numerator / denominator, 0.0)
+    return np.minimum(np.maximum(ratio, 0.0), 1.0)
 
 
 class _Projector:
@@ -477,35 +489,42 @@ class _Projector:
         # The ragged candidate lists as (Q, K) blocks, by index arithmetic rather than a
         # np.full per row: padding a row at a time was thousands of tiny allocations a cook.
         # Short rows repeat their last entry, which is already a candidate of that row, so a
-        # padded column can only tie with a real answer and never beat one. Rows go in blocks
-        # of about the same length, shortest first: one block padded every row to the
-        # longest, about twice the work. Each row's answer is the same either way.
+        # padded column can only tie with a real answer and never beat one. A big batch goes
+        # in blocks of about the same length, shortest first: one block padded every row to
+        # the longest, about twice the work. A growth step's handful of points goes as one
+        # block, where sorting them into blocks cost more than the padding it saved. Each
+        # row's answer is the same either way.
         lengths = lengths[live]
-        by_length = np.argsort(lengths, kind="stable")
-        s = self._surface
-        start = 0
-        while start < len(by_length):
-            width = int(lengths[by_length[start]])
-            stop = int(np.searchsorted(lengths[by_length], width * 1.25, side="right"))
-            stop = max(stop, start + 1)
-            block = by_length[start:stop]
-            rows_live = live[block]
-            block_lengths = lengths[block]
-            width = int(block_lengths.max())
-            flat = np.concatenate([per_point[i] for i in rows_live])
-            starts = np.concatenate(([0], np.cumsum(block_lengths)[:-1]))
-            column = np.minimum(np.arange(width)[None, :], (block_lengths - 1)[:, None])
-            index = flat[starts[:, None] + column]
-            query = points[rows_live][:, None, :]
-            candidates = _closest_on_triangles(query, s.v0[index], s.v1[index], s.v2[index])
-            offset = candidates - query
-            best = np.argmin(_dot(offset, offset), axis=1)
-            rows = np.arange(len(rows_live))
-            landed[rows_live] = candidates[rows, best]
-            normals[rows_live] = s.n[index[rows, best]]
-            start = stop
+        if len(live) <= _ONE_BLOCK:
+            self._answer(points, per_point, live, lengths, landed, normals)
+        else:
+            by_length = np.argsort(lengths, kind="stable")
+            sorted_lengths = lengths[by_length]
+            start = 0
+            while start < len(by_length):
+                stop = int(np.searchsorted(sorted_lengths, sorted_lengths[start] * 1.25, side="right"))
+                stop = max(stop, start + 1)
+                block = by_length[start:stop]
+                self._answer(points, per_point, live[block], lengths[block], landed, normals)
+                start = stop
         found[live] = True
         return landed, normals, found
+
+    def _answer(self, points, per_point, rows_live, block_lengths, landed, normals):
+        """Project one block of rows, writing into `landed` and `normals`."""
+        s = self._surface
+        width = int(block_lengths.max())
+        flat = per_point[rows_live[0]] if len(rows_live) == 1 else np.concatenate([per_point[i] for i in rows_live])
+        starts = np.concatenate(([0], np.cumsum(block_lengths)[:-1]))
+        column = np.minimum(np.arange(width)[None, :], (block_lengths - 1)[:, None])
+        index = flat[starts[:, None] + column]
+        query = points[rows_live][:, None, :]
+        candidates = _closest_on_triangles(query, s.v0[index], s.v1[index], s.v2[index])
+        offset = candidates - query
+        best = np.argmin(_dot(offset, offset), axis=1)
+        rows = np.arange(len(rows_live))
+        landed[rows_live] = candidates[rows, best]
+        normals[rows_live] = s.n[index[rows, best]]
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +602,12 @@ class _Nodes:
         self.parent.extend(int(p) for p in parents)
         self._count += count
         return np.arange(start, start + count)
+
+    def copy(self):
+        """A copy whose positions and normals can be moved without touching this one."""
+        twin = _Nodes(self._count)
+        twin.add_many(self.position, self.parent, self.normal, self.direction)
+        return twin
 
     def __len__(self):
         return self._count
@@ -693,6 +718,10 @@ def _grow(roots, attractors, projector, settings, rng):
     alive = np.ones(len(attractors), dtype=bool)
     nearest = np.full(len(attractors), -1, dtype=np.int64)
     nearest_sq = np.full(len(attractors), np.inf)
+    # Whether each attractor pulls right now, and the unit vector from its nearest node to it.
+    # Both change only when its nearest node does, so they are kept rather than rebuilt.
+    pulls = np.zeros(len(attractors), dtype=bool)
+    towards = np.zeros((len(attractors), 3), dtype=np.float64)
     attractor_sq = _dot(attractors, attractors)
     pending = np.arange(len(nodes))
 
@@ -703,51 +732,65 @@ def _grow(roots, attractors, projector, settings, rng):
     climb = settings["climb"]
     wander = settings["wander"]
 
+    # A new node can only change an attractor within reach of it: one further away than both
+    # the influence and the kill distance is neither pulled nor consumed by it. So an
+    # iteration looks only at the attractors in the cells around its new nodes, not at all of
+    # them. An attractor whose nearest node is within reach gets the same nearest node a
+    # search over everything would give it, so the vine is the same.
+    grid = _PointGrid(attractors, max(settings["influence"], settings["kill"]))
+
     while len(pending) and len(nodes) < settings["max_nodes"]:
         fresh = nodes.position[pending]
-        live = np.flatnonzero(alive)
-        if not len(live):
-            break
+        # Neighbourhoods of nodes in nearby cells overlap. A mask removes the repeats and
+        # sorts what is left in one pass, several times faster than np.unique on thousands.
+        seen = np.zeros(len(attractors), dtype=bool)
+        for key in np.unique(grid.keys_of(fresh)).tolist():
+            seen[grid.near_key(key)] = True
+        live = np.flatnonzero(seen & alive)
 
-        # |a - f|^2 expanded, so the distances are one matrix product rather than an
-        # (attractors x new nodes x 3) difference that has to be built before it is reduced.
-        # That temporary was the largest allocation in the cook and was made every iteration.
-        # Clipped at zero: the expansion can go a few ulps negative where a node sits exactly
-        # on an attractor, and a negative square would come back NaN from the sqrt nobody takes
-        # but would still lose the comparison against the kill distance.
-        distance_sq = np.maximum(
-            attractor_sq[live][:, None] - 2.0 * (attractors[live] @ fresh.T) + _dot(fresh, fresh),
-            0.0,
-        )
-        closest = np.argmin(distance_sq, axis=1)
-        best_sq = distance_sq[np.arange(len(live)), closest]
-        better = best_sq < nearest_sq[live]
-        if better.any():
-            improved = live[better]
-            nearest_sq[improved] = best_sq[better]
-            nearest[improved] = pending[closest[better]]
+        if len(live):
+            # |a - f|^2 expanded, so the distances are one matrix product rather than an
+            # (attractors x new nodes x 3) difference built before it is reduced. Clipped at
+            # zero: the expansion can go a few ulps negative where a node sits exactly on an
+            # attractor, and would then lose the comparison against the kill distance.
+            distance_sq = np.maximum(
+                attractor_sq[live][:, None] - 2.0 * (attractors[live] @ fresh.T) + _dot(fresh, fresh),
+                0.0,
+            )
+            closest = np.argmin(distance_sq, axis=1)
+            best_sq = distance_sq[np.arange(len(live)), closest]
+            better = best_sq < nearest_sq[live]
+            if better.any():
+                improved = live[better]
+                owner = pending[closest[better]]
+                nearest_sq[improved] = best_sq[better]
+                nearest[improved] = owner
+                unit = attractors[improved] - nodes.position[owner]
+                length = np.linalg.norm(unit, axis=1)
+                real = length > 1e-9
+                unit[real] /= length[real, None]
+                towards[improved] = unit
 
-        # Reached: an attractor a node has come this close to has done its job.
-        alive[live[nearest_sq[live] <= kill_sq]] = False
+            # Reached: an attractor a node has come this close to has done its job.
+            alive[live[nearest_sq[live] <= kill_sq]] = False
+            pulls[live] = alive[live] & (nearest_sq[live] <= influence_sq)
 
-        pulling = np.flatnonzero(alive & (nearest >= 0) & (nearest_sq <= influence_sq))
+        pulling = np.flatnonzero(pulls)
         if not len(pulling):
             break
 
-        # Sum of unit directions, accumulated per node. np.add.at rather than a loop: on a
-        # filled region this runs over every attractor still alive, every iteration.
-        pull = np.zeros((len(nodes), 3), dtype=np.float64)
-        towards = attractors[pulling] - nodes.position[nearest[pulling]]
-        length = np.linalg.norm(towards, axis=1)
-        real = length > 1e-9
-        towards[real] /= length[real, None]
-        np.add.at(pull, nearest[pulling], towards)
+        # Sum of unit directions, per node that has any. Summed into one row per owner rather
+        # than one per node: zeroing a row for every node in the vine, every iteration, cost
+        # as much as the sums. np.add.at adds in the same order either way.
+        owners, owner_of = np.unique(nearest[pulling], return_inverse=True)
+        pull = np.zeros((len(owners), 3), dtype=np.float64)
+        np.add.at(pull, owner_of, towards[pulling])
 
         # The whole iteration steps at once: one direction array, one projection, one append.
         # Per node this was three numpy calls, an rng draw and a `project` -- 310us of call
         # overhead each against a median of 21 candidate triangles, which was most of the cook.
-        owners = np.unique(nearest[pulling])[: settings["max_nodes"] - len(nodes)]
-        direction = pull[owners]
+        room = settings["max_nodes"] - len(nodes)
+        owners, direction = owners[:room], pull[:room]
         length = np.linalg.norm(direction, axis=1)
         moving = length > 1e-9
         owners, direction = owners[moving], direction[moving] / length[moving, None]
@@ -1072,13 +1115,8 @@ def _settings(node, surface):
     }
 
 
-def _painted_roots(stage, points_path, projector, limit):
-    """Roots the brush placed by hand, projected onto the surface.
-
-    A dab lands on the skin already, but the brush records where the *cursor* hit and this
-    chunk's idea of the surface is a sampled reconstruction of it -- so they are reconciled here
-    rather than trusted to agree. A dab outside the painted region has nowhere to grow and is
-    dropped, which is the same rule the growth itself follows.
+def _seed_cloud(stage, points_path):
+    """The points wired into Painted Points, read but not yet placed on the surface.
 
     Only a point cloud is read. A mesh has points too, and a mesh path wired here by mistake
     made every vertex a root: a scanned rock froze the session, then crashed it.
@@ -1086,6 +1124,34 @@ def _painted_roots(stage, points_path, projector, limit):
     Args:
         stage: The stage to read the points from.
         points_path: The Painted Points path.
+
+    Returns:
+        (points, problem): the points as an (N, 3) array, or None when there are none, and
+        what to tell the user when the path is not a point cloud -- empty otherwise.
+    """
+    if not points_path or stage is None:
+        return None, ""
+    prim = stage.GetPrimAtPath(points_path)
+    if not prim or not prim.IsValid():
+        return None, ""
+    if not prim.IsA(UsdGeom.Points):
+        return None, f"Painted Points is a {prim.GetTypeName() or 'prim'}, not a point cloud: {points_path}"
+    points = UsdGeom.Points(prim).GetPointsAttr().Get()
+    if not points:
+        return None, ""
+    return np.asarray(points, dtype=np.float64).reshape(-1, 3), ""
+
+
+def _painted_roots(cloud, projector, limit):
+    """Roots the brush placed by hand, projected onto the surface.
+
+    A dab lands on the skin already, but the brush records where the *cursor* hit and this
+    chunk's idea of the surface is a sampled reconstruction of it -- so they are reconciled here
+    rather than trusted to agree. A dab outside the painted region has nowhere to grow and is
+    dropped, which is the same rule the growth itself follows.
+
+    Args:
+        cloud: The painted points, (N, 3), from `_seed_cloud`; None when there are none.
         projector: Puts each point on the painted surface.
         limit: The most roots to take. More are thinned evenly.
 
@@ -1093,26 +1159,14 @@ def _painted_roots(stage, points_path, projector, limit):
         (roots, note): the roots as (position, normal) pairs, and what to tell the user --
         empty when there is nothing to say.
     """
-    if not points_path or stage is None:
-        return [], ""
-    prim = stage.GetPrimAtPath(points_path)
-    if not prim or not prim.IsValid():
-        return [], ""
-    if not prim.IsA(UsdGeom.Points):
-        return [], f"Painted Points is a {prim.GetTypeName() or 'prim'}, not a point cloud: {points_path}"
-    points = UsdGeom.Points(prim).GetPointsAttr().Get()
-    if not points:
+    if cloud is None or not len(cloud):
         return [], ""
     note = ""
-    if len(points) > limit:
-        note = f"used {limit} of {len(points)} painted points"
-        points = [points[int(i)] for i in np.linspace(0, len(points) - 1, limit)]
-    roots = []
-    for point in points:
-        landed, normal = projector.project(np.asarray(point, dtype=np.float64))
-        if normal is not None:
-            roots.append((landed, normal))
-    return roots, note
+    if len(cloud) > limit:
+        note = f"used {limit} of {len(cloud)} painted points"
+        cloud = cloud[[int(i) for i in np.linspace(0, len(cloud) - 1, limit)]]
+    landed, normals, found = projector.project_many(cloud)
+    return [(landed[i], normals[i]) for i in np.flatnonzero(found).tolist()], note
 
 
 def _attractor_count(surface, settings):
@@ -1142,6 +1196,113 @@ def _up_axis(stage):
         if UsdGeom.GetStageUpAxis(stage).upper() == "Y"
         else np.asarray([0.0, 0.0, 1.0])
     )
+
+
+#: The last skeleton each Vine grew, by its layer identifier; see `_growth_key`.
+_GROWN: dict = {}
+
+#: The settings that change what grows. The rest only change how it is drawn.
+_GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "density", "roots", "min_branch",
+                    "max_nodes")
+
+
+class _Grown:
+    """One cook's growth: the pruned skeleton before smoothing, and what the readout says.
+
+    `seated` is the skeleton after smoothing and re-seating on the surface, for the Smoothing
+    it was done at: (passes, positions, normals). Re-seating projects every node, and is most
+    of what is left of a cook once the growth is reused.
+    """
+
+    __slots__ = ("key", "nodes", "projector", "roots", "roots_note", "hand_placed", "grown", "seated")
+
+    def __init__(self, nodes, projector, roots, roots_note, hand_placed, grown):
+        self.key = None
+        self.nodes, self.projector = nodes, projector
+        self.roots, self.roots_note, self.hand_placed, self.grown = roots, roots_note, hand_placed, grown
+        self.seated = None
+
+
+def _growth_key(surface, settings, seed, cloud):
+    """A digest of everything the growth reads: the painted surface, the settings, the roots.
+
+    The surface is hashed in full, not by size: a brush stroke changes the paint and not the
+    triangle count, and that has to grow a new vine. Hashing costs a few milliseconds on a
+    100k-triangle rock; growing it again costs hundreds.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for array in (surface.v0, surface.v1, surface.v2, surface.n, surface.w0, surface.w1, surface.w2):
+        digest.update(np.ascontiguousarray(array).data)
+    if cloud is not None:
+        digest.update(np.ascontiguousarray(cloud).data)
+    digest.update(repr((seed, cloud is None, tuple(settings["up"].tolist()),
+                        tuple(settings[name] for name in _GROWTH_SETTINGS))).encode())
+    return digest.digest()
+
+
+def _remember(layer_id, grown):
+    """Keep `grown` as the last growth of the Vine whose layer is `layer_id`."""
+    if len(_GROWN) > 64:
+        # A deleted chunk leaves its entry behind. Rather than track chunk lifetimes, drop the
+        # lot now and then; the next cook of each Vine grows again.
+        _GROWN.clear()
+    _GROWN[layer_id] = grown
+
+
+def _grow_skeleton(surface, settings, seed, cloud):
+    """Scatter the attractors, pick the roots and grow.
+
+    Args:
+        surface: The painted surface.
+        settings: From `_settings`, with "up" set.
+        seed: The random seed.
+        cloud: The Painted Points, from `_seed_cloud`; None for automatic roots.
+
+    Returns:
+        A `_Grown`, or a str saying why nothing grew.
+    """
+    rng = np.random.default_rng(seed)
+    nothing = "nothing painted — paint the surface with a Scatter Brush"
+
+    sample_count = _surface_sample_count(surface, settings)
+    positions, _sn, _sw, triangle_of = _sample(surface, sample_count, rng, weighted=False)
+    if not len(positions):
+        return nothing
+    # Two cells have to reach a sample from anywhere on the surface. Normally that is the step
+    # size; on a region big enough to hit the sample ceiling the samples are further apart than
+    # the steps are, and sizing to the step would leave projections landing in empty cells.
+    spacing = math.sqrt(float(surface.area.sum()) / max(sample_count, 1))
+    projector = _Projector(surface, positions, triangle_of, max(settings["step"], spacing) * 2.0)
+
+    wanted = _attractor_count(surface, settings)
+    attractors, attractor_normals, weights, _ai = _sample(surface, wanted * 2, rng, weighted=True)
+    # Thinned by the paint a second time, per sample rather than per triangle. Choosing the
+    # triangle by weight already puts the attractors in the painted region; this is what softens
+    # its *edge*, where one corner of a face is painted and another is not.
+    keep = np.flatnonzero(rng.random(len(attractors)) < weights)[:wanted]
+    attractors, attractor_normals = attractors[keep], attractor_normals[keep]
+    if not len(attractors):
+        return nothing
+
+    # Every root is a node, and the vine needs room past them to grow.
+    roots, roots_note = _painted_roots(cloud, projector, limit=max(1, settings["max_nodes"] // 4))
+    hand_placed = bool(roots)
+    if not roots:
+        # Spread across the painted region, not merely out of each other's reach. Spacing them
+        # by the influence radius put all eight roots of a boulder in its lowest few
+        # centimetres, and a vine cannot jump from there to the far side of the paint -- so one
+        # half grew and the other stayed bare. Sharing the region out between them is what
+        # "five vines" is asking for.
+        spread = max(settings["influence"], surface.diagonal() / (settings["roots"] + 1))
+        chosen = _choose_roots(attractors, settings["up"], settings["roots"], spread)
+        roots = [(attractors[i], attractor_normals[i]) for i in chosen]
+    if not roots:
+        return "no root found on the painted surface"
+
+    nodes = _grow(roots, attractors, projector, settings, rng)
+    grown = len(nodes)
+    nodes = _prune(nodes, settings["min_branch"])
+    return _Grown(nodes, projector, len(roots), roots_note, hand_placed, grown)
 
 
 def execute(node):
@@ -1177,55 +1338,27 @@ def execute(node):
 
     settings = _settings(node, surface)
     settings["up"] = _up_axis(stage)
-    rng = np.random.default_rng(int(node.get_param("seed").value or 0))
-
-    sample_count = _surface_sample_count(surface, settings)
-    positions, _sn, _sw, triangle_of = _sample(surface, sample_count, rng, weighted=False)
-    if not len(positions):
-        _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
-        return
-    # Two cells have to reach a sample from anywhere on the surface. Normally that is the step
-    # size; on a region big enough to hit the sample ceiling the samples are further apart than
-    # the steps are, and sizing to the step would leave projections landing in empty cells.
-    spacing = math.sqrt(float(surface.area.sum()) / max(sample_count, 1))
-    projector = _Projector(surface, positions, triangle_of, max(settings["step"], spacing) * 2.0)
-
-    wanted = _attractor_count(surface, settings)
-    attractors, attractor_normals, weights, _ai = _sample(surface, wanted * 2, rng, weighted=True)
-    # Thinned by the paint a second time, per sample rather than per triangle. Choosing the
-    # triangle by weight already puts the attractors in the painted region; this is what softens
-    # its *edge*, where one corner of a face is painted and another is not.
-    keep = np.flatnonzero(rng.random(len(attractors)) < weights)[:wanted]
-    attractors, attractor_normals = attractors[keep], attractor_normals[keep]
-    if not len(attractors):
-        _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
+    seed = int(node.get_param("seed").value or 0)
+    cloud, cloud_problem = _seed_cloud(upstream, (node.get_param("seed_points").value or "").strip())
+    if cloud_problem:
+        _bail(node, stage, layer, where, cloud_problem)
         return
 
-    # Every root is a node, and the vine needs room past them to grow.
-    roots, roots_note = _painted_roots(
-        upstream, (node.get_param("seed_points").value or "").strip(), projector,
-        limit=max(1, settings["max_nodes"] // 4),
-    )
-    if roots_note and not roots:
-        _bail(node, stage, layer, where, roots_note)
-        return
-    hand_placed = bool(roots)
-    if not roots:
-        # Spread across the painted region, not merely out of each other's reach. Spacing them
-        # by the influence radius put all eight roots of a boulder in its lowest few
-        # centimetres, and a vine cannot jump from there to the far side of the paint -- so one
-        # half grew and the other stayed bare. Sharing the region out between them is what
-        # "five vines" is asking for.
-        spread = max(settings["influence"], surface.diagonal() / (settings["roots"] + 1))
-        chosen = _choose_roots(attractors, settings["up"], settings["roots"], spread)
-        roots = [(attractors[i], attractor_normals[i]) for i in chosen]
-    if not roots:
-        _bail(node, stage, layer, where, "no root found on the painted surface")
-        return
+    # The growth is most of the cook, and only some params change it. Dragging Thickness,
+    # Taper, Lift, Smoothing or anything under Leaves or Display reuses the last cook's
+    # skeleton instead of growing the same one again.
+    key = _growth_key(surface, settings, seed, cloud)
+    grown = _GROWN.get(node.get_layer_identifier())
+    if grown is None or grown.key != key:
+        grown = _grow_skeleton(surface, settings, seed, cloud)
+        if isinstance(grown, str):
+            _bail(node, stage, layer, where, grown)
+            return
+        grown.key = key
+        _remember(node.get_layer_identifier(), grown)
+    # A copy: smoothing and lifting below move the nodes, and the kept skeleton must not move.
+    nodes, projector = grown.nodes.copy(), grown.projector
 
-    nodes = _grow(roots, attractors, projector, settings, rng)
-    grown = len(nodes)
-    nodes = _prune(nodes, settings["min_branch"])
     strands = _strands(nodes)
     if not strands:
         _bail(node, stage, layer, where, "nothing grew — try a larger Influence or more Density")
@@ -1235,8 +1368,12 @@ def execute(node):
     # up exactly its own radius off the skin. Widths come first because the lift is measured in
     # radii; see `_lift`.
     radii = _radii(nodes, settings["base_width"], settings["base_width"] * settings["taper"])
-    _smooth_nodes(nodes, strands, settings["smooth"])
-    _resurface(nodes, projector)
+    if grown.seated is not None and grown.seated[0] == settings["smooth"]:
+        nodes.position[:], nodes.normal[:] = grown.seated[1], grown.seated[2]
+    else:
+        _smooth_nodes(nodes, strands, settings["smooth"])
+        _resurface(nodes, projector)
+        grown.seated = (settings["smooth"], nodes.position.copy(), nodes.normal.copy())
     _lift(nodes, radii, settings["lift"])
 
     leaves = (
@@ -1250,14 +1387,14 @@ def execute(node):
         _author_curves(stage, where[1], strands, nodes, radii, settings, node)
         _author_leaves(stage, where[2], leaves, settings, node)
 
-    hit_cap = grown >= settings["max_nodes"]
+    hit_cap = grown.grown >= settings["max_nodes"]
     _report(
         node,
-        f"{len(roots)} vine{'s' if len(roots) != 1 else ''}"
-        f"{' from painted points' if hand_placed else ''} · "
+        f"{grown.roots} vine{'s' if grown.roots != 1 else ''}"
+        f"{' from painted points' if grown.hand_placed else ''} · "
         f"{len(strands)} branches · {len(leaves[0])} leaves"
         + (f"\ncapped at {settings['max_nodes']} points — raise Max Points" if hit_cap else "")
-        + (f"\n{roots_note}" if roots_note else ""),
+        + (f"\n{grown.roots_note}" if grown.roots_note else ""),
     )
 
 
