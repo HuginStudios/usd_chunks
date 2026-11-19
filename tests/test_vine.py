@@ -534,7 +534,7 @@ def test_a_change_that_only_redraws_does_not_grow_again(host, monkeypatch) -> No
     monkeypatch.setattr(module, "_grow", lambda *args: grown.append(1) or real(*args))
 
     for name, value in (("thickness", 2.0), ("taper", 0.5), ("lift", 1.5), ("smooth", 4),
-                        ("leaf_spacing", 6.0), ("curve_form", "Linear")):
+                        ("leaf_spacing", 6.0), ("curve_form", "Linear"), ("growth", 40.0)):
         node.get_param(name).value = value
 
     assert not grown
@@ -570,6 +570,55 @@ def test_repainting_grows_a_new_vine(host) -> None:
     node.execute()
 
     assert host.points()[:, 0].max() < 5.0
+
+
+# ---------------------------------------------------------------------------
+# growth
+# ---------------------------------------------------------------------------
+
+
+def _growth(host):
+    primvar = UsdGeom.PrimvarsAPI(host.curves().GetPrim()).GetPrimvar(vine.GROWTH_PRIMVAR)
+    return np.asarray(primvar.Get(), dtype=np.float64), primvar.GetInterpolation()
+
+
+def test_every_curve_point_says_when_it_grew(host) -> None:
+    """The growth primvar is what a shader animates the vine with: 0 at the roots, 1 at the
+    last tip, one value per point."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine(curve_form="Linear")
+    growth, interpolation = _growth(host)
+    points = host.points()
+
+    assert interpolation == UsdGeom.Tokens.vertex
+    assert len(growth) == len(points)
+    assert growth.min() == 0.0
+    assert growth.max() == 1.0
+    # The roots are the lowest points (Climb pulls up), and they grew first.
+    assert growth[np.argmin(points[:, 2])] < 0.1
+
+
+def test_a_part_grown_vine_is_the_older_part_of_the_grown_one(host) -> None:
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(curve_form="Linear", lift=0.0)
+    grown = host.points()
+    node.get_param("growth").value = 40.0
+    young = host.points()
+    growth, _ = _growth(host)
+
+    assert 0 < len(young) < len(grown)
+    assert growth.max() <= 0.4
+    # Cut, not regrown or moved: every point of the young vine is a point of the grown one.
+    nearest = np.min(np.linalg.norm(young[:, None, :] - grown[None, :, :], axis=2), axis=1)
+    assert nearest.max() < 1e-5
+
+
+def test_a_vine_at_no_growth_says_so(host) -> None:
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(growth=0.0)
+
+    assert not len(host.points())
+    assert "raise Growth" in node.get_param("readout").value
 
 
 def test_the_vine_path_moves_the_result(host) -> None:

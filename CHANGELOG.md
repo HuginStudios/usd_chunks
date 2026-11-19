@@ -9,6 +9,13 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- Vine has a Growth % slider: how far the vines have grown, from the roots to fully grown.
+  Every vine is cut at the same moment, so a low value is a young vine. Changing it does
+  not grow the vine again. Each curve point also carries a `growth` primvar, 0 at the roots
+  to 1 at the last tip, so a shader can animate the vine growing.
+
 ### Changed
 
 - Vine cooks faster and grows the same vines. Changing Thickness, Taper, Lift, Smoothing,
