@@ -1280,6 +1280,9 @@ def _pin(points, widths):
 # ---------------------------------------------------------------------------
 
 
+#: How big a leaf on a hanging tendril is, against one on the wall.
+_TENDRIL_LEAF = 0.8
+
 #: How much of a strand's growth, back from its tip, its leaves take to reach full size.
 _YOUNG_SPAN = 0.15
 
@@ -1287,7 +1290,7 @@ _YOUNG_SPAN = 0.15
 _NO_LEAVES = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3)), np.zeros(0))
 
 
-def _leaf_points(strands, positions, normals, radii, growth, settings):
+def _leaf_points(strands, positions, normals, radii, growth, settings, hanging=None):
     """Points along the vines at a fixed arc-length spacing, with the surface normal at each.
 
     Deliberately the same shape a Scatter Brush's Painted Points output has -- position plus
@@ -1307,6 +1310,9 @@ def _leaf_points(strands, positions, normals, radii, growth, settings):
         growth: When each node grew, 0..1, from `_growth_of`.
         settings: From `_settings`: leaf_spacing, leaf_spread, leaf_bare and leaf_young are
             read.
+        hanging: Per node, whether it is on a hanging tendril. Tendrils carry two leaves in three,
+            at 80% of the size: a hanging shoot is thinner and sparser than one clinging
+            to a wall, and leaved as thickly it hung in clumps.
 
     Returns:
         (points, normals, growth, directions, scales): (L, 3), (L, 3), (L,), (L, 3) and (L,)
@@ -1350,6 +1356,10 @@ def _leaf_points(strands, positions, normals, radii, growth, settings):
         # from Tip Leaf Size up to full.
         youth = np.clip((growth[chain[-1]] - age) / _YOUNG_SPAN, 0.0, 1.0)
         scale = settings["leaf_young"] + (1.0 - settings["leaf_young"]) * youth
+        if hanging is not None:
+            on_tendril = hanging[tip]
+            keep &= ~on_tendril | (np.arange(len(distance)) % 3 != 2)
+            scale = np.where(on_tendril, scale * _TENDRIL_LEAF, scale)
         found_points.append(at[keep])
         found_normals.append(normal[keep])
         found_growth.append(age[keep])
@@ -1761,7 +1771,7 @@ def _draw(nodes, growth, fraction, settings):
     radii = _radii(cut, settings["base_width"], settings["base_width"] * settings["taper"])
     _lift(cut, radii, settings["lift"])
     leaves = (
-        _leaf_points(strands, cut.position, cut.normal, radii, cut_growth, settings)
+        _leaf_points(strands, cut.position, cut.normal, radii, cut_growth, settings, cut.hanging)
         if settings["leaves"]
         else _NO_LEAVES
     )

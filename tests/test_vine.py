@@ -814,6 +814,20 @@ def test_tendrils_hang_to_different_lengths(host, monkeypatch) -> None:
     assert max(lengths) > 2 * min(lengths)
 
 
+def test_tendrils_carry_fewer_smaller_leaves(host) -> None:
+    """Leaved as thickly as the wall, tendrils hung in clumps."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=40.0, leaf_young=1.0)
+    cloud = UsdGeom.PrimvarsAPI(host.leaves().GetPrim())
+    points = np.asarray(host.leaves().GetPointsAttr().Get(), dtype=np.float64)
+    scale = np.asarray(cloud.GetPrimvar("scale").Get(), dtype=np.float64)
+    hanging = points[:, 2] < 5.0
+
+    assert hanging.any() and (~hanging).any()
+    assert scale[hanging].max() <= 0.8 + 1e-6
+    assert scale[~hanging].max() == pytest.approx(1.0)
+
+
 def test_hanging_tendrils_grow_after_their_tips(host) -> None:
     """Along every curve, tendrils included, growth only goes up: each point grew after the
     one before it, so a growth animation drops a tendril once its tip has got there."""

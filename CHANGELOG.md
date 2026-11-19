@@ -12,7 +12,8 @@ This file starts with the first release; development before that is in the commi
 ### Changed
 
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
-  the shortest. All the same length, they hung like a fringe cut straight.
+  the shortest, and carry two leaves in three at 80% of the size. All the same length and
+  leaved like the wall, they hung like a fringe cut straight, in clumps.
 
 ## [1.0.0-rc.2] - 2026-11-19
 
