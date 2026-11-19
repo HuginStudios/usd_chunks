@@ -134,8 +134,11 @@ def build(network="ivy_wall_network.usda", result="ivy_wall.usda", animate=False
             for y in range(5, 15, 3)
             for x in range(-19, 20, 2)
         ]
+        # Wrapped in start/stop as a viewport stroke is: letting go is when the brush records
+        # its paint on its own prim, so the saved network carries it, and recooks the chain.
+        brush.start_gizmo()
         gizmo.apply_stroke(brush, "paint", stroke)
-        ivy.execute()
+        brush.stop_gizmo()
         scene.save(network)
         scene.export(result)
     return network, result
