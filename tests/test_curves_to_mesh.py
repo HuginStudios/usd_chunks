@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from pxr import Gf, Usd, UsdGeom
 
-from usd_chunks import chunk_registry
+from usd_chunks import Scene, chunk_registry
 from usd_chunks.chunk_scene import SceneSender
 
 
@@ -452,3 +452,86 @@ def test_a_ribbon_follows_a_y_up_stage() -> None:
     flat = np.stack([line[:, 0], np.zeros(len(line)), line[:, 1]], axis=1)  # along x/z
     points, *_ = _ribbon(flat, radius=1.0, up=(0.0, 1.0, 0.0))
     assert np.allclose(points[:, 1], 0.0)
+
+
+# ---------------------------------------------------------------------------
+# cooked through the Scene API: the vine-to-mesh workflow
+# ---------------------------------------------------------------------------
+
+#: Two linear strands, still and with growth, plus a time-sampled copy that grows between
+#: frames 1 and 3 -- what a Vine writes with Animate Growth on.
+_CURVES = """#usda 1.0
+def BasisCurves "Still"
+{
+    uniform token type = "linear"
+    int[] curveVertexCounts = [3, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (0, 1, 0), (0, 2, 0)]
+    float[] widths = [0.2, 0.2, 0.2, 0.2, 0.2] (interpolation = "vertex")
+    float[] primvars:growth = [0, 0.5, 1, 0, 1] (interpolation = "vertex")
+}
+
+def BasisCurves "Growing"
+{
+    uniform token type = "linear"
+    int[] curveVertexCounts = [3]
+    int[] curveVertexCounts.timeSamples = {1: [], 2: [2], 3: [3]}
+    point3f[] points = [(0, 0, 5), (1, 0, 5), (2, 0, 5)]
+    point3f[] points.timeSamples = {1: [], 2: [(0, 0, 5), (1, 0, 5)], 3: [(0, 0, 5), (1, 0, 5), (2, 0, 5)]}
+    float[] widths = [0.2, 0.2, 0.2] (interpolation = "vertex")
+    float[] widths.timeSamples = {1: [], 2: [0.2, 0.2], 3: [0.2, 0.2, 0.2]}
+}
+"""
+
+
+def _cooked(**params):
+    scene = Scene.new()
+    curves = scene.create.inline_usd(code=_CURVES)
+    tube = scene.create.curves_to_mesh(curves, primpath_location="/Tube", **params)
+    return scene, tube
+
+
+def test_the_swept_curves_are_hidden_so_they_are_not_drawn_twice() -> None:
+    scene, _tube = _cooked(curves_prim="/Still")
+    with scene:
+        stage = scene.get_stage()
+        assert UsdGeom.Imageable(stage.GetPrimAtPath("/Still")).ComputeVisibility() == UsdGeom.Tokens.invisible
+        assert UsdGeom.Imageable(stage.GetPrimAtPath("/Tube")).ComputeVisibility() == UsdGeom.Tokens.inherited
+
+
+def test_hide_curves_off_leaves_them_showing() -> None:
+    scene, _tube = _cooked(curves_prim="/Still", hide_source=False)
+    with scene:
+        visibility = UsdGeom.Imageable(scene.get_stage().GetPrimAtPath("/Still")).ComputeVisibility()
+        assert visibility == UsdGeom.Tokens.inherited
+
+
+def test_the_mesh_is_there_even_with_nothing_to_sweep() -> None:
+    """A material bound to the Mesh output has to find a prim before anything is painted."""
+    scene, tube = _cooked(curves_prim="/Nothing")
+    with scene:
+        mesh = UsdGeom.Mesh(scene.get_stage().GetPrimAtPath("/Tube"))
+        assert mesh and len(mesh.GetPointsAttr().Get()) == 0
+        assert tube.get_param("out_mesh").value == "/Tube"
+
+
+def test_the_growth_primvar_comes_across_one_value_per_point() -> None:
+    scene, _tube = _cooked(curves_prim="/Still", sides=4)
+    with scene:
+        mesh = UsdGeom.Mesh(scene.get_stage().GetPrimAtPath("/Tube"))
+        growth = UsdGeom.PrimvarsAPI(mesh).GetPrimvar(ctm.GROWTH_PRIMVAR)
+        values = np.asarray(growth.Get())
+        assert growth.GetInterpolation() == UsdGeom.Tokens.vertex
+        assert len(values) == len(mesh.GetPointsAttr().Get())
+        # Ring by ring, from the root of the first strand: 0, then 0.5, then 1.
+        assert values[:5].tolist() == [0.0] * 5 and values[5:10].tolist() == [0.5] * 5
+
+
+def test_animated_curves_give_an_animated_mesh() -> None:
+    scene, tube = _cooked(curves_prim="/Growing")
+    with scene:
+        points = UsdGeom.Mesh(scene.get_stage().GetPrimAtPath("/Tube")).GetPointsAttr()
+        assert points.GetTimeSamples() == [1.0, 2.0, 3.0]
+        assert len(points.Get(1)) == 0
+        assert 0 < len(points.Get(2)) < len(points.Get(3))
+        assert np.array_equal(np.asarray(points.Get(3)), np.asarray(points.Get()))
+        assert "3 frames" in tube.get_param("readout").value

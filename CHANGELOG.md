@@ -30,6 +30,9 @@ This file starts with the first release; development before that is in the commi
   End Frame): nothing at the start, Growth % at the end, one time sample per frame. Each
   frame is what Growth % draws at that point. A 100-frame animation on a 131k-triangle
   rock takes 0.6 s.
+- Curves to Mesh sweeps animated curves into an animated mesh: every time sample of the
+  curves is swept and written at that time. A Vine with Animate Growth on now grows as a
+  mesh too. A `growth` primvar on the curves is carried onto the mesh, one value per point.
 
 ### Changed
 
@@ -44,6 +47,9 @@ This file starts with the first release; development before that is in the commi
 - Curves to Mesh sweeps vines faster and makes the same mesh: every strand goes through
   one array pass instead of one at a time. A 20,000-point vine (793 strands): 290 ms →
   80 ms.
+- **Breaking:** Curves to Mesh hides the curves it sweeps (Hide Curves, on by default), so a
+  renderer that draws curves (Storm, V-Ray) no longer shows the vine twice. Turn Hide Curves
+  off to keep them showing. Sides and Segments are sliders now.
 
 ### Fixed
 
@@ -73,6 +79,10 @@ This file starts with the first release; development before that is in the commi
   the foot of a wall also paints its bottom face, buried in the ground; that was the lowest
   paint, so the vines started there and grew out of sight. Asking for more roots than fit
   no longer starts two vines on the same point.
+- Curves to Mesh always writes its mesh, empty when there is nothing to sweep. Before
+  anything was painted for a Vine above it, it wrote nothing, so a material bound to the
+  Mesh output warned and did not bind. Curves of different types picked together (linear
+  and cubic) are each swept as what they are; all were swept as the last one's type.
 
 ## [1.0.0-rc.1] - 2026-11-19
 
