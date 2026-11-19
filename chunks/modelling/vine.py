@@ -1245,6 +1245,13 @@ def _pin(points, widths):
 # ---------------------------------------------------------------------------
 
 
+#: How much of a strand's growth, back from its tip, its leaves take to reach full size.
+_YOUNG_SPAN = 0.15
+
+#: No leaves: points, normals, growth, directions, scales.
+_NO_LEAVES = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3)), np.zeros(0))
+
+
 def _leaf_points(strands, positions, normals, radii, growth, settings):
     """Points along the vines at a fixed arc-length spacing, with the surface normal at each.
 
@@ -1263,13 +1270,17 @@ def _leaf_points(strands, positions, normals, radii, growth, settings):
         normals: (N, 3) surface normals at the nodes.
         radii: A radius per node.
         growth: When each node grew, 0..1, from `_growth_of`.
-        settings: From `_settings`: leaf_spacing, leaf_spread and leaf_bare are read.
+        settings: From `_settings`: leaf_spacing, leaf_spread, leaf_bare and leaf_young are
+            read.
 
     Returns:
-        (points, normals, growth): (L, 3), (L, 3) and (L,) arrays.
+        (points, normals, growth, directions, scales): (L, 3), (L, 3), (L,), (L, 3) and (L,)
+        arrays. A direction is the way the leaf leaves its stem -- out to its side and a
+        little forward -- for Scatter Points to point the leaf along. A scale is the leaf's
+        size: full on the older stem, down to Tip Leaf Size at the tip it is growing toward.
     """
     spacing = settings["leaf_spacing"]
-    found_points, found_normals, found_growth = [], [], []
+    found_points, found_normals, found_growth, found_dirs, found_scales = [], [], [], [], []
     radii = np.asarray(radii, dtype=np.float64)
     bare = settings["leaf_bare"] * (float(growth.max()) if len(growth) else 0.0)
     for chain in strands if spacing > 0.0 else ():
@@ -1294,12 +1305,25 @@ def _leaf_points(strands, positions, normals, radii, growth, settings):
         at = at + normal * radii[tip][:, None] + side * sign * settings["leaf_spread"]
         age = growth[chain[:-1]][on] * (1.0 - t) + growth[tip] * t
         keep = age >= bare
+        # Out to the leaf's side, leaning half as much forward: an ivy petiole. Forward is
+        # flattened onto the surface first: the stem rises and falls a little with Lift as
+        # it tapers, and a leaf following that would tip off the wall.
+        forward = along - normal * np.einsum("ij,ij->i", along, normal)[:, None]
+        direction = side * sign + forward * 0.5
+        direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-12)[:, None]
+        # Young toward the tip: the last _YOUNG_SPAN of this strand's growth ramps the size
+        # from Tip Leaf Size up to full.
+        youth = np.clip((growth[chain[-1]] - age) / _YOUNG_SPAN, 0.0, 1.0)
+        scale = settings["leaf_young"] + (1.0 - settings["leaf_young"]) * youth
         found_points.append(at[keep])
         found_normals.append(normal[keep])
         found_growth.append(age[keep])
+        found_dirs.append(direction[keep])
+        found_scales.append(scale[keep])
     if not found_points:
-        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0)
-    return np.concatenate(found_points), np.concatenate(found_normals), np.concatenate(found_growth)
+        return _NO_LEAVES
+    return (np.concatenate(found_points), np.concatenate(found_normals), np.concatenate(found_growth),
+            np.concatenate(found_dirs), np.concatenate(found_scales))
 
 
 # ---------------------------------------------------------------------------
@@ -1366,6 +1390,7 @@ def _settings(node, surface):
         "leaf_spacing": base_width * number("leaf_spacing"),
         "leaf_spread": base_width * number("leaf_spread"),
         "leaf_bare": min(max(number("leaf_bare") / 100.0, 0.0), 1.0),
+        "leaf_young": min(max(number("leaf_young"), 0.05), 1.0),
         "leaf_size": base_width * number("leaf_size"),
     }
 
@@ -1696,7 +1721,7 @@ def _draw(nodes, growth, fraction, settings):
     leaves = (
         _leaf_points(strands, cut.position, cut.normal, radii, cut_growth, settings)
         if settings["leaves"]
-        else (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
+        else _NO_LEAVES
     )
     return strands, cut, radii, cut_growth, leaves
 
@@ -1817,12 +1842,13 @@ def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Defaul
     every frame.
     """
     if leaves is None:
-        leaves = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
-    points, normals, growth = leaves
+        leaves = _NO_LEAVES
+    points, normals, growth, directions, scales = leaves
     ids = np.arange(len(points), dtype=np.int64)
     if grown_to is not None:
         keep = growth <= grown_to + 1e-12
         points, normals, growth, ids = points[keep], normals[keep], growth[keep], ids[keep]
+        directions, scales = directions[keep], scales[keep]
 
     def vec3f(array):
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(array, dtype=np.float32).reshape(-1, 3))
@@ -1837,10 +1863,16 @@ def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Defaul
     cloud.CreateIdsAttr().Set(Vt.Int64Array.FromNumpy(ids), time)
     cloud.CreateNormalsAttr().Set(vec3f(normals), time)
     cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)), time)
+    primvars = UsdGeom.PrimvarsAPI(cloud)
     # The same clock as the curves' growth primvar, so a shader can grow leaves in with them.
-    UsdGeom.PrimvarsAPI(cloud).CreatePrimvar(
-        GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
-    ).Set(Vt.FloatArray.FromNumpy(np.ascontiguousarray(growth, dtype=np.float32)), time)
+    primvars.CreatePrimvar(GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(growth, dtype=np.float32)), time)
+    # Read by Scatter Points: Up Along Surface follows the direction, and the scale multiplies
+    # each leaf's own.
+    primvars.CreatePrimvar("direction", Sdf.ValueTypeNames.Vector3fArray, UsdGeom.Tokens.vertex).Set(
+        vec3f(directions), time)
+    primvars.CreatePrimvar("scale", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(scales, dtype=np.float32)), time)
     if len(points):
         _set_extent(cloud, np.asarray(points), settings["leaf_size"], time)
 
@@ -1895,6 +1927,7 @@ def _sync_params(node):
     _show(node, "leaf_spacing", leaves)
     _show(node, "leaf_spread", leaves)
     _show(node, "leaf_bare", leaves)
+    _show(node, "leaf_young", leaves)
     _show(node, "leaf_size", leaves)
     _show(node, "leaf_color", leaves)
 
@@ -2285,6 +2318,19 @@ def main():
             flags=_PF.LABELED,
             tooltip="No leaves on the oldest part of each vine: the share of its growth, from the\n"
             "root, left bare. Old ivy stems lose their leaves; 30 to 50 reads as mature.",
+        )
+    )
+    leaf.add_param(
+        chunk.Slider(
+            "leaf_young",
+            "Tip Leaf Size",
+            min_value=0.05,
+            max_value=1.0,
+            default_value=0.45,
+            flags=_PF.LABELED,
+            tooltip="How big the leaves at a growing tip are, against the full-grown ones further\n"
+            "back. Each leaf point carries its size, and a Scatter Points chunk instancing\n"
+            "on them scales each leaf by it. 1 makes every leaf the same size.",
         )
     )
     leaf.add_param(

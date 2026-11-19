@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib
 
-from pxr import UsdGeom
+import numpy as np
+import pytest
+from pxr import Gf, UsdGeom
 
 from usd_chunks import Scene
 
@@ -79,3 +81,44 @@ def test_an_animated_cloud_is_not_handed_the_still_clouds_cached_cook() -> None:
             keys.append(module.cache_key(chunk_obj))
 
     assert keys[0] != keys[1]
+
+
+#: Two points on the ground facing up, with a direction and a size each.
+_DIRECTED = """#usda 1.0
+def Points "Cloud"
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0)]
+    normal3f[] normals = [(0, 0, 1), (0, 0, 1)]
+    vector3f[] primvars:direction = [(1, 0, 0), (0, 1, 0)] (interpolation = "vertex")
+    float[] primvars:scale = [1, 0.5] (interpolation = "vertex")
+}
+
+def Mesh "Leaf"
+{
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (0.1, 0, 0), (0, 0.1, 0)]
+}
+"""
+
+
+def test_a_painted_direction_turns_each_instance_and_a_painted_scale_sizes_it() -> None:
+    """A Vine's leaf points say which way each leaf leaves its stem and how big it is."""
+    scene = Scene.new()
+    source = scene.create.inline_usd(code=_DIRECTED)
+    scene.create.scatter_points(
+        source, points_prim="/Cloud", inst_path="/Leaves", prototypes=[{"proto_path": "/Leaf"}],
+        orient_mode="Align to Normal", align_up="+X", rand_axis="Off",
+    )
+    with scene:
+        stage = scene.get_stage()
+        instancer = UsdGeom.PointInstancer(stage.GetPrimAtPath("/Leaves"))
+        orients = instancer.GetOrientationsAttr().Get()
+        scales = [s[0] for s in instancer.GetScalesAttr().Get()]
+
+        # The prototype's +X ends up along each point's direction.
+        for orient, want in zip(orients, ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))):
+            axis = Gf.Rotation(Gf.Quatd(float(orient.GetReal()), Gf.Vec3d(orient.GetImaginary()))).TransformDir(
+                Gf.Vec3d(1, 0, 0))
+            assert np.allclose(tuple(axis), want, atol=2e-2)
+        assert scales[1] == pytest.approx(scales[0] * 0.5, rel=1e-3)

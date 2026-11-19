@@ -24,15 +24,16 @@ USD_CHUNK_DIRS=chunks python examples/scripts/ivy_wall.py
 | **Vine** | Grows vines over the paint. Writes a `BasisCurves` (the stems) and a guide `Points` cloud (one point per leaf, with the surface normal). |
 | **Curves to Mesh** | Sweeps the stems into a tube mesh with UVs, and hides the curves so nothing draws them twice. |
 | **Preview Surface** | Binds a bark material to the tube mesh. |
-| **Scatter Points** | Instances a leaf mesh on the Vine's Leaf Points. Wire Leaf Points into its Painted Points. |
+| **Scatter Points** | Instances a leaf mesh on the Vine's Leaf Points. Wire Leaf Points into its Painted Points, and set Up Along Surface to the leaf's tip axis: each leaf then points away from its stem, sized by the Vine. |
 
 ## Settings to reach for
 
 - **Vine › Growth**: Density for how much of the paint gets covered, Meander for how much
   the stems wind, Climb for how strongly they head up.
 - **Vine › Shape**: Thickness for stem width, as a share of the painted area.
-- **Vine › Leaves**: Spacing, Spread (how far leaves sit beside the stem) and Bare Base %
-  (no leaves on the oldest part of each stem).
+- **Vine › Leaves**: Spacing, Spread (how far leaves sit beside the stem), Bare Base %
+  (no leaves on the oldest part of each stem) and Tip Leaf Size (how small the young
+  leaves at a growing tip are).
 - **Vine › Hanging**: Hang % sends tendrils off the stem tips. They fall and drape over
   the mesh.
 - **Curves to Mesh › Sides**: 6 is plenty at a few metres. Raise it for a close-up.
