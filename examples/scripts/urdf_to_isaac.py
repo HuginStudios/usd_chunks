@@ -64,10 +64,12 @@ over "World"
     }
 
     # A 3 cm block in reach, a rigid body the gripper can push or pick up.
+    # A moving mesh collides as its convex hull: PhysX takes no triangle mesh on a dynamic body.
     def Mesh "block" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysicsMassAPI"]
     )
     {
+        uniform token physics:approximation = "convexHull"
         int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
         int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 0, 4, 5, 1, 2, 3, 7, 6, 0, 2, 6, 4, 1, 5, 7, 3]
         point3f[] points = [(-0.015, -0.015, 0), (0.015, -0.015, 0), (-0.015, 0.015, 0), (0.015, 0.015, 0),
