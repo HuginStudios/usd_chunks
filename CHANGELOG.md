@@ -11,6 +11,18 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: after installing a chunk's packages, the status bar names the package and how
+  many chunks cooked again ("Installed scipy; 4 chunk(s) recooked"). It said "0 chunk node
+  type(s) now available", which read like a failure.
+- Blender: the dialog that offers to install a chunk's packages names the packages without
+  their version ranges, and the nodes in the open network that wait for them: "OK to
+  install scipy for scatter_points (Bushes, Ferns, Grass, Trees)?". It showed
+  `scipy>=1.11,<2` and the module name only. The sidebar's Missing dependencies box too.
+- Blender: with `USD_CHUNK_AUTO_INSTALL=1`, a chunk's missing packages install in the
+  background, with progress in the status bar, and the chunks recook after. pip ran while
+  the network opened and froze Blender for the whole download, with nothing on screen
+  (biome example: open 22 s → 2.7 s). A host can take an install over the same way with
+  the new `SceneSender.install_later()`.
 - Installing a chunk's packages no longer installs again what the host Python already has.
   Installing scipy for Scatter Points in Blender also put a second numpy into the
   dependency dir; now pip is asked first what is really missing, and only that is

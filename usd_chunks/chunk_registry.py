@@ -508,7 +508,9 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         The scene is asked once for all of them (should_install_packages), naming the chunk
         that needs them; nothing is installed without its yes. With USD_CHUNK_AUTO_INSTALL
         set falsey, or a scene that cannot ask, the missing packages are named in a warning
-        instead. Only what pip actually installed is cached.
+        instead. With it set truthy, a scene that installs in the background (install_later)
+        takes them over, and they count as missing until it has. Only what pip actually
+        installed is cached.
 
         Args:
             requirements: Requirement strings, ranges allowed.
@@ -553,7 +555,13 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         # Asked about once per process: a "no" stands until restart -- see _declined.
         askable = [p for p in missing if p not in self._declined]
         mode = _install_mode()
-        if askable and mode != "never" and (
+        later = []
+        if askable and mode == "always" and self.install_later(askable, chunk_name):
+            # The host installs them in the background and cooks the chunk again after.
+            later = askable
+            logger.info("Chunk %s needs %s: installing in the background",
+                        chunk_name or "module", ", ".join(askable))
+        elif askable and mode != "never" and (
             mode == "always" or self.should_install_packages(askable, chunk_name)
         ):
             if self.install(askable, chunk_name):
@@ -561,14 +569,14 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         else:
             type(self)._declined.update(askable)
 
-        if missing:
+        if unhandled := [p for p in missing if p not in later]:
             # Say what is missing and how to get it, rather than failing later with an
             # import error from inside the chunk's module.
-            quoted = " ".join(f'"{p}"' for p in missing)
+            quoted = " ".join(f'"{p}"' for p in unhandled)
             logger.warning(
                 "Chunk %s needs %s, which is not installed. Install it with:\n"
                 "    %s -m pip install -t \"%s\" %s",
-                chunk_name or "module", ", ".join(missing), python_executable(), self.package_dir, quoted,
+                chunk_name or "module", ", ".join(unhandled), python_executable(), self.package_dir, quoted,
             )
         return missing
 
@@ -654,6 +662,15 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if not reg.scene or not self.initialized:
             return False
         return reg.scene.should_install_packages(list(packages), chunk_name)
+
+    def install_later(self, packages, chunk_name: str = "") -> bool:
+        """Whether the scene installs `packages` in the background; False with no scene."""
+        # getattr: a registry not initialized yet has no scene attribute at all.
+        scene = getattr(ChunkRegistry(), "scene", None)
+        if not scene or not self.initialized:
+            return False
+        install_later = getattr(scene, "install_later", None)
+        return bool(install_later and install_later(list(packages), chunk_name))
 
     def update_cache(self):
         """Record every installed package: what Python can import, then `pip list` on top."""
