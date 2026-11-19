@@ -22,6 +22,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A version tag now makes a GitHub release with the Blender add-on zip attached. Two
+  workflows each tried to make the release for the same tag and both failed, so
+  `v1.0.0-rc` got no release and no zip.
 - A param a chunk disabled before its panel was opened (a slider greyed out because a
   switch is off) now shows greyed out. Sliders, checkboxes and menus showed live until the
   state next changed, and a disabled slider's handle now dims so it reads as off.

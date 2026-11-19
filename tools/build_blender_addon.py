@@ -7,8 +7,8 @@ the zip must not.
 
 Makes `dist/usd_chunks_blender-<version>.zip`. In Blender: Edit > Preferences > Add-ons >
 Install from Disk, and it works -- no pip, no `--target`, no USD_CHUNK_DIRS. The release
-workflow (.github/workflows/blender-addon.yml) runs this on every `v*` tag and attaches the
-zip to the release.
+workflow (.github/workflows/release.yml) runs this on every `v*` tag and attaches the zip
+to the release.
 
 **What is in the zip.** The add-on's manifest with a `wheels` entry, a small `__init__.py`,
 and `wheels/usd_chunks-*.whl` -- the package built from this checkout, chunks/ included
