@@ -189,6 +189,7 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
             packages.extend(p for p in item.packages.split("\n") if p and p not in packages)
         chunks = ", ".join(i.chunk for i in chosen)
         self._chunks = {i.chunk for i in chosen}
+        self._packages = packages
 
         _status.update(running=True, line="", started=time.monotonic(),
                        label=f"Installing {', '.join(packages)} for {chunks}")
@@ -227,14 +228,33 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
             # when a node of them is first made (bg.ensure_chunk_type).
             made = bg.retry_failed_chunk_types()
             redone = _recook_waiting(self._chunks)
-            message = (f"Installed; {len(made)} chunk node type(s) now available"
-                       + (f", {redone} chunk(s) recooked" if redone else ""))
+            message = installed_message(self._packages, len(made), redone)
             logger.info("usd_chunks: %s", message)
             self.report({"INFO"}, message)
         else:
             self.report({"ERROR"}, "Installing chunk dependencies failed -- see the console")
         _redraw()
         return {"FINISHED"}
+
+
+def installed_message(packages, made: int, recooked: int) -> str:
+    """The status bar line after a good install, such as "Installed scipy; 4 chunk(s) recooked".
+
+    Args:
+        packages: The requirement strings installed.
+        made: How many chunk node types could not be built before and can be added now.
+        recooked: How many chunks in the open network cooked again.
+
+    Returns:
+        The line, naming only what happened: a count of zero is left out.
+    """
+    names = ", ".join(chunk_registry.split_requirement(p)[0] for p in packages)
+    parts = [f"Installed {names}"]
+    if recooked:
+        parts.append(f"{recooked} chunk(s) recooked")
+    if made:
+        parts.append(f"{made} chunk type(s) can be added now")
+    return "; ".join(parts)
 
 
 def _recook_waiting(modules: set) -> int:
