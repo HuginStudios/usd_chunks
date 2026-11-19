@@ -64,6 +64,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Vine's hanging tendrils hang down to the foot of the mesh they grow on. They stopped at the
+  lowest painted point, so ivy painted on the arches of a wall could not hang below the
+  arches.
 - Blender: after installing a chunk's packages, the status bar names the package and how
   many chunks cooked again ("Installed scipy; 4 chunk(s) recooked"). It said "0 chunk node
   type(s) now available", which read like a failure.
