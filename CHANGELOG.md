@@ -9,6 +9,16 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- Pipeline examples: seven scripts in `examples/scripts/` and a guide,
+  [Pipeline examples](docs/pipeline-examples.md). CAD to render (STEP, MaterialX, Render),
+  a product configurator (variants, one render per option), URDF for Isaac Sim, a batch
+  over an asset library, a scattered biome, a block that breaks as it lands, and houses
+  with a water sim. Each saves its network and exports plain USD; all but the batch
+  render an image.
+  `examples/scripts/biome.py` now has a `build(scene)` function the others can reuse.
+
 ## [1.0.0-rc.2] - 2026-11-19
 
 ### Added
