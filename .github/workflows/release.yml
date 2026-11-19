@@ -59,8 +59,10 @@ jobs:
           mike set-default --push latest
 
   github-release:
-    # A GitHub Release with this version's CHANGELOG.md section as its notes and the
-    # wheel attached. A tag with a dash (v1.0.0-rc) is marked as a pre-release.
+    # A GitHub Release with this version's CHANGELOG.md section as its notes, and the
+    # wheel and the Blender add-on zip attached. A tag with a dash (v1.0.0-rc) is marked
+    # as a pre-release. Only this job makes the release: two jobs making it at once
+    # collide, and neither finishes.
     needs: check
     runs-on: ubuntu-latest
     permissions:
@@ -72,6 +74,9 @@ jobs:
           python-version: "3.11"
       - run: pip install packaging build
       - run: python -m build
+      - name: Build the Blender add-on zip
+        # From the wheel just built, so the zip carries the same usd_chunks.
+        run: python tools/build_blender_addon.py --out dist --wheel dist/usd_chunks-*.whl --version "$GITHUB_REF_NAME"
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
