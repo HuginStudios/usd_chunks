@@ -1042,9 +1042,10 @@ def _hang(nodes, projector, settings, seed):
     direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
     parent = tips.copy()
     born = nodes.born[tips].copy()
-    # The ground, near enough: nothing hangs below the lowest point of what it grows on. A
-    # tendril reaching it stops, instead of falling on through the floor under the mesh.
-    floor = projector.lowest(up)
+    # The ground, near enough: nothing hangs below the lowest point of the mesh it grows on --
+    # the whole mesh, not only its painted part. Ivy painted on the arches of a wall hangs down
+    # past the arches; a floor at the lowest paint, the springing, stopped every tendril there.
+    floor = settings.get("hang_floor", projector.lowest(up))
     out = nodes.copy()
     for _ in range(steps):
         direction = direction + (-up) * _GRAVITY + rng.normal(scale=0.08, size=direction.shape)
@@ -1483,7 +1484,12 @@ _GROWN: dict = {}
 
 #: The settings that change what grows. The rest only change how it is drawn.
 _GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "meander", "density", "roots",
-                    "min_branch", "max_nodes", "hang", "hang_length")
+                    "min_branch", "max_nodes", "hang", "hang_length", "hang_floor")
+
+
+def _lowest(surface, up):
+    """How far along `up` the lowest corner of `surface` is: where hanging tendrils stop."""
+    return float(min((surface.v0 @ up).min(), (surface.v1 @ up).min(), (surface.v2 @ up).min()))
 
 
 class _Grown:
@@ -1614,15 +1620,17 @@ def execute(node):
     field = (node.get_param("density_primvar").value or "").strip()
     # Every picked prim, not only the first: a wall and the pillar beside it are one place to
     # grow, and a vine crosses from one to the other where they touch.
-    surface = _Surface.join(
+    whole = _Surface.join(
         [_collect_surface(upstream.GetPrimAtPath(path), field) for path in _outermost(paths)]
-    ).painted()
+    )
+    surface = whole.painted()
     if not surface:
         _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
         return
 
     settings = _settings(node, surface)
     settings["up"] = _up_axis(stage)
+    settings["hang_floor"] = _lowest(whole, settings["up"])
     seed = int(node.get_param("seed").value or 0)
     cloud, cloud_problem = _seed_cloud(upstream, (node.get_param("seed_points").value or "").strip())
     if cloud_problem:

@@ -763,6 +763,17 @@ def test_hanging_tendrils_leave_the_wall_and_fall(host) -> None:
     assert nearest.max() < 1e-5
 
 
+def test_tendrils_hang_below_the_paint_down_to_the_foot_of_the_mesh(host) -> None:
+    """Ivy painted high on a wall hangs down past the paint. The floor is the lowest point of
+    the whole mesh; at the lowest paint, every tendril stopped where the paint did."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=40.0)
+    z = host.points()[:, 2]
+
+    assert z.min() < 5.0
+    assert z.min() >= -1e-4
+
+
 def test_hanging_tendrils_grow_after_their_tips(host) -> None:
     """Along every curve, tendrils included, growth only goes up: each point grew after the
     one before it, so a growth animation drops a tendril once its tip has got there."""
