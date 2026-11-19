@@ -9,6 +9,12 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Changed
+
+- Vine cooks faster and grows the same vines. Changing Thickness, Taper, Lift, Smoothing,
+  Form, the leaf settings or the colours no longer grows the vine again: on a
+  131k-triangle rock, 830 ms → 80 ms. A full grow with a fine step: 3.9 s → 1.2 s.
+
 ### Fixed
 
 - Blender: after installing a chunk's packages, the status bar names the package and how

@@ -477,6 +477,60 @@ def test_a_different_seed_grows_a_different_vine(host) -> None:
     assert first.shape != second.shape or not np.allclose(first, second)
 
 
+def _loaded_vine(host):
+    """The vine module the registry cooks with, which is not the one this file imported."""
+    return host.registry.get_chunk_module("vine").module
+
+
+def test_a_change_that_only_redraws_does_not_grow_again(host, monkeypatch) -> None:
+    """Growing is most of a cook. Thickness, Taper, Lift, Smoothing and the leaves only change
+    how the same skeleton is drawn, so dragging one of them reuses the last growth."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(seed=3)
+    module = _loaded_vine(host)
+    grown = []
+    real = module._grow
+    monkeypatch.setattr(module, "_grow", lambda *args: grown.append(1) or real(*args))
+
+    for name, value in (("thickness", 2.0), ("taper", 0.5), ("lift", 1.5), ("smooth", 4),
+                        ("leaf_spacing", 6.0), ("curve_form", "Linear")):
+        node.get_param(name).value = value
+
+    assert not grown
+    node.get_param("climb").value = 1.0
+    assert grown
+
+
+def test_a_reused_growth_draws_what_a_fresh_cook_draws(host) -> None:
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(seed=3)
+    node.get_param("thickness").value = 2.0
+    node.get_param("smooth").value = 4
+    reused = host.points(), np.asarray(host.curves().GetWidthsAttr().Get())
+
+    host.vine(seed=3, thickness=2.0, smooth=4, vine_path="/Fresh")
+    fresh_curves = host.curves("/Fresh/Curves")
+
+    assert np.array_equal(reused[0], host.points("/Fresh/Curves"))
+    assert np.array_equal(reused[1], np.asarray(fresh_curves.GetWidthsAttr().Get()))
+
+
+def test_repainting_grows_a_new_vine(host) -> None:
+    """The paint is part of what the reused growth is checked against, not only the params:
+    a brush stroke changes no param of this chunk, and must still grow somewhere new.
+
+    The second coat keeps every triangle painted, faintly, so the triangles grown on stay
+    the same and only the weights say where to grow."""
+    _paint(host.mesh, lambda p: 1.0)
+    node = host.vine()
+    assert host.points()[:, 0].max() > 6.0
+
+    _paint(host.mesh, lambda p: 1.0 if p[0] <= 3.0 else 0.001)
+    node.execute()
+
+    assert host.points()[:, 0].max() < 5.0
+
+
 def test_the_vine_path_moves_the_result(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(vine_path="/Growth/Ivy")
