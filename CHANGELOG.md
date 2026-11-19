@@ -18,6 +18,11 @@ This file starts with the first release; development before that is in the commi
   their version ranges, and the nodes in the open network that wait for them: "OK to
   install scipy for scatter_points (Bushes, Ferns, Grass, Trees)?". It showed
   `scipy>=1.11,<2` and the module name only. The sidebar's Missing dependencies box too.
+- Blender: with `USD_CHUNK_AUTO_INSTALL=1`, a chunk's missing packages install in the
+  background, with progress in the status bar, and the chunks recook after. pip ran while
+  the network opened and froze Blender for the whole download, with nothing on screen
+  (biome example: open 22 s → 2.7 s). A host can take an install over the same way with
+  the new `SceneSender.install_later()`.
 
 ## [1.0.0-rc.1] - 2026-11-19
 

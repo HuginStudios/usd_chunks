@@ -175,6 +175,16 @@ class BlenderScene(SceneSender):
         dependencies.queue(packages, chunk_name)
         return False
 
+    def install_later(self, packages, chunk_name: str) -> bool:
+        """Install with USD_CHUNK_AUTO_INSTALL on the way a yes in the dialog does: on a
+        worker thread with progress in the status bar, then recook the chunks that wait.
+
+        Run inline instead, pip froze Blender for the whole download while a network opened,
+        with nothing on screen to say why.
+        """
+        dependencies.queue(packages, chunk_name, ask=False)
+        return True
+
     def run_install(self, packages, chunk_name: str, run):
         # Called on dependencies.py's worker thread (or inline, with USD_CHUNK_AUTO_INSTALL=1):
         # report_line only stores the text for the modal operator to show.
