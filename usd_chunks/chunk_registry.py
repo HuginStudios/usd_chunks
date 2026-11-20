@@ -1425,7 +1425,10 @@ class ChunkModule:
             if not self.has_main():
                 return False
 
-            if mod := sys.modules.get(self.module_name):
+            # A module imported under this name some other way is kept. The one this
+            # ChunkModule read before is not: Reload Chunks reads the file again, and keeping
+            # the old one ran the old main() and execute().
+            if (mod := sys.modules.get(self.module_name)) and mod is not self.module:
                 self.module = mod
                 return True
 
@@ -2278,24 +2281,15 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     self.register_module(mod)
                 mod.load()
 
-    def reload_modules(self):
-        """Reload every module, recreating as many chunks of each as the scene held."""
-        loaded_config_names = defaultdict(int)
-        for c in self.scene.get_chunks():
-            if conf := c.get_config():
-                loaded_config_names[conf.module] += 1
+    def unload_modules(self):
+        """Unload every loaded module, so the next load of each reads its file again.
 
-        self.scene.clear()
-
+        The chunks already made stay as they are. Reload Chunks
+        (chunk_stage.ChunkStageSync.reload_chunks) calls this, then builds them again.
+        """
         for mod in self.get_chunk_modules():
             if mod.loaded:
                 mod.unload()
-            for i in range(loaded_config_names.get(mod.module_name, 0)):
-                if i == 0:
-                    chunks = mod.load()
-                else:
-                    chunks = mod.create()
-                self.scene.add_chunks(chunks)
 
 
 def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:

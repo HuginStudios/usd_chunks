@@ -27,6 +27,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Chunks > Reload Chunks in usdview keeps the network and runs your edited code. It built
+  fresh chunks instead: every param went back to its default, wires were lost, and the new
+  chunks went into a second root group, so the graph looked empty. The old module also stayed
+  loaded, so edits to `main()` and `execute()` never ran. It now reads the edited files again
+  and rebuilds the graph from the stage, as File > Open does.
+  **Breaking:** `ChunkRegistry.reload_modules()` is gone; call
+  `chunk_stage.ChunkStageSync().reload_chunks()` instead.
 - A menu value in another case or with underscores now picks its item:
   `light(light_type="distant_light")` makes a DistantLight. It made a DiskLight without a word,
   and the build skill showed that call. A value that names no item still falls back to the
