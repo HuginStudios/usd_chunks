@@ -34,6 +34,8 @@ This file starts with the first release; development before that is in the commi
 - A reopened Shape chunk (USD Cube, Sphere ...) shows its own params again. A USD Cube showed
   Axis and hid its Size: with the open cache on, the reopened chunk never cooked, and nothing else
   put its params back.
+- `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
+  what it needs, instead of listing no params as if it took none.
 
 ## [1.0.0-rc.2] - 2026-11-19
 
