@@ -32,6 +32,16 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- CAD Import instances a part used more than once even when it has a colour, as most STEP
+  parts do.
+- CAD Import in `chunk.change_block()` keeps the location the script gave. It used one made
+  from the file name.
+- A Light's colour set when it is made can be changed later. It was written where the
+  Light could never change it again.
+- A run with a Light in it no longer logs `ERROR Could not send notice ... is not in the
+  local LayerStack`.
+- URDF Import writes each link's whole inertia, scaled with Scale. It wrote only part of it,
+  and usdchecker rejected every link.
 - Prim can make a PhysicsScene, a physics joint, RenderSettings or RenderProduct. Asking for
   one gave an Xform.
 - Render in Command mode finds files next to a network made with `Scene.new(path=...)`.
