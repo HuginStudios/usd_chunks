@@ -1702,6 +1702,28 @@ class ChunkStageSync(metaclass=RegistrySingleton):
         self._loaded_prim_paths.clear()
         self._chunk_prim_paths.clear()
 
+    def reload_chunks(self) -> None:
+        """Reload Chunks: read the chunk modules again and rebuild the graph from the stage.
+
+        The stage already holds every chunk's prim, params and wires, so the chunks are
+        dropped and loaded back from it, as File > Open does, with each module's file read
+        afresh. Rebuilding chunks from their modules instead put every param back to its
+        default and lost the wires.
+
+        The chunks' layers go before the layer manager starts over: it would otherwise
+        forget them, and each reload left them in the stack. discarding_stage keeps taking
+        them off from rescanning the stage, which found the chunks' prims and built them
+        again mid-teardown.
+        """
+        if not self._scene or not self._stage:
+            return
+        stage = self._stage
+        with self.discarding_stage(), chunk_registry.ChunkLayerManager().holding_deletes():
+            self._teardown_chunks()
+        chunk_registry.ChunkRegistry().unload_modules()
+        self._loaded_stage = None  # the same stage: reload_for_stage would skip it
+        self.reload_for_stage(stage)
+
     def reload_for_stage(self, stage: Usd.Stage) -> None:
         """Reinitialize for a newly opened stage (File > Open).
 

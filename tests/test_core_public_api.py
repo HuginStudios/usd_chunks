@@ -184,12 +184,12 @@ def test_registering_the_same_file_again_is_not_a_shadow(scene, tmp_path, drop_i
     assert len(registry.shadowed_modules) == shadows
 
 
-def test_reload_modules_recreates_as_many_chunks_as_there_were(scene):
+def test_reload_chunks_keeps_as_many_chunks_as_there_were(scene):
     module = register_stub_module()
     chunk.create_chunks(module.module_name)
     chunk.create_chunks(module.module_name)
 
-    chunk_registry.ChunkRegistry().reload_modules()
+    chunk_stage.ChunkStageSync().reload_chunks()
 
     of_module = [c for c in scene.get_chunks()
                  if (cfg := c.get_config()) and cfg.module == module.module_name]
