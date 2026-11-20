@@ -11,6 +11,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Bind Material has a Strength. Weaker than Descendants lets a face subset keep its own
+  material: bind a tree to bark, and its leaves stay leaves.
 - The build-network skill has a chunks-by-task page: every chunk by the job it does, with
   when to pick it over its neighbours. Agents now look for a chunk that builds an object (Fence,
   House) before they model it from boxes.
@@ -27,6 +29,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Prim can make a PhysicsScene, a physics joint, RenderSettings or RenderProduct. Asking for
+  one gave an Xform.
+- Render in Command mode finds files next to a network made with `Scene.new(path=...)`.
+  They were missing from the render.
+- Reset Transform resets every prim you give it, not just the first.
+- Property Editor can make a new relationship: `rel physics:body1 = "/World/robot/base"`.
+  The edit was skipped.
 - A reopened Vine hides what its saved values make useless again: Start/End Frame with Animate
   off, Step with Auto Step on. A test now reopens every chunk with the open cache on and checks
   it shows the same params as before.
