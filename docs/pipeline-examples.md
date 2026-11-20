@@ -1,368 +1,154 @@
 # Pipeline examples
 
-Seven scripts in `examples/scripts/`, one per job usd_chunks is built for. Each one builds a
-network with the `Scene` API, saves it, exports the result as plain USD and, where it makes
-sense, renders an image. Run one, open what it saved in usdview, and change it from there or
-from the command line.
+Seven scripts in `examples/scripts/`, one per job usd_chunks is built for. Each builds a node
+network, saves it, exports plain USD and renders a picture. Run one, then open the network
+in usdview and change it.
 
-| Job | Script | Shows |
+| Example | Script | Shows |
 | --- | --- | --- |
-| [CAD to render](#cad-to-render) | `cad_to_render.py` | CAD Import, MaterialX, lights, camera, Render |
-| [Product configurator](#product-configurator) | `configurator.py` | Variant sets, materials bound inside a variant, one render per option |
-| [URDF for Isaac Sim](#urdf-for-isaac-sim) | `urdf_to_isaac.py` | The SO-101 arm: URDF Import, Pose Articulation, a sim-ready physics scene |
-| [Batch an asset library](#batch-an-asset-library) | `batch_library.py` | `usdchunks batch` over a folder, Poly Reduce |
-| [Scatter a forest](#scatter-a-forest) | `forest.py` | Scatter Points in layers, with Poly Haven firs, logs, shrubs and grass |
-| [Scatter a biome by height](#scatter-a-biome-by-height) | `valley.py` | Height Field, Keep Away From, face subsets: a village, forest and lake in a valley |
-| [A street of houses](#a-street-of-houses) | `street.py` | House, Fence, Transform: eight houses from one chunk type |
+| [Valley biome](#valley-biome) | `valley.py` | Scatter by height: a village, forest, a lake with a sandy shore |
+| [Street of houses](#street-of-houses) | `street.py` | Eight houses from one House chunk |
+| [Forest](#forest) | `forest.py` | Scatter layers that grow near each other |
+| [Robot for Isaac Sim](#robot-for-isaac-sim) | `urdf_to_isaac.py` | A URDF robot, posed and ready to simulate |
+| [CAD to render](#cad-to-render) | `cad_to_render.py` | A STEP file with MaterialX looks |
+| [Product configurator](#product-configurator) | `configurator.py` | Options as variant sets |
+| [Batch a library](#batch-a-library) | `batch_library.py` | One network run over a folder of files |
 
-For a network packed into one file you can reference anywhere, see
-`examples/scripts/use_groups.py` and [Output, View and ChunkGroup](core-chunks.md).
+## Quick start
 
-## Before you start
-
-Run the scripts from the repository root with `USD_CHUNK_DIRS` pointing at `chunks/`:
+From the repository root:
 
 ```
-USD_CHUNK_DIRS=chunks python examples/scripts/cad_to_render.py
+python examples/scripts/example_assets.py                # once: fetch the free assets, about 200 MB
+USD_CHUNK_DIRS=chunks python examples/scripts/valley.py  # build, save and render
+usdview examples/scripts/out/valley_network.usda         # open the network and change it
 ```
 
-Each script writes into `examples/scripts/out/`, or into a folder you give it as the first
-argument: `python examples/scripts/valley.py C:/tmp/valley`.
+Results go to `examples/scripts/out/`, or to a folder you give as the first argument.
 
-**Which Python.** The scripts need a Python with `pxr` and usd_chunks. There are two kinds:
+Every saved network also runs from the command line, with any param changed. Each example
+below shows one.
 
-- **The usd-core wheel** (`pip install -e ".[dev]"`). It builds every network and writes
-  every USD file, but it can't render, and it has no MaterialX shader definitions. The
-  URDF, batch, forest, valley and street scripts work with it. They skip the image and log
-  `Render: 'usdrecord' not found on PATH`.
-- **A full USD build:** usdview's, Houdini's or Blender's Python. It renders, and it has
-  MaterialX. Use it for the CAD and configurator scripts, and for the images.
+## Valley biome
 
-**Assets.** The URDF, forest, valley and street scripts use free assets: models, textures and
-an HDRI from [Poly Haven](https://polyhaven.com) (CC0) and the SO-101 arm from
-[SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) (Apache 2.0). Each script fetches
-what it needs the first time it runs, into `examples/assets/downloads/`. To fetch all of it
-at once (about 200 MB), or to keep it somewhere else:
+![A lake with a sandy shore in a valley, a village of cottages beyond it, firs up the slopes](assets/examples/valley.jpg)
+
+A valley where what grows depends on height. Houses stand on the flat valley floor, firs
+stop at a tree line, grass grows low down, rocks lie on the peaks, and sand lines the lake.
+Nothing grows through a house.
 
 ```
-USD_CHUNK_EXAMPLE_ASSETS=D:/assets/examples python examples/scripts/example_assets.py
+python examples/scripts/valley.py
+usdchunks run examples/scripts/out/valley_network.usda TreeLine.max_height=18 Houses.max_count=3
 ```
 
-**Chunks, not USD code.** The scripts build everything with chunks, so each step is a node
-you can open, change and rewire. `example_assets.py` adds the chunks that bring a Poly Haven
-model in, since the forest and the valley share them. `add_models()` adds, per model:
+- **Height Field** marks a band of height. Scatter Points uses it as a Density Field, and
+  its Face Subset gives the band its own material (the sand, the rock).
+- **Keep Away From** on each Scatter Points keeps it clear of the houses.
+- **Max Slope** keeps houses on flat ground and trees off cliffs.
+- The script makes the terrain itself. To use your own, point the Terrain chunk at your
+  file and set the Height Fields to its heights.
 
-- a **Reference** that imports one variation (Import Prim Path), since Poly Haven keeps a
-  set's variations side by side in one file;
-- one **Reset Transform** that puts them all at the origin;
-- one **Bind Material** per material, set to Weaker than Descendants so that a face subset
-  (a fir's twigs) keeps its own material and doesn't get the mesh's (the bark).
+## Street of houses
 
-The materials are the one piece still written as USD, in an Inline USD chunk. Poly Haven's
-own MaterialX renders black in Storm and crashes Aurora, so each model gets a plain
-UsdPreviewSurface made from its own textures. A texture wired into a material from chunks
-(Preview Surface, UV Texture, Primvar Reader) doesn't reach the real shaders yet, and
-these materials need their colour, roughness and leaf cut-out maps. `texture_look()` does the
-same for a ground texture.
+![A village street with eight houses behind picket fences](assets/examples/street.jpg)
 
-**Optional libraries.** Some chunks need a library the first time they cook: CAD Import
-needs `cadquery-ocp` and Poly Reduce `fast-simplification`. The chunk asks before it installs. Set
-`USD_CHUNK_AUTO_INSTALL=1` to install without asking (see [Install](install.md)).
+Eight houses from one House chunk, each with its own width, roof, floors and colours, along
+a street with fences.
 
-**Rendering from a script.** The Render chunk renders when the network is committed:
-`scene.commit()` in a script, or every `usdchunks run`. The examples set `mode="Command"`.
-That runs USD's `usdrecord` in its own process, which makes its own OpenGL context, so
-Storm works from a terminal too. Use an absolute `output_image`: a relative one is taken from
-the working directory, not from the network's folder.
+```
+python examples/scripts/street.py
+usdchunks run examples/scripts/out/street_network.usda House3.roof_style=Hip House3.floors=2
+```
 
-The URDF, forest, valley and street scripts render with **Aurora**, the path tracer in the
-2026-11 USD bundle, when it is installed, and with Storm otherwise. Aurora gives soft shadows
-and light that bounces. Three things to know:
+- A House is built from its front-left corner, door facing −Y. The far row is turned 180°.
 
-- Aurora reads its own settings (samples, denoiser, the HDRI as the background) only from
-  the session layer, not from the stage. `example_assets.render_params()` writes them to a
-  small file and passes it with `--sessionLayer` in the Render chunk's Extra Args.
-- Aurora reads a Dome Light's image path as written, so give it an absolute path.
-- Aurora ignores an inherited `visibility = invisible`, so hidden scatter prototypes are
-  drawn where they stand. `add_models()` also makes them `purpose = guide`, which no
-  renderer draws; the scattered copies aren't under them, so they still render.
+## Forest
 
-**A Distant Light needs Normalize.** Its Intensity is the brightness of the sun's disc, not
-the light that lands. A disc a degree wide at Intensity 3 lights almost nothing, in Storm or
-Aurora. Turn on Normalize, and Intensity is the light that lands:
-`scene.create.distant_light(..., intensity=3.0, normalize=True)`.
+![Young firs with shrubs and grass on a forest floor](assets/examples/forest.jpg)
+
+Firs in clearings, deadwood near the trees, shrubs under them, grass in the open. Each
+layer grows near the one before (Grow Near), so there's nothing to paint.
+
+```
+python examples/scripts/forest.py
+usdchunks run examples/scripts/out/forest_network.usda Clearings.seed=7 Trees.max_count=300
+```
+
+- `biome.py` is the same idea with simple shapes and no downloads.
+
+## Robot for Isaac Sim
+
+![The yellow SO-101 arm reaching for a blue block](assets/examples/urdf_to_isaac.jpg)
+
+The SO-101 arm from its URDF, as UsdPhysics: rigid bodies, joints with limits and drives.
+The script poses it, stiffens the drives, bolts its base to the floor, and adds a physics
+scene and a block to pick up. Open `out/so101_scene.usda` in Isaac Sim and press Play.
+
+```
+python examples/scripts/urdf_to_isaac.py
+usdchunks run examples/scripts/out/urdf_network.usda Pose.shoulder_link=20 Pose.wrist_link=30 -o arm.usda
+```
+
+- For your own robot, set URDF Import's File Path, and Mesh Root to the folder its
+  `package://` paths point at.
+- Pose Articulation has a slider per joint, named after the link it moves.
 
 ## CAD to render
 
-![A red motor on a grey base plate with four bolts, rendered](assets/examples/cad_to_render.jpg)
+![A red motor on a grey base plate with four bolts](assets/examples/cad_to_render.jpg)
+
+A STEP motor read by CAD Import, with a MaterialX look per part.
 
 ```
 python examples/scripts/cad_to_render.py
 ```
 
-```
-CAD Import → Transform → Standard Surface ×4 → Ground → Preview Surface → Dome Light
-  → Rect Light → Transform → Camera → Render
-```
-
-`examples/assets/motor.step` is a small motor: a base plate, a body, an end cap, a shaft,
-and one bolt placed four times. CAD Import reads it into USD and keeps the assembly tree,
-the part names and the colours. Each part is meshed once, into a prim under
-`/World/Motor/Prototypes`, and every placement references it. So binding a material to
-`/World/Motor/Prototypes/Bolt/mesh` shades all four bolts:
-
-``` py
-cad = scene.create.cad_import(file_path="../../assets/motor.step",
-                              primpath_location="/World/Motor", angular_deflection=6.0)
-upright = scene.create.transform(cad, primpath_location="/World/Motor", rx=-90.0)
-red = scene.create.standard_surface(upright, prim_path="/World/Looks/painted_red",
-                                    bind_to="/World/Motor/Prototypes/Body/mesh",
-                                    base_color=(0.6, 0.04, 0.02), coat=0.6)
-```
-
-- STEP files are usually Z-up, and a new Scene is Y-up. The Transform turns the assembly
-  upright. Or set the stage to Z-up with `stage_settings(up_axis="Z")`.
-- Units are read from the file and converted to the stage's: the motor is 22 cm long.
-- Under the import root sits the STEP file's own assembly node, so the parts are at
-  `/World/Motor/Motor/plate`, `/World/Motor/Motor/bolt_0`, and so on.
-- **The camera's near clip is 1 unit by default.** In a metres stage, that hides
-  everything closer than a metre. For a small product, set
-  `clippingRange=(0.01, 100.0)` on the Camera.
-- Lower Angular Deflection for smoother curved surfaces; the motor uses 6 degrees.
-- In Storm, metal is lit only by the dome light's texture. With an untextured dome, fully
-  metallic parts render black, which is why the example keeps metalness low. Give the Dome
-  Light an HDR image, or render with a path tracer, for real metal.
-
-For your own file, change `file_path` and the paths in `bind_to`. List the parts with
-`usdcat out/cad_scene.usda` or look in usdview's Prim view.
+- Each part is meshed once and placed where it's used, so one material on
+  `/World/Motor/Prototypes/Bolt/mesh` shades all four bolts.
+- STEP files are usually Z-up: the script turns the motor upright with a Transform.
+- For a small product, set the Camera's near clip low: `clippingRange=(0.01, 100.0)`.
 
 ## Product configurator
 
 ![The motor in red, blue and yellow, and yellow without its base plate](assets/examples/configurator.jpg)
 
+The same motor with two options, paint and base, as USD variant sets. The saved network is
+the configurator.
+
 ```
 python examples/scripts/configurator.py
-```
-
-The same motor, with two variant sets on `/World/Motor`: `paint` (red, blue, yellow) and
-`base` (plate, bare). The script renders four options. The saved network is the configurator
-itself.
-
-Two things make it work:
-
-1. **Add Variants** creates the sets and their names:
-
-    ``` py
-    scene.create.variant(last, primpath_location="/World/Motor", variant_entries=[
-        {"vs_name": "paint", "v_names": "red, blue, yellow", "v_default": "red"},
-        {"vs_name": "base", "v_names": "plate, bare", "v_default": "plate"},
-    ])
-    ```
-
-2. **A variant in the prim path** makes a chunk write inside that variant. `{paint=blue}`
-   after `/World/Motor` means "inside the blue variant of the paint set on /World/Motor":
-
-    ``` py
-    scene.create.bind_material(last, material_path="/World/Looks/paint_blue",
-                               primpath_location="/World/Motor{paint=blue}/Prototypes/Body/mesh")
-    scene.create.property_editor(last, prim="/World/Motor{base=bare}/Motor/plate",
-                                 edits='visibility = "invisible"')
-    ```
-
-    Bind Material, Property Editor, Transform, the material chunks and most chunks that take
-    a prim path accept this.
-
-**Set Variant** picks the option. Name it, and you can switch options from the command line
-without opening the file:
-
-```
 usdchunks run examples/scripts/out/configurator_network.usda Paint.variant_selection=blue Base.variant_selection=bare -o blue_bare.usda
 ```
 
-The exported `out/configurator.usda` keeps the variant sets. Any USD viewer can switch
-options in it, with no usd_chunks installed.
+- A prim path like `/World/Motor{paint=blue}/...` makes a chunk write inside that option.
 
-## URDF for Isaac Sim
+## Batch a library
 
-![The yellow SO-101 arm reaching for a blue block on a concrete floor](assets/examples/urdf_to_isaac.jpg)
-
-```
-python examples/scripts/urdf_to_isaac.py
-```
-
-```
-Stage Settings (Z up) → URDF Import → Pose Articulation → Property Editor (stiffness)
-  → Prim (PhysicsScene) → Prim (PhysicsFixedJoint) → Property Editor (its body)
-  → Mesh (floor) → Transform → material → Mesh (block) → Transform → Set Display Color
-  → Apply Schema × 4 → Property Editor (convex hull, mass) → lights → Camera → Render
-```
-
-The robot is the [SO-101](https://github.com/TheRobotStudio/SO-ARM100), an open 6-axis arm
-with STL meshes. URDF Import turns it into UsdPhysics: each link is a rigid body with its
-mass, each collision shape gets `CollisionAPI`, each joint becomes a `PhysicsRevoluteJoint`,
-`PhysicsPrismaticJoint` or `PhysicsFixedJoint` with its limits, and the base gets
-`ArticulationRootAPI`. The URDF's colours become materials.
-
-Pose Articulation has one slider per moving joint, named after the link that joint moves:
-`shoulder_link` turns the arm, `upper_arm_link`, `lower_arm_link` and `wrist_link` bend it,
-`moving_jaw_so101_v1_link` opens the gripper. It also sets each joint drive's target angle.
-
-What the example adds for a simulator:
-
-- **Stiffness on the drives.** URDF carries joint damping but no stiffness, so a drive would
-  hold nothing. A Property Editor sets `float drive:angular:physics:stiffness = 40` on the
-  six joints.
-- **A physics scene**: a Prim of type `PhysicsScene`. Gravity is at its default, 9.81 m/s²
-  down the stage's up axis.
-- **A fixed joint** bolting the base to the world: a Prim of type `PhysicsFixedJoint`, and a
-  Property Editor that sets its `physics:body1` to the base link. Leave both out for a
-  mobile robot.
-- **A floor and a block that collide.** Apply Schema gives both `PhysicsCollisionAPI`, and
-  the block `PhysicsRigidBodyAPI`, `PhysicsMeshCollisionAPI` and `PhysicsMassAPI`. A
-  Property Editor sets its mass, 20 g, and makes it collide as its convex hull: PhysX takes
-  no triangle mesh on a moving body.
-
-Open `out/so101_scene.usda` in Isaac Sim and press Play. Try another pose without opening
-anything:
-
-```
-usdchunks run examples/scripts/out/urdf_network.usda Pose.shoulder_link=20 Pose.wrist_link=30 -o arm.usda
-```
-
-For your own robot, set `file_path` to its `.urdf` and Mesh Root to the folder that
-`package://` paths are found in. Robots in centimetre stages need `scale=100`. URDF Import
-converts STL meshes itself. Other mesh formats are only referenced, so they show only where
-USD can read that format.
-
-## Batch an asset library
+One network run once per file: Reference, then Poly Reduce to 10%, over a folder.
 
 ```
 python examples/scripts/batch_library.py
+usdchunks batch examples/scripts/out/proxy_network.usda "Reference.file_path=library/*.usda" -o "proxies/{1}_proxy.usda" --dry-run
 ```
 
-One network, run headless once per file. The script writes three dense stand-in assets to
-`out/library/`, builds a two-chunk network (Reference → Poly Reduce at 10%) and runs it over
-the folder with the CLI:
+- `{1}` is what the first `*` matched: `library/torus.usda` writes `proxies/torus_proxy.usda`.
+- Run with `--dry-run` first to see what it will do. `--jobs 4` runs four at a time.
 
-```
-usdchunks batch out/proxy_network.usda "Reference.file_path=library/*.usda" -o "proxies/{1}_proxy.usda" --dry-run
-usdchunks batch out/proxy_network.usda "Reference.file_path=library/*.usda" -o "proxies/{1}_proxy.usda"
-```
+## Good to know
 
-- The glob in the override drives the batch. `{1}` is what its first `*` matched, so
-  `library/torus.usda` writes `proxies/torus_proxy.usda`.
-- Patterns are relative to the network's folder, not the shell's.
-- Always run `--dry-run` first. It lists every input and where each result goes.
-- `--jobs 4` runs four at a time. The command exits with 1 and lists the failures if any run
-  failed.
-- Each proxy references its source asset and overrides the reduced meshes on top. Add
-  `--relative` to write those references relative to the output, so the folders can move.
-
-An asset needs the usual layout, a root Xform with its meshes under it. A file whose root
-prim *is* a Mesh comes in through Reference as an Xform, and Poly Reduce finds no mesh in
-it. The [batch skill](https://github.com/HuginStudios/usd_chunks/blob/main/skills/usd-chunks-batch/SKILL.md)
-has every flag.
-
-## Scatter a forest
-
-![Young firs with shrubs, nettles and grass on a forest floor, under a cloudy sky](assets/examples/forest.jpg)
-
-```
-python examples/scripts/forest.py
-```
-
-A Noise Field makes clearings, and four Scatter Points layers grow from each other: young
-firs on the noise, logs, stumps and rocks near the trees, shrubs and nettles under them, and
-grass out in the open. Every layer reads the one before through Grow Near, so there is no
-field to paint.
-
-- The prototypes are Poly Haven models under `/protos`, hidden, brought in by
-  `example_assets.add_models()` (see Assets above). Each layer lists its prototypes with a
-  weight and a scale: a young fir is 1.2 m, scaled 3.5 to 6 times.
-- The forest floor is a texture on an 80 m grid. Aurora ignores a UsdTransform2d, so the
-  grid is built 32 units wide and scaled 2.5 times: the texture repeats every 2.5 m.
-- Instanced triangles add up: 220 firs of 150,000 triangles each is 34 million. Scatter
-  Points warns past 20 million. Aurora has crashed past about 60 million; use Poly Reduce on
-  a heavy prototype, or fewer instances.
-
-Try another forest from the command line:
-
-```
-usdchunks run examples/scripts/out/forest_network.usda Clearings.seed=7 Trees.max_count=300
-```
-
-`biome.py` is the same idea with stand-in shapes, and needs no download.
-
-## Scatter a biome by height
-
-![A lake with a sandy shore in a valley, a village of cottages beyond it, firs up the slopes and bare rock on a peak](assets/examples/valley.jpg)
-
-```
-python examples/scripts/valley.py
-```
-
-```
-Stage Settings → Reference (terrain) → Height Field × 5, Noise Field → materials
-  → Mesh (lake) → Preview Surface → House × 3 → References (models)
-  → Scatter Points × 5 → lights → Camera → Render
-```
-
-A valley between two ridges, with a lake. What grows where depends on height, as it does on
-a real hillside:
-
-- **Height Field** paints a 0..1 field for a band of height: 1 between Min Height and Max
-  Height, fading out over Softness. A Scatter Points reads it as its Density Field. The
-  valley floor (3 to 6 m) is where houses go, the tree line keeps firs below 32 m, the grass
-  stays low, and boulders lie only on the peaks. Multiply With combines a band with
-  another field: the trees' band is multiplied with a Noise Field, for clearings.
-- **Face Subset** puts a band's faces in a subset of the ground mesh. Bind Material gives the
-  shore's faces sand and the peaks' faces rock. The ground's own grass is bound Weaker than
-  Descendants, so the subsets keep theirs.
-- **Keep Away From**: the houses are scattered first, from three House chunks. Every layer
-  after names the houses' instancer in Keep Away From, with a Keep Away Distance, so
-  nothing grows through a house.
-- **Max Slope** keeps houses on flat ground (6 degrees) and trees off cliffs (35).
-
-The terrain is the one piece the script writes as plain USD: a 240 m grid shaped into a
-valley with numpy, saved next to the network as `terrain.usdc` (under 200 KB) and brought in
-with a Reference. Use your own terrain by pointing the Reference at it, and set the Height
-Fields' bands to its heights.
-
-Move the tree line or thin the village without opening anything:
-
-```
-usdchunks run examples/scripts/out/valley_network.usda TreeLine.max_height=18 Houses.max_count=3
-```
-
-The grass and the trees are 60 and 40 million triangles once instanced, past what Scatter
-Points warns about. Aurora renders it; lower the counts, or put a Poly Reduce on a
-prototype, for a smaller GPU.
-
-## A street of houses
-
-![A village street with eight houses, red, yellow, blue, white and green, behind picket fences](assets/examples/street.jpg)
-
-```
-python examples/scripts/street.py
-```
-
-```
-Stage Settings → Mesh (lawn) → material → Mesh (street) → material
-  → House × 8 → Transform × 8 → Fence × 2 → lights → Camera → Render
-```
-
-One chunk type, eight houses. Each **House** is its own node with its own width, roof
-style (Gable, Hip, Gambrel, Saltbox, Mono), floors and colours, and rebuilds its windows,
-roof tiles and chimney to fit. A **Transform** places each one along the street.
-
-- A House is built from its front-left corner, with its door facing −Y. The far row is
-  turned 180° to face the street, so it is placed from its right-hand corner instead.
-- A **Fence** runs along each row of front gardens: posts, rails and pickets in one mesh.
-- The lawn and the street are textured grids, built half size and scaled up, so their
-  textures repeat every 2 m.
-
-Change a house without opening anything:
-
-```
-usdchunks run examples/scripts/out/street_network.usda House3.roof_style=Hip House3.floors=2
-```
+- **Which Python.** usdview's Python (or Houdini's, Blender's) renders. The `usd-core` wheel
+  builds every network but can't render, and has no MaterialX, so the CAD scripts need a full
+  USD build.
+- **Assets.** Poly Haven models, textures and an HDRI (CC0), and the SO-101 (Apache 2.0).
+  Set `USD_CHUNK_EXAMPLE_ASSETS` to keep them somewhere else.
+- **Sky.** The pictures use the Atmosphere chunk from chunk_bank for the sky and sun. Add its
+  `chunks/lighting` folder to `USD_CHUNK_DIRS` to get the same look. Without it the scripts
+  use a sun and an HDRI.
+- **Aurora.** The scripts render with Aurora, the path tracer in the 2026-11 USD bundle, when
+  it's installed, else with Storm.
+- **Built from chunks.** Models come in through Reference, Reset Transform and Bind Material
+  (`example_assets.add_models()`). Only the textured materials are written as USD: wiring a
+  texture between shader chunks doesn't work yet.
+- **Sunlight.** Turn on Normalize on a Distant Light. Without it, Intensity 3 lights almost
+  nothing.

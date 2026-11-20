@@ -17,7 +17,7 @@ The script renders every paint with the plate, and the yellow motor without it, 
 out/configurator_<option>.png. The saved network is the configurator: open it in usdview
 and pick a variant in the Prim view, or render any option from the command line:
 
-    usdchunks run examples/scripts/out/configurator_network.usda         Paint.variant_selection=yellow Base.variant_selection=bare
+    usdchunks run examples/scripts/out/configurator_network.usda Paint.variant_selection=yellow Base.variant_selection=bare
 
 The exported out/configurator.usda keeps the variant sets, so whoever loads it (a web
 viewer, Omniverse, a game engine) can switch options without usd_chunks.

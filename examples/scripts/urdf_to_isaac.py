@@ -1,28 +1,18 @@
-"""URDF to Isaac Sim: the SO-101 arm imported as UsdPhysics, posed, put in a scene and exported.
+"""URDF to Isaac Sim: the SO-101 arm as UsdPhysics, posed, in a scene ready to simulate.
 
     USD_CHUNK_DIRS=chunks python examples/scripts/urdf_to_isaac.py
 
-  Stage Settings     Z up and metres: what Isaac Sim and ROS expect
-  URDF Import        the SO-101 (TheRobotStudio's open 6-axis arm; fetched the first time,
-                     see example_assets.py) as links (RigidBodyAPI, MassAPI), colliders
-                     (CollisionAPI), revolute joints with their limits, its STL meshes, and
-                     an ArticulationRootAPI on the base
-  Pose Articulation  one slider per moving joint, named after the link it moves; it also
-                     sets each joint drive's target angle
-  Property Editor    a stiffness on those drives, so a simulator holds the pose
-  Prim               a PhysicsScene (gravity), and a fixed joint bolting the base to the
-                     world (Property Editor sets the joint's body)
-  Mesh               a textured floor, and a block to pick up
-  Apply Schema       the floor and the block collide; the block is a rigid body with a mass
-  lights, camera
-  Render             writes urdf_render.png: Aurora when it is installed, else Storm
+URDF Import makes the links, joints and colliders. Pose Articulation poses the arm and sets
+the drive targets, a Property Editor stiffens the drives, and Prim chunks add a physics scene
+and a fixed joint that bolts the base down. A floor and a block collide (Apply Schema).
+Writes urdf_render.png and so101_scene.usda: open that in Isaac Sim and press Play.
 
-out/so101_scene.usda is plain USD with UsdPhysics schemas only: open it in Isaac Sim
-(File > Open) and press Play. The pose is the robot's starting pose. Try another from the
-command line, or point URDF Import at your own robot (set Mesh Root to the folder that
-`package://` paths are found in):
+Change the pose without editing the script:
 
     usdchunks run examples/scripts/out/urdf_network.usda Pose.shoulder_link=20 Pose.wrist_link=30 -o arm.usda
+
+For your own robot, set URDF Import's File Path, and Mesh Root to the folder its
+`package://` paths point at.
 """
 from __future__ import annotations
 
@@ -91,14 +81,10 @@ if __name__ == "__main__":
         last = scene.create.property_editor(last, name="BlockPhysics", prim="/World/block",
                                             edits='physics:approximation = "convexHull"\nphysics:mass = 0.02')
 
-        # Normalize makes Intensity the light that lands, not the brightness of the sun's disc.
-        sun = scene.create.distant_light(last, primpath_location="/World/sun", intensity=3.0, normalize=True)
-        aim_sun = scene.create.transform(sun, primpath_location="/World/sun", rx=45.0, rz=-130.0)
-        sky = scene.create.dome_light(aim_sun, primpath_location="/World/sky", intensity=0.8,
-                                      file=assets.hdri().as_posix())
-        # A lat-long image has its poles on Y; the stage is Z up, so turn the dome to match.
-        pole = scene.create.transform(sky, primpath_location="/World/sky", rx=90.0)
-        cam = scene.create.camera(pole, primpath_location="/World/cam", tx=0.78, ty=-0.62, tz=0.45,
+        # The sun from behind the arm, so it throws its shadow forward, and the sky: Atmosphere when it is installed (see
+        # example_assets.sky), else a Distant Light and an HDRI.
+        last = assets.sky(scene, last, "/World", elevation=35.0, azimuth=310.0)
+        cam = scene.create.camera(last, primpath_location="/World/cam", tx=0.78, ty=-0.62, tz=0.45,
                                   focalLength=35.0, clippingRange=(0.01, 100.0),
                                   aim_at_point=True, aim_point=(0.15, 0.06, 0.08))
         render = scene.create.render(cam, camera="/World/cam", mode="Command", image_width=1280,

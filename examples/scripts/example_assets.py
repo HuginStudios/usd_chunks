@@ -1,23 +1,17 @@
-"""The free assets the pipeline examples use: downloaded once, and made ready to render.
+"""The free assets the examples use, and the chunks the examples share.
 
     python examples/scripts/example_assets.py      # fetch everything now, about 200 MB
 
-Running this first is optional: each example fetches what it needs the first time it runs.
-Nothing is downloaded twice.
+Optional: each example fetches what it needs the first time. Nothing is fetched twice.
+Files go to examples/assets/downloads/, or to the folder in USD_CHUNK_EXAMPLE_ASSETS.
 
-* Models, textures and HDRIs from Poly Haven (https://polyhaven.com), CC0: free for any use.
-* The SO-101 robot arm from TheRobotStudio's SO-ARM100 repository, Apache 2.0.
+* Poly Haven models, textures and an HDRI (https://polyhaven.com), CC0.
+* The SO-101 robot arm from SO-ARM100, Apache 2.0.
 
-Files go to `examples/assets/downloads/`, or to the folder in `USD_CHUNK_EXAMPLE_ASSETS`.
-Set that to share one download between checkouts.
-
-The second half builds with chunks: `add_models()` brings models in with Reference, Reset
-Transform and Bind Material chunks, and `texture_look()` puts a texture on a mesh.
-
-Poly Haven's USD files come from Blender. Their MaterialX networks don't render in Storm or
-Aurora (plants come out black, or Aurora crashes), and their preview networks leave out the
-leaf cut-outs. So each model gets a plain UsdPreviewSurface built from its own textures,
-which every Hydra renderer draws.
+Shared chunks: add_models() brings Poly Haven models in, texture_look() puts a texture on a
+mesh, sky() adds the sun and sky, render_params() picks Aurora or Storm. Poly Haven's own
+MaterialX renders black in Storm and crashes Aurora, so each model gets a plain
+UsdPreviewSurface made from its own textures.
 """
 from __future__ import annotations
 
@@ -28,6 +22,8 @@ import urllib.request
 from pathlib import Path
 
 from pxr import Plug, Sdf, Tf, Usd, UsdGeom, UsdShade
+
+from usd_chunks import chunk_registry
 
 ROOT = Path(os.environ.get("USD_CHUNK_EXAMPLE_ASSETS")
             or Path(__file__).resolve().parent.parent / "assets" / "downloads")
@@ -306,6 +302,38 @@ def add_models(scene, upstream, root: str, items: dict[str, tuple[str, str | Non
         last = scene.create.bind_material(last, name=f"Bind_{look}", material_path=f"{looks}/{look}",
                                           primpath_location=",".join(prims), strength="Weaker than Descendants")
     return last
+
+
+def has_atmosphere() -> bool:
+    """True when the Atmosphere chunk (chunk_bank's chunks/lighting) is on USD_CHUNK_DIRS."""
+    return chunk_registry.ChunkRegistry().get_chunk_module("aurora_atmosphere") is not None
+
+
+def sky(scene, upstream, root: str, elevation: float, azimuth: float, clouds: float = 0.3, haze: float = 1.3,
+        ground: tuple[float, float, float] = (0.3, 0.3, 0.3)):
+    """Chunks for the sun and the sky, on a Z-up stage. Returns the last.
+
+    With the Atmosphere chunk installed (chunk_bank, chunks/lighting on USD_CHUNK_DIRS): a
+    physical sky with clouds, and a sun coloured by the air. That is what the pictures use.
+    Without it: a Distant Light and a Poly Haven HDRI.
+
+    *elevation* is the sun's height in degrees, *azimuth* its compass direction in degrees,
+    from +Y towards +X. *ground* is the colour of the land below the horizon, where the
+    scene's own ground ends.
+    """
+    if has_atmosphere():
+        return scene.create.aurora_atmosphere(
+            upstream, name="Atmosphere", primpath_location=f"{root}/atmosphere", sun_mode="Manual",
+            sun_elevation=elevation, sun_azimuth=azimuth, cloud_coverage=clouds, haze=haze, ground_albedo=ground,
+            sky_width=2048)
+    # Normalize makes Intensity the light that lands, not the brightness of the sun's disc.
+    last = scene.create.distant_light(upstream, primpath_location=f"{root}/sun", intensity=3.0, angle=1.0,
+                                      normalize=True)
+    last = scene.create.transform(last, primpath_location=f"{root}/sun", rx=90.0 - elevation, rz=180.0 - azimuth)
+    # An absolute path: Aurora reads a dome's file as written.
+    last = scene.create.dome_light(last, primpath_location=f"{root}/sky", intensity=0.7, file=hdri().as_posix())
+    # A lat-long image has its poles on Y; the stage is Z up, so turn the dome to match.
+    return scene.create.transform(last, primpath_location=f"{root}/sky", rx=90.0)
 
 
 def aurora_settings(path: str = "/Render/aurora", samples: int = 128) -> str:

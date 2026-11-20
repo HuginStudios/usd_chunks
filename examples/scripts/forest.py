@@ -1,24 +1,16 @@
-"""Scatter a forest from real assets: young firs in noise clearings, with deadwood, undergrowth and grass.
+"""Scatter a forest: firs in clearings, with deadwood, shrubs and grass.
 
     USD_CHUNK_DIRS=chunks python examples/scripts/forest.py
 
-  Stage Settings   Z up, metres: what the Poly Haven assets are made in
-  Mesh (grid)      an 80 m ground, with a forest-floor texture (example_assets.texture_look)
-  Reference ...    the prototypes: Poly Haven firs, logs, rocks, shrubs and grass (fetched
-                   the first time), each one Reference, all put at the origin and given
-                   their looks (example_assets.add_models)
-  Noise Field      where the forest is thick and where the clearings are
-  Scatter Points   four layers, each growing near, or away from, the ones before it:
-                   trees on the noise, deadwood near the trees, undergrowth under them,
-                   grass out in the clearings
-  lights, camera
-  Render           writes forest.png: Aurora when it is installed, else Storm
+Poly Haven models come in through Reference chunks (example_assets.add_models). A Noise
+Field makes clearings, and four Scatter Points layers each grow near the one before:
+trees, deadwood near them, shrubs under them, grass in the open. Writes forest.png.
 
-Try another forest from the command line, without touching the script:
+Change it without editing the script:
 
-    usdchunks run examples/scripts/out/forest_network.usda Clearings.seed=7 Trees.max_count=200
+    usdchunks run examples/scripts/out/forest_network.usda Clearings.seed=7 Trees.max_count=300
 
-biome.py is the same idea with stand-in shapes and no downloads.
+biome.py is the same idea with simple shapes and no downloads.
 """
 from __future__ import annotations
 
@@ -75,7 +67,11 @@ if __name__ == "__main__":
         last = scene.create.mesh(last, prim_path="/ground", mesh_type="grid", dimx1=100, dimy1=100,
                                  width1=32.0, height2=32.0)
         last = scene.create.transform(last, primpath_location="/ground", sx=2.5, sy=2.5)
-        last = assets.texture_look(scene, last, "/looks/forest_floor", "brown_mud_leaves_01", "/ground")
+        # Wide ground out to the horizon, under the forest's: the scatter stays on /ground.
+        last = scene.create.mesh(last, prim_path="/far_ground", mesh_type="grid", dimx1=2, dimy1=2,
+                                 width1=400.0, height2=400.0)
+        last = scene.create.transform(last, primpath_location="/far_ground", sx=2.5, sy=2.5, tz=-0.02)
+        last = assets.texture_look(scene, last, "/looks/forest_floor", "brown_mud_leaves_01", "/ground,/far_ground")
         last = assets.add_models(scene, last, "/protos", PROTOS, OUT)
 
         last = scene.create.noise_field(last, name="Clearings", prim_path="/ground", primvar="forest",
@@ -92,18 +88,10 @@ if __name__ == "__main__":
                                                "grass_mid": (1.0, 1.0)},
                        6000, 0.4, (2.0, 3.5), near=("trees", 2.5, 0.3, 1.0, 0.6))
 
-        # The sun from the side, low, for long shadows across the clearings. Normalize makes
-        # Intensity the light that lands, not the brightness of the sun's tiny disc.
-        sun = scene.create.distant_light(last, primpath_location="/lights/sun", intensity=3.0, angle=1.0,
-                                         normalize=True)
-        aim_sun = scene.create.transform(sun, primpath_location="/lights/sun", rx=60.0, rz=-135.0)
-        # The sky: an HDRI. An absolute path, because Aurora reads a dome's file as written
-        # and doesn't resolve a relative one.
-        sky = scene.create.dome_light(aim_sun, primpath_location="/lights/sky", intensity=0.7,
-                                      file=assets.hdri().as_posix())
-        # A lat-long image has its poles on Y; the stage is Z up, so turn the dome to match.
-        pole = scene.create.transform(sky, primpath_location="/lights/sky", rx=90.0)
-        cam = scene.create.camera(pole, primpath_location="/cam", tx=-24.0, ty=-27.0, tz=5.0,
+        # The sun low, from the side, for long shadows across the clearings, and the sky: Atmosphere when it is installed (see
+        # example_assets.sky), else a Distant Light and an HDRI.
+        last = assets.sky(scene, last, "/lights", elevation=25.0, azimuth=315.0, ground=(0.2, 0.17, 0.12))
+        cam = scene.create.camera(last, primpath_location="/cam", tx=-24.0, ty=-27.0, tz=5.0,
                                   focalLength=24.0, clippingRange=(0.05, 1000.0),
                                   aim_at_point=True, aim_point=(4.0, 2.0, 1.5))
         render = scene.create.render(cam, camera="/cam", mode="Command", image_width=1280,

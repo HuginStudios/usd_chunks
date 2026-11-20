@@ -11,19 +11,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
-- Pipeline examples: seven scripts in `examples/scripts/` and a guide,
-  [Pipeline examples](docs/pipeline-examples.md). CAD to render (STEP, MaterialX, Render),
-  a product configurator (variants, one render per option), the SO-101 arm from URDF for
-  Isaac Sim, a batch over an asset library, a forest scattered from Poly Haven assets, a
-  valley biome scattered by height (a village, forest, a lake with a sandy shore and bare
-  peaks), and a street of houses. Each saves its network and exports plain USD; all
-  but the batch render an image, in Aurora when it is installed. They are built from
-  chunks: models come in through Reference, Reset Transform and Bind Material, the valley's
-  bands through Height Field, and the robot's physics scene and colliders through Prim,
-  Apply Schema and Property Editor. `examples/scripts/example_assets.py` fetches the free
-  assets they use (Poly Haven, CC0; SO-ARM100, Apache 2.0) once, and gives Poly Haven's
-  models materials that render in Storm and Aurora. Needs the Prim, Property Editor, Bind
-  Material, Reset Transform and Render changes and the Height Field chunk.
+- Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
+  [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
+  street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
+  configurator, and a batch over a folder. Each saves its network, exports USD and renders
+  a picture. They are built from chunks. `example_assets.py` fetches the free assets they
+  use, once.
 
 ### Changed
 

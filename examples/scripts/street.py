@@ -1,18 +1,11 @@
-"""Procedural buildings: a village street, eight houses from one chunk type, each its own.
+"""Procedural buildings: a street of eight houses from one House chunk, each one different.
 
     USD_CHUNK_DIRS=chunks python examples/scripts/street.py
 
-  Stage Settings   Z up, metres
-  Mesh (grid) x2   a lawn and a street down the middle, each with a Poly Haven texture
-                   (fetched the first time; see example_assets.texture_look)
-  House x8         four houses on each side, every one a node with its own width, roof
-                   style, floors and colours. A House is built from its front-left corner
-                   with its door facing -Y, so a Transform turns the far side round
-  Fence x2         a picket fence along each row of front gardens
-  lights, camera
-  Render           writes street.png: Aurora when it is installed, else Storm
+Four houses on each side, each with its own width, roof, floors and colours, a fence along
+each row of gardens, and a textured lawn and street. Writes street.png.
 
-Change a house from the command line, without touching the script:
+Change it without editing the script:
 
     usdchunks run examples/scripts/out/street_network.usda House3.roof_style=Hip House3.floors=2
 """
@@ -53,11 +46,11 @@ if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     with Scene.new(path=str(OUT / "street_network.usda")) as scene:
         last = scene.create.stage_settings(up_axis="Z", meters_per_unit=1.0, default_prim="World")
-        # A 120 m lawn and a 7 m street, each built half size and scaled 2x: their textures
-        # repeat once per unit of the grid's own st, so this way every 2 m (Aurora ignores
-        # UV Transform).
+        # A lawn out to the horizon and a 7 m street, each built half size and scaled 2x: their
+        # textures repeat once per unit of the grid's own st, so this way every 2 m (Aurora
+        # ignores UV Transform).
         last = scene.create.mesh(last, prim_path="/World/lawn", mesh_type="grid", dimx1=2, dimy1=2,
-                                 width1=60.0, height2=60.0)
+                                 width1=600.0, height2=600.0)
         last = scene.create.transform(last, primpath_location="/World/lawn", sx=2.0, sy=2.0)
         last = assets.texture_look(scene, last, "/World/looks/lawn", "grass_path_2", "/World/lawn")
         last = scene.create.mesh(last, prim_path="/World/street", mesh_type="grid", dimx1=2, dimy1=2,
@@ -87,15 +80,10 @@ if __name__ == "__main__":
             last = scene.create.fence(last, name=f"Fence{side}", prim_path=path, length=length, height=0.9)
             last = scene.create.transform(last, primpath_location=path, tx=START, ty=y)
 
-        # Afternoon sun across the street. Normalize makes Intensity the light that lands.
-        sun = scene.create.distant_light(last, primpath_location="/World/sun", intensity=3.0, angle=1.0,
-                                         normalize=True)
-        aim_sun = scene.create.transform(sun, primpath_location="/World/sun", rx=50.0, rz=-60.0)
-        sky = scene.create.dome_light(aim_sun, primpath_location="/World/sky", intensity=0.8,
-                                      file=assets.hdri().as_posix())
-        # A lat-long image has its poles on Y; the stage is Z up, so turn the dome to match.
-        pole = scene.create.transform(sky, primpath_location="/World/sky", rx=90.0)
-        cam = scene.create.camera(pole, primpath_location="/World/cam", tx=-44.0, ty=-1.5, tz=5.0,
+        # The sun afternoon, across the street, and the sky: Atmosphere when it is installed (see
+        # example_assets.sky), else a Distant Light and an HDRI.
+        last = assets.sky(scene, last, "/World", elevation=30.0, azimuth=240.0)
+        cam = scene.create.camera(last, primpath_location="/World/cam", tx=-44.0, ty=-1.5, tz=5.0,
                                   focalLength=32.0, clippingRange=(0.1, 1000.0),
                                   aim_at_point=True, aim_point=(4.0, 0.5, 3.0))
         render = scene.create.render(cam, camera="/World/cam", mode="Command", image_width=1280,
