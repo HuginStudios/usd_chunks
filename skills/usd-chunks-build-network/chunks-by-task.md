@@ -32,6 +32,7 @@ modelling it from boxes: look here before you model anything.
 - `scatter_points`: many instances of one or more prototypes over a mesh as a PointInstancer: rocks, trees, grass, clutter. Spacing or density, slope cut-off (`max_slope`), `avoid_prims` to keep clear of other prims, exact counts.
 - `noise_field`: a noise density for `scatter_points`, so instances clump in patches instead of an even spread.
 - `proximity_field`: a density from nearness to other points: grass around rocks, undergrowth under trees.
+- `height_field`: a density from height: trees below a tree line, nothing on the peaks. Its `subset` gives the band its own material (a sandy shore, rocky tops).
 - `scatter_brush`: paint where `scatter_points` (or `vine`) may place, by hand.
 - `merge_instancers`: join PointInstancers that share assets, so a renderer builds each asset once.
 - `points_to_instancer`: animated Points (dust, sparks, a particle bake) as instanced meshes, for renderers that draw no Points.

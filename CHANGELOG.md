@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
+  Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
+  tints the band so you can see it.
 - Bind Material has a Strength. Weaker than Descendants lets a face subset keep its own
   material: bind a tree to bark, and its leaves stay leaves.
 - The build-network skill has a chunks-by-task page: every chunk by the job it does, with
