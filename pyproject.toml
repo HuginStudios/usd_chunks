@@ -58,7 +58,7 @@ imgui = ["imgui-bundle>=1.6"]
 # ruff is pinned: CI runs `ruff check .`, and an unpinned install picks up each new
 # release's rules, turning main red with no change to the code. Bump it on purpose.
 dev = ["pytest", "pytest-xdist", "ruff==0.16.10", "build", "types-usd", "requests", "numpy",
-       "scipy>=1.11,<2", "usd-core", "flet>=0.28", "imgui-bundle>=1.6"]
+       "scipy>=1.11,<2", "ezdxf>=1.1", "usd-core", "flet>=0.28", "imgui-bundle>=1.6"]
 docs = [
     "mkdocs",
     "mkdocs-material",

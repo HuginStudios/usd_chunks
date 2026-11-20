@@ -11,6 +11,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- CAD Import reads DXF drawings, through `ezdxf` (now in the chunk's requirements). Blocks
+  become instanced parts and their INSERTs (MINSERT arrays too) placements, and model space
+  becomes one Xform per layer, leaving out layers that are off or frozen. Meshes, polyface
+  meshes, 3D faces and flat-faced ACIS solids come in as double-sided meshes that keep the
+  file's quads and shared points, and lines, arcs, circles and splines as BasisCurves.
+  Curved ACIS solids, text, hatches and dimensions are skipped and counted in the readout.
 - Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
   [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
   street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
