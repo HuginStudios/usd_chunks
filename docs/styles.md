@@ -16,6 +16,9 @@ style from the Tab menu, under **Styles**, or from a script:
 scene.create.worn_paint(crate, primpath_location="/World/crate")
 ```
 
+With nothing picked, the style goes to a place of its own, `/<style>` (an empty Xform), until
+you set its Location.
+
 The node is a Reference to the style's file. Its **Location** is the object, so put the same
 style on two objects and you get two nodes that don't get in each other's way. Dive into the
 node to see and change the network; your changes are kept in your scene, and the style's file

@@ -53,6 +53,7 @@ This file starts with the first release; development before that is in the commi
 - A Scatter's prototype rows inside a referenced network now find their prims under the
   Reference's Location.
 - Vine keeps the vines on the surface when its Vine Path is under a moved prim.
+- Scatter Points fed Painted Points reopens with its distribution controls hidden again.
 - Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
   its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
   of that ground. A fence covers no ground from above, so a fenced yard still fills.

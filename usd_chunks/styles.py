@@ -126,9 +126,13 @@ def selected_root(chunk) -> str | None:
     A menu preset (chunk_registry.MenuEntry): called with the new Reference chunk as it is
     made, so the style lands on whatever is selected at that moment.
 
+    Args:
+        chunk: The new Reference chunk, its file already set; None to ask only what is picked.
+
     Returns:
-        The prim's path, or None with nothing selected -- the Location is left empty then,
-        and the style works on the whole stage.
+        The prim's path. With nothing selected, /<style> for a chunk -- a place of its own,
+        which the Reference makes as an empty Xform, until a Location is set -- and None
+        without one.
     """
     scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
     try:
@@ -139,7 +143,11 @@ def selected_root(chunk) -> str | None:
         path = str(prim.GetPath())
         if path != "/":
             return path
-    return None
+    # Not the whole stage: the look would go on every mesh in it, and the paths a style builds
+    # from its object's (Rubble's <object>/rubble) would have no object to go under.
+    file_param = chunk.get_param("file_path") if chunk is not None else None
+    name = Path(str(file_param.value)).stem if file_param is not None and file_param.value else ""
+    return f"/{name}" if name and Sdf.Path.IsValidIdentifier(name) else None
 
 
 def menu_variants() -> list[tuple[str, dict]]:

@@ -79,7 +79,17 @@ def test_a_style_entry_takes_the_prim_selected_now_as_its_location():
         assert entry.create()[0].get_param("primpath_location").value == "/crate"
 
         scene.get_selected_prims = lambda: [stage.GetPseudoRoot()]
-        assert entry.create()[0].get_param("primpath_location").value == "", "nothing picked: left alone"
+        assert entry.create()[0].get_param("primpath_location").value == "/worn_paint",             "nothing picked: a place of its own, not the whole stage"
+
+
+def test_a_style_with_nothing_picked_makes_an_empty_place_of_its_own():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        scene.create.rubble()
+
+        assert stage.GetPrimAtPath("/rubble").GetTypeName() == "Xform"
+        scatter = next(c for c in scene.get_chunks() if c.name == "Scatter")
+        assert scatter.get_param("inst_path").value == "/rubble/rubble/stones"
 
 
 def test_worn_paint_wears_the_mesh_it_is_put_on():

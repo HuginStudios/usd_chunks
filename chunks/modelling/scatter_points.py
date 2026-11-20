@@ -2879,6 +2879,19 @@ def _on_mode_changed(owner, notice, sender):
     _update_sampling_params(chunk_obj)
 
 
+def _loaded(owner, notice, sender):
+    """Hide what the saved values make useless, on reopen, as Vine does: restored values send
+    no change, and with the open cache on a reopened chunk never cooks. A Scatter fed Painted
+    Points (a style's leaves) came back showing every distribution control."""
+    chunk_obj = owner.get_chunk() if callable(getattr(owner, "get_chunk", None)) else None
+    chunk_obj = chunk_obj or owner
+    mode = chunk_obj.get_param("scatter_mode")
+    if mode is not None:
+        _on_mode_changed(mode, notice, sender)  # ends with the painted-points rule
+    else:
+        _update_sampling_params(chunk_obj)
+
+
 def _on_stack_orient_changed(owner, notice, sender):
     """Lay Along Rows is the only stack orientation with a row direction to choose."""
     chunk_obj = owner.get_chunk()
@@ -4214,6 +4227,7 @@ def main():
         chunk_api.add_param(_out)
 
     _update_sampling_params(chunk_api)
+    chunk_api.add_callback(_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api
 

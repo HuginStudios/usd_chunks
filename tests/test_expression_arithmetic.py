@@ -163,6 +163,10 @@ def test_string_param_still_interpolates(scene) -> None:
 
     assert p.value == "/world/geo/cube"
 
+    # The root and a path after it join to that path, not to //cube, which names no prim.
+    a.get_param("primpath_location").value = "/"
+    assert p.value == "/cube"
+
 
 def test_unevaluable_text_on_numeric_param_falls_back(scene) -> None:
     """Not arithmetic once substituted -- keep the string rather than raising."""

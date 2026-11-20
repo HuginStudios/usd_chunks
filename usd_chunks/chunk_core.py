@@ -2926,7 +2926,13 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         for node_name, param_name in tokens:
             ref = self._resolve_expression_ref(node_name, param_name)
             val = str(ref.value) if ref is not None and ref.value is not None else ""
-            result = result.replace(f"@{node_name}.{param_name}@", val)
+            token = f"@{node_name}.{param_name}@"
+            if val == "/":
+                # The root and a path after it join to that path: "@A.prim_path@/rubble" is
+                # /rubble while A names the root (a style before its object is known), not
+                # //rubble, which names no prim and makes a chunk authoring there raise.
+                result = result.replace(token + "/", "/")
+            result = result.replace(token, val)
 
         # On a numeric param the substituted string is meant as a sum, not as text:
         # "@a.x@ * @b.y@" becomes "20.0 * 3.0" above and has to come back as 60.0, or the
