@@ -805,7 +805,7 @@ def config():
         icon="image",
         requirements=["numpy>=2,<3", "pillow>=10", "OpenEXR>=3", "trimesh>=4", "embreex>=2"],
         description="""
-        Finishes a rendered frame: sky behind it, distance haze (fog), sun shafts and bloom, a grade.
+        Finishes a rendered frame: sky behind it, haze or fog, sun shafts and bloom, a grade.
 
         Some renderers leave parts of a shot undone: hdVRay draws no aerial perspective with a
         plain dome and distant light, and leaves the dome out of the camera background. This
