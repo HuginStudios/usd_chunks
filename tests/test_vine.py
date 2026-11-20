@@ -733,6 +733,32 @@ def test_an_animated_vine_keeps_its_leaves_where_they_grew(host) -> None:
     assert np.array_equal(np.asarray(cloud.GetPointsAttr().Get(6)), final[ids])
 
 
+def test_a_part_grown_vine_keeps_its_leaves_where_they_grew(host) -> None:
+    """Growth % below 100 shows some of the grown vine's leaves, each where it is on the grown
+    vine and with the same id. Leaves of the part-grown vine moved and were renumbered at every
+    Growth %, so the leaves instanced on them flickered as the vine grew."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine()
+    final = np.asarray(host.leaves().GetPointsAttr().Get(), dtype=np.float64)
+
+    for growth in (40.0, 70.0):
+        node.get_param("growth").value = growth
+        cloud = host.leaves()
+        ids = np.asarray(cloud.GetIdsAttr().Get())
+        assert 0 < len(ids) < len(final)
+        assert np.allclose(np.asarray(cloud.GetPointsAttr().Get(), dtype=np.float64), final[ids], atol=1e-6)
+
+
+def test_leaves_at_the_growing_tips_start_small(host) -> None:
+    """Behind the cut the leaves grow in from Tip Leaf Size, as at the tips of the grown vine."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine(leaf_young=0.3, growth=50.0)
+    primvars = UsdGeom.PrimvarsAPI(host.leaves().GetPrim())
+    scale = np.asarray(primvars.GetPrimvar("scale").Get(), dtype=np.float64)
+
+    assert scale.min() == pytest.approx(0.3, abs=0.05) and scale.max() == pytest.approx(1.0)
+
+
 def test_a_still_vine_writes_no_time_samples(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     host.vine()
@@ -1050,6 +1076,48 @@ def test_the_leaf_cloud_drives_a_scatter_points_chunk(host) -> None:
     # One instance per leaf, standing exactly where the leaf was.
     assert np.linalg.norm(placed[:, None, :] - cloud[None, :, :], axis=2).min(axis=1).max() < 1e-5
     assert len(instancer.GetOrientationsAttr().Get()) == len(cloud)
+
+
+def test_a_leaf_keeps_its_look_as_the_vine_grows(host) -> None:
+    """Each leaf keeps its prototype and turn from one Growth % to the next. Picked by a
+    shuffle over the count, every leaf got a new prototype whenever the vine grew a leaf."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    for index in range(3):
+        leaf = UsdGeom.Mesh.Define(host.stage, f"/Assets/Leaf{index}")
+        leaf.GetPointsAttr().Set([Gf.Vec3f(-0.1, 0, 0), Gf.Vec3f(0.1, 0, 0), Gf.Vec3f(0, 0.2 + 0.1 * index, 0)])
+        leaf.GetFaceVertexCountsAttr().Set([3])
+        leaf.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+    node = host.vine(growth=60.0)
+    scatter = host.chunk("scatter_points")
+    scatter.add_dependency(node)
+    scatter.get_param("points_prim").value = node.get_param("out_leaves").value
+    scatter.get_param("inst_path").value = "/LeafInstancer"
+    scatter.get_param("orient_mode").value = "Align to Normal"
+    scatter.get_param("rand_amount").value = 40.0
+    rows = scatter.get_param("prototypes")
+    rows.size = 3
+    for index in range(3):
+        rows.get_indexed_param(rows.get_param("proto_path"), index).value = f"/Assets/Leaf{index}"
+    scatter.execute()
+
+    def looks():
+        ids = np.asarray(host.leaves().GetIdsAttr().Get())
+        inst = UsdGeom.PointInstancer(host.stage.GetPrimAtPath("/LeafInstancer"))
+        protos = np.asarray(inst.GetProtoIndicesAttr().Get())
+        turns = np.asarray([(q.GetReal(), *q.GetImaginary()) for q in inst.GetOrientationsAttr().Get()])
+        return {int(i): (p, q) for i, p, q in zip(ids, protos, turns)}
+
+    part = looks()
+    node.get_param("growth").value = 100.0
+    scatter.execute()
+    grown = looks()
+
+    assert 0 < len(part) < len(grown)
+    assert len({int(p) for p, _ in grown.values()}) == 3
+    for leaf_id, (proto, turn) in part.items():
+        assert grown[leaf_id][0] == proto
+        assert np.allclose(grown[leaf_id][1], turn, atol=2e-3)
 
 
 def test_wiring_painted_points_hides_the_root_count(host) -> None:
