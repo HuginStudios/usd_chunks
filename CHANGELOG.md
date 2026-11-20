@@ -25,6 +25,12 @@ This file starts with the first release; development before that is in the commi
   models materials that render in Storm and Aurora. Needs the Prim, Property Editor, Bind
   Material, Reset Transform and Render changes and the Height Field chunk.
 
+### Changed
+
+- Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
+  the shortest, and carry two leaves in three at 80% of the size. All the same length and
+  leaved like the wall, they hung like a fringe cut straight, in clumps.
+
 ## [1.0.0-rc.2] - 2026-11-19
 
 ### Added

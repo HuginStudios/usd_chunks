@@ -35,7 +35,8 @@ USD_CHUNK_DIRS=chunks python examples/scripts/ivy_wall.py
   (no leaves on the oldest part of each stem) and Tip Leaf Size (how small the young
   leaves at a growing tip are).
 - **Vine › Hanging**: Hang % sends tendrils off the stem tips. They fall and drape over
-  the mesh.
+  the mesh. Each grows to its own length, Hang Length the longest, and carries smaller,
+  sparser leaves than the stem it hangs from.
 - **Curves to Mesh › Sides**: 6 is plenty at a few metres. Raise it for a close-up.
 
 The roots start at the lowest painted points, but never on a face pointing straight down,
