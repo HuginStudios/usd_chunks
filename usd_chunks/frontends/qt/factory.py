@@ -719,6 +719,13 @@ class ChunkWidgetDocker(QtWidgets.QWidget):
         if loaded_chunk.has_flag(ChunkFlags.GroupFlags.CONTEXT):
             cfg = loaded_chunk.get_config()
             if cfg and cfg.module:
+                if chunk_stage.is_network_host(loaded_chunk) and getattr(loaded_chunk, "_parent_context", None) is None:
+                    # A Reference or Payload hosting a network turned CONTEXT where it
+                    # stands: it is still a node of the graph it was made in, which shows it
+                    # already. Given a tab of its own, made current, it was dived into, and
+                    # the cook follows the graph in view -- putting a style on an object went
+                    # into the style and left the rest of the scene unwired and dark.
+                    return
                 # User-created ChunkGroup: add a standalone ChunkWidget directly to
                 # the parent tab's content layout -- NOT via add_param, which would
                 # propagate sub-chunk PARAM_ADDED notices up to the parent context.

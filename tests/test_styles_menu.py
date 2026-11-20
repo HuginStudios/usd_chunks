@@ -67,3 +67,42 @@ def test_with_nothing_picked_the_styles_wait_for_a_pick(graph):  # noqa: F811
     grid = _grid(view)
 
     assert grid.buttons and not any(b.isEnabled() for b in grid.buttons)
+
+
+def test_rubble_from_the_menu_scatters_its_stones(graph):  # noqa: F811
+    qapp = graph[0]
+    scene, view, cube = _crate(graph)
+    stage = scene.get_stage()
+    from tests.test_styles import _grid_steps
+    _grid_steps(stage, "/steps")
+    scene.get_selected_prims = lambda: [stage.GetPrimAtPath("/steps")]
+
+    {b.text(): b for b in _grid(view).buttons}["Rubble"].click()
+    _pump(qapp, 4.0)
+
+    scatter = next(c for c in scene.get_chunks() if c.name == "Scatter")
+    stones = UsdGeom.PointInstancer(stage.GetPrimAtPath("/steps/rubble/stones"))
+    assert stones and len(stones.GetPositionsAttr().Get() or []) > 10, scatter.get_param("readout").value
+
+
+def test_a_style_stays_a_node_of_the_graph_it_was_put_in(graph):  # noqa: F811
+    """Hosting its network makes the Reference a group; that must not open it as a tab and
+    take the view (and the cook) into it, away from the scene's own graph."""
+    qapp, _reg, _scene, docker = graph
+    scene, view, _ = _crate(graph)
+    stage = scene.get_stage()
+    tabs = docker.tab_widget.count()
+    scene.get_selected_prims = lambda: [stage.GetPrimAtPath("/crate")]
+
+    before = set(scene.get_chunks())
+    {b.text(): b for b in _grid(view).buttons}["Worn Paint"].click()
+    _pump(qapp, 3.0)
+    [host] = [c for c in scene.get_chunks() if c not in before and c.get_param("file_path") is not None]
+    assert chunk_stage.is_network_host(host)
+    # usdview loads the host again when the arc lands on its prim (a resync), which is what
+    # gave it a tab: the same CHUNK_LOADED handler, called as that does.
+    docker._loaded_module_callback(None, host)
+    _pump(qapp, 0.5)
+
+    assert docker.tab_widget.count() == tabs
+    assert docker.tab_widget.get_current_graph_view() is view

@@ -2300,14 +2300,27 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 # @Container.attr@ from it makes an unresolvable sibling ref (the "Expression ref
                 # not found" spam) and would overwrite the forwarded value with the expression text.
                 my_prim = Sdf.Path(path).GetPrimPath()
-                sibling_conns = []
+                sibling_conns, loft_conns = [], []
                 for c in connections:
                     target_prim = Sdf.Path(str(c)).GetPrimPath()
                     if my_prim != target_prim and my_prim.HasPrefix(target_prim):
-                        continue  # ancestor target == loft (upward) connection
+                        loft_conns.append(c)  # ancestor target == loft (upward) connection
+                        continue
                     sibling_conns.append(c)
                 if expr := self._expression_from_connections(sibling_conns):
                     self.value = expr
+                elif loft_conns:
+                    # Lofted: the value is the group's, on the interface attr this one points
+                    # at -- with the scene's override of it, if it has one. Left to the loft
+                    # forwarding alone, a network hosted into a graph that already had chunks
+                    # (a style, a referenced ChunkGroup) kept every lofted param at its
+                    # module default: a Scatter at Spacing 10 placed nothing.
+                    source = attr.GetStage().GetAttributeAtPath(Sdf.Path(str(loft_conns[0])))
+                    lofted = source.Get(0) if source else None
+                    if lofted is None:
+                        lofted = val
+                    if lofted is not None and not chunk_utils.values_match(self.__dict__.get("value"), lofted):
+                        self.value = lofted
 
     @staticmethod
     def _expression_from_connections(connections) -> str | None:

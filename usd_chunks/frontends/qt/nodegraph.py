@@ -7409,6 +7409,12 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
         context = self._graph_context()
         tail = self._chain_tail()  # read before the add, which can change the selection
+        if tail is None:
+            # No node picked and none the view or Output shows (picking prims in the viewport
+            # changes what is selected in the graph): the end of the chain, so the style
+            # still goes after whatever makes its object.
+            end = chunk_stage.ChunkStageSync()._find_dag_tail(context)
+            tail = chunk_stage.get_chunk_prim_path(end) if end is not None else None
         view_exists = self._context_has_view(scene, context)
         chunks = entry.create()
         if not chunks:
@@ -7421,8 +7427,28 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                     c.set_blocked(True)  # held until wired, as a node made from the menu is
                 scene.add_chunk(c)
         new_path = chunk_stage.get_chunk_prim_path(chunks[0])
-        # Deferred like create_chunk_from_entry: the new node's ports come with the rebuild.
-        QtCore.QTimer.singleShot(80, self, lambda: self._chain_after(tail, new_path, context))
+        self._chain_when_shown(tail, new_path, context)
+
+    def _chain_when_shown(self, tail: str | None, new_path: str, context, tries: int = 60) -> None:
+        """_chain_after once the new node is in the graph.
+
+        Its node comes with the rebuild the add queued, and a style's only after its network
+        has loaded: a fixed wait wired some and left the rest held, unwired, showing nothing.
+        """
+        graph_scene = self.scene()
+        if isinstance(graph_scene, ChunkGraphScene) and new_path not in graph_scene._nodes and tries > 0:
+            QtCore.QTimer.singleShot(50, self, lambda: self._chain_when_shown(tail, new_path, context, tries - 1))
+            return
+        self._chain_after(tail, new_path, context)
+        # The Output onto the new end, read off the stage: _chain_after moves what the drawn
+        # wires show, and the Output a style before this one was given may not be drawn yet
+        # -- the style was wired and left outside what the graph delivers, held, showing
+        # nothing.
+        nodes = graph_scene._nodes if isinstance(graph_scene, ChunkGraphScene) else {}
+        if tail in nodes and new_path in nodes:
+            chunk_stage.ChunkStageSync()._rewire_views_from_source(nodes[tail].chunk, nodes[new_path].chunk,
+                                                                   outputs=True)
+            self._recook_active_view()
 
     def _chain_tail(self) -> str | None:
         """The node a new chunk goes after when Auto-connect is on, as a prim path.
