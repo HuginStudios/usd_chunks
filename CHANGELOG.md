@@ -15,6 +15,13 @@ This file starts with the first release; development before that is in the commi
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
   leaved like the wall, they hung like a fringe cut straight, in clumps.
 
+### Fixed
+
+- A menu value in another case or with underscores now picks its item:
+  `light(light_type="distant_light")` makes a DistantLight. It made a DiskLight without a word,
+  and the build skill showed that call. A value that names no item still falls back to the
+  first one, now with a warning.
+
 ## [1.0.0-rc.2] - 2026-11-19
 
 ### Added
