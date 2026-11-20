@@ -15,12 +15,31 @@ This file starts with the first release; development before that is in the commi
   they are drawn. Each hull carried the instancer's own transform, so under a moved or
   rotated instancer (the Open Chess Set's pawns) the instances fell through what they should
   land on, or spun off it.
+### Added
+
+- The build-network skill has a chunks-by-task page: every chunk by the job it does, with
+  when to pick it over its neighbours. Agents now look for a chunk that builds an object (Fence,
+  House) before they model it from boxes.
 
 ### Changed
+
+- `usdchunks list <words>` finds chunks by task words, best first: whole words only ("rain"
+  no longer lists every fence for "terrain"), every word of the query, the name counting most.
+  Scatter Points is found for rocks, trees and grass, Inline USD for keyframes.
 
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
   leaved like the wall, they hung like a fringe cut straight, in clumps.
+
+### Fixed
+
+- A menu value in another case or with underscores now picks its item:
+  `light(light_type="distant_light")` makes a DistantLight. It made a DiskLight without a word,
+  and the build skill showed that call. A value that names no item still falls back to the
+  first one, now with a warning.
+- A reopened Shape chunk (USD Cube, Sphere ...) shows its own params again. A USD Cube showed
+  Axis and hid its Size: with the open cache on, the reopened chunk never cooked, and nothing else
+  put its params back.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

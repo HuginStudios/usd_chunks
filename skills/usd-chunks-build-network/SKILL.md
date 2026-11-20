@@ -17,8 +17,10 @@ ground with three coloured boxes and a camera" becomes ground → cube → trans
 set_display_color (×3) → dome_light → camera.
 
 Start from [common-chunks.md](common-chunks.md): the chunks most networks use, each with its
-key params, so most steps need no lookup. For the rest, find the chunk with the CLI, before
-reading any chunk source:
+key params, so most steps need no lookup. [chunks-by-task.md](chunks-by-task.md) lists every
+chunk by the job it does, with when to pick it over its neighbours: read it for any step
+common-chunks doesn't cover. For params, find the chunk with the CLI, before reading any
+chunk source:
 
 - `usdchunks list` lists every chunk you can make, one line each: its script name, its
   category and what it does. `usdchunks list scatter` lists only those mentioning a word.
@@ -37,9 +39,11 @@ below). Check a candidate with `usdchunks show`; never guess a param. If none of
 it either, say so and offer the `usd-chunks-write-chunk` skill. Don't do the step with
 Python (`script_runner`) unless the user agrees.
 
-Before you model an object, look for one: a `.usd`/`.usda`/`.usdc` file beside the network,
-in its `assets/` folder, or next to the files it already references. Bring it in with
-`reference`. If nothing fits, build it with chunks: real size and the main parts first, a
+Before you model an object, look for a chunk that builds it (`fence`, `house`, `vine`,
+`scatter_points` for rocks and trees: see chunks-by-task.md, or `usdchunks list fence`), then
+for a file: a `.usd`/`.usda`/`.usdc` beside the network, in its `assets/` folder, or next to
+the files it already references. Bring a file in with `reference`. If nothing fits, build it
+from primitives: real size and the main parts first, a
 material on it (`preview_surface`), then the details that show at the shot distance. Tell
 the user what you modelled and why no file was used.
 
@@ -115,7 +119,7 @@ with Scene.new() as scene:
 | Move a prim that came from a file | `transform(last, primpath_location="/World/box", tx=3.0)` |
 | Change other attributes on it | `property_editor(last, prim="/World/key", edits="inputs:intensity = 3")`, one `name = value` per line, by USD attribute name (a light's need `inputs:`). Values are JSON: `inputs:color = [1, 0.8, 0.6]`, not a tuple. `float name = 1` creates an attribute the prim lacks |
 | A colour or a material | `preview_surface(last, mat_path="/World/mats/red", primpath_location="/World/box", diffuse_color=(0.8, 0.1, 0.1), roughness=0.4)` binds a UsdPreviewSurface (comma-separate several prims); `set_display_color(last, prim_path=..., color_r=0.8, color_g=0.1, color_b=0.1)` is a flat colour, no material |
-| A light | `light(last, primpath_location="/World/key", light_type="rect_light")` (`distant_light`, `dome_light`, `sphere_light`, `disk_light` too). `intensity`, `width`, `height` and `color` are built when it cooks but can be passed at create |
+| A light | `rect_light(last, primpath_location="/World/key")` (`distant_light`, `dome_light`, `sphere_light`, `disk_light`, `cylinder_light` too), or `light(..., light_type="RectLight")`. `intensity`, `width`, `height` and `color` are built when it cooks but can be passed at create |
 | Aim a light or camera at a point | `transform(last, primpath_location="/World/key", tx=4.0, ty=5.0, aim_at_point=True, aim_point=(0, 1, 0))` turns the prim's -Z to the point. `camera(last, primpath_location="/World/cam", tz=10.0, aim_at_point=True, aim_point=(0, 1, 0))` has its own |
 | A ring of N copies | Put the source at the radius on +X (`transform(..., tx=6.0)`), then `duplicate_prim(last, source_prim="/World/column", dest_path="/World/ring", copies=8, copy_rotate=(0, 45, 0))`: copy i is the source moved i times by the per-copy offset, turned about `copy_pivot`. Copies are named after the source. Then `prune_prim(last, prim_path="/World/column")` drops the source |
 | Scatter an exact count, turned about Y only | `scatter_points(last, surface_prim=..., inst_path=..., prototypes=[{"proto_path": "/rock", "proto_weight": 70}], auto_spacing=False, spacing=0.5, max_count=40, orient_mode="Up", rand_axis="Y", rand_amount=360)`. For a margin from the edge, scatter onto a smaller grid and `prune_prim` it |

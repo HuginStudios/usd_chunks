@@ -167,7 +167,9 @@ summary line says what jobs the chunk does, in the words someone asking for them
 in at most 90 characters, without repeating the chunk's name. It sums up the text below it,
 so it claims nothing that text doesn't say. `usdchunks list` and the
 create menu's search show only that line, so it decides whether a person or an agent finds
-the chunk at all.
+the chunk at all. `usdchunks list <words>` ranks a word found in the name first, then in the
+summary line, then in the rest of the description, so name the things it makes there
+("rocks, trees, grass"), not only how.
 
 `config()` returns a [`chunk.DefaultConfig`][usd_chunks.chunk.DefaultConfig], a small
 subclass of [`chunk_core.ChunkConfig`][usd_chunks.chunk_core.ChunkConfig]. It describes how
