@@ -32,6 +32,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
+  its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
+  of that ground. A fence covers no ground from above, so a fenced yard still fills.
 - CAD Import instances a part used more than once even when it has a colour, as most STEP
   parts do.
 - CAD Import in `chunk.change_block()` keeps the location the script gave. It used one made

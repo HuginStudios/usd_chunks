@@ -29,7 +29,7 @@ modelling it from boxes: look here before you model anything.
 - `transform`: move, turn, scale prims about a pivot; aim a light or camera at a prim or point.
 - `reset_transform`: clear a prim's transform ops.
 - `duplicate_prim`: N copies in a row, ring or spiral (stairs, columns, a fence of objects), full copies or instances.
-- `scatter_points`: many instances of one or more prototypes over a mesh as a PointInstancer: rocks, trees, grass, clutter. Spacing or density, slope cut-off (`max_slope`), `avoid_prims` to keep clear of other prims, exact counts.
+- `scatter_points`: many instances of one or more prototypes over a mesh as a PointInstancer: rocks, trees, grass, clutter. Spacing or density, slope cut-off (`max_slope`), `avoid_prims` to keep clear of other prims (their points, curves, and the ground under a mesh, so a house's floor stays empty), exact counts.
 - `noise_field`: a noise density for `scatter_points`, so instances clump in patches instead of an even spread.
 - `proximity_field`: a density from nearness to other points: grass around rocks, undergrowth under trees.
 - `height_field`: a density from height: trees below a tree line, nothing on the peaks. Its `subset` gives the band its own material (a sandy shore, rocky tops).
