@@ -3,6 +3,15 @@ from pxr import UsdShade
 from usd_chunks import chunk, chunk_utils
 
 
+# Stronger: this binding beats any its target's children have (a referenced asset's own
+# materials). Weaker: the children's bindings win, as a mesh's face subsets need when the
+# mesh is bound to one material and a subset to another.
+_STRENGTHS = {
+    "Stronger than Descendants": UsdShade.Tokens.strongerThanDescendants,
+    "Weaker than Descendants": UsdShade.Tokens.weakerThanDescendants,
+}
+
+
 def execute(node):
     stage = node.get_stage()
 
@@ -51,11 +60,12 @@ def execute(node):
         return
 
     material = UsdShade.Material(stage.GetPrimAtPath(mat_path))
+    strength = _STRENGTHS.get(node.get_param("strength").value, UsdShade.Tokens.strongerThanDescendants)
     for path_str in path_strs:
         with chunk_utils.author_in_variant_context(stage, path_str) as target_path:
             prim = stage.GetPrimAtPath(target_path)
             if prim and prim.IsValid():
-                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, strength)
 
 
 def _target_defined(stage, path_str) -> bool:
@@ -79,7 +89,13 @@ def main():
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
 
-    chunk_api.add_params([material_path, primpath])
+    strength = chunk.Menu(
+        "strength", "Strength", menu_items=list(_STRENGTHS), default_value="Stronger than Descendants",
+        tooltip="Stronger: beats the materials bound below the target, such as an asset's own.\n"
+        "Weaker: what is bound below wins, such as a face subset's material on a bound mesh.",
+    )
+
+    chunk_api.add_params([material_path, primpath, strength])
     return chunk_api
 
 
@@ -95,5 +111,8 @@ def config():
             Use an expression to reference another chunk's output, e.g. @AssignMaterial.material_path@.
           - Prim Path: comma-separated prim paths or glob patterns to bind the material to.
             Supports variant context authoring and prim selection from the DCC.
+          - Strength: Stronger than Descendants (the default) beats whatever is bound below
+            the target, such as a referenced asset's own materials. Weaker than Descendants
+            lets those win: bind a mesh to bark, and its leaf face subset keeps its leaves.
         """,
     )
