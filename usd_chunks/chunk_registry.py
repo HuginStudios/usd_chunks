@@ -1332,6 +1332,8 @@ class ChunkModule:
         self.module_file = Path(module_file)
 
         self.loaded = False
+        #: Why the last load failed (a missing package, an import error), None once it loads.
+        self.load_error: str | None = None
         # self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
         self.func: Callable[[], core.ChunkBase | list[core.ChunkBase]] | None = None
 
@@ -1423,7 +1425,10 @@ class ChunkModule:
             if not self.has_main():
                 return False
 
-            if mod := sys.modules.get(self.module_name):
+            # A module imported under this name some other way is kept. The one this
+            # ChunkModule read before is not: Reload Chunks reads the file again, and keeping
+            # the old one ran the old main() and execute().
+            if (mod := sys.modules.get(self.module_name)) and mod is not self.module:
                 self.module = mod
                 return True
 
@@ -1475,8 +1480,11 @@ class ChunkModule:
 
         try:
             self.func = getattr(self.module, "main")
-        except Exception:
+        except Exception as exc:
             # This module failed to load. Set to file_name so we can try loading it again later
+            # Kept for whoever asks what the chunk takes (usdchunks show), so it can say why not.
+            self.load_error = (f"it needs {', '.join(missing)}, which is not installed" if missing
+                               else f"{type(exc).__name__}: {exc}")
             if missing:
                 # The import of what was declined is what failed: say that, not the
                 # traceback -- install_packages has already said how to install it.
@@ -1500,6 +1508,7 @@ class ChunkModule:
             return False
 
         self.loaded = True
+        self.load_error = None
         return True
 
     def load(self) -> Sequence[core.ChunkBase]:
@@ -2272,24 +2281,15 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     self.register_module(mod)
                 mod.load()
 
-    def reload_modules(self):
-        """Reload every module, recreating as many chunks of each as the scene held."""
-        loaded_config_names = defaultdict(int)
-        for c in self.scene.get_chunks():
-            if conf := c.get_config():
-                loaded_config_names[conf.module] += 1
+    def unload_modules(self):
+        """Unload every loaded module, so the next load of each reads its file again.
 
-        self.scene.clear()
-
+        The chunks already made stay as they are. Reload Chunks
+        (chunk_stage.ChunkStageSync.reload_chunks) calls this, then builds them again.
+        """
         for mod in self.get_chunk_modules():
             if mod.loaded:
                 mod.unload()
-            for i in range(loaded_config_names.get(mod.module_name, 0)):
-                if i == 0:
-                    chunks = mod.load()
-                else:
-                    chunks = mod.create()
-                self.scene.add_chunks(chunks)
 
 
 def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:

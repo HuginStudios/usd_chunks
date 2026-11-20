@@ -17,12 +17,72 @@ This file starts with the first release; development before that is in the commi
   meshes, 3D faces and flat-faced ACIS solids come in as double-sided meshes that keep the
   file's quads and shared points, and lines, arcs, circles and splines as BasisCurves.
   Curved ACIS solids, text, hatches and dimensions are skipped and counted in the readout.
+- Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
+  [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
+  street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
+  configurator, and a batch over a folder. Each saves its network, exports USD and renders
+  a picture. They are built from chunks. `example_assets.py` fetches the free assets they
+  use, once.
+- Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
+  Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
+  tints the band so you can see it.
+- Bind Material has a Strength. Weaker than Descendants lets a face subset keep its own
+  material: bind a tree to bark, and its leaves stay leaves.
+- The build-network skill has a chunks-by-task page: every chunk by the job it does, with
+  when to pick it over its neighbours. Agents now look for a chunk that builds an object (Fence,
+  House) before they model it from boxes.
 
 ### Changed
+
+- `usdchunks list <words>` finds chunks by task words, best first: whole words only ("rain"
+  no longer lists every fence for "terrain"), every word of the query, the name counting most.
+  Scatter Points is found for rocks, trees and grass, Inline USD for keyframes.
 
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
   leaved like the wall, they hung like a fringe cut straight, in clumps.
+
+### Fixed
+
+- Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
+  its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
+  of that ground. A fence covers no ground from above, so a fenced yard still fills.
+- Chunks > Reload Chunks in usdview keeps the network and runs your edited code. It built
+  fresh chunks instead: every param went back to its default, wires were lost, and the new
+  chunks went into a second root group, so the graph looked empty. The old module also stayed
+  loaded, so edits to `main()` and `execute()` never ran. It now reads the edited files again
+  and rebuilds the graph from the stage, as File > Open does.
+  **Breaking:** `ChunkRegistry.reload_modules()` is gone; call
+  `chunk_stage.ChunkStageSync().reload_chunks()` instead.
+- CAD Import instances a part used more than once even when it has a colour, as most STEP
+  parts do.
+- CAD Import in `chunk.change_block()` keeps the location the script gave. It used one made
+  from the file name.
+- A Light's colour set when it is made can be changed later. It was written where the
+  Light could never change it again.
+- A run with a Light in it no longer logs `ERROR Could not send notice ... is not in the
+  local LayerStack`.
+- URDF Import writes each link's whole inertia, scaled with Scale. It wrote only part of it,
+  and usdchecker rejected every link.
+- Prim can make a PhysicsScene, a physics joint, RenderSettings or RenderProduct. Asking for
+  one gave an Xform.
+- Render in Command mode finds files next to a network made with `Scene.new(path=...)`.
+  They were missing from the render.
+- Reset Transform resets every prim you give it, not just the first.
+- Property Editor can make a new relationship: `rel physics:body1 = "/World/robot/base"`.
+  The edit was skipped.
+- A reopened Vine hides what its saved values make useless again: Start/End Frame with Animate
+  off, Step with Auto Step on. A test now reopens every chunk with the open cache on and checks
+  it shows the same params as before.
+- A menu value in another case or with underscores now picks its item:
+  `light(light_type="distant_light")` makes a DistantLight. It made a DiskLight without a word,
+  and the build skill showed that call. A value that names no item still falls back to the
+  first one, now with a warning.
+- A reopened Shape chunk (USD Cube, Sphere ...) shows its own params again. A USD Cube showed
+  Axis and hid its Size: with the open cache on, the reopened chunk never cooked, and nothing else
+  put its params back.
+- `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
+  what it needs, instead of listing no params as if it took none.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

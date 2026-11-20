@@ -72,9 +72,7 @@ def test_removing_an_unknown_chunk_changes_nothing(scene):
 
 @pytest.mark.xfail(strict=True, reason=(
     "SceneSender.clear() clears only the ChainMap's first map: get_chunks() empties but "
-    "get_chunk(name) still finds the old chunk and its prim stays, so reload_modules "
-    "recreates every chunk under a new name (X -> X1). Fix pending a decision on what "
-    "Reload Chunks should keep."))
+    "get_chunk(name) still finds the old chunk and its prim stays."))
 def test_clear_empties_the_scene(scene):
     _add(scene, "a")
     _add(scene, "b")

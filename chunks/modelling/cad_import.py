@@ -536,10 +536,12 @@ def _extract_xcaf(path: str, settings: _Settings) -> _Scene:
         node = _Node(name=name, matrix=matrix, color=None)
         if instance_label is not None:
             # A component may override the colour of the part it places; that override is
-            # what makes an otherwise identical part a different-looking one.
-            node.color = _label_color(instance_label)
-        if node.color is None:
-            node.color = _label_color(label)
+            # what makes an otherwise identical part a different-looking one. The part's own
+            # colour is not one: _tessellate bakes it into the prototype, and counting it
+            # here kept every coloured part from being instanced.
+            override = _label_color(instance_label)
+            if override is not None and override != _label_color(label):
+                node.color = override
 
         if XCAFDoc_ShapeTool.IsAssembly_s(label):
             components = Sequence_TDF_Label()
@@ -1078,9 +1080,15 @@ def file_changed(owner, notice, sender):
     primpath_param = _chunk.get_param("primpath_location")
     if not primpath_param or chunk_utils.has_expression(primpath_param.raw_value or ""):
         return
+    # Only over a location this callback filled in, or none. Inside a change_block this
+    # notice arrives after a script has set both values, and filling in then threw the
+    # script's location away.
+    if primpath_param.value and primpath_param.value != getattr(primpath_param, "filled_in", None):
+        return
 
     asset_name = Tf.MakeValidIdentifier(os.path.splitext(os.path.basename(cad_path))[0])
     primpath_param.value = chunk_utils.get_unique_path(param.get_stage(), f"/{asset_name}")
+    primpath_param.filled_in = primpath_param.value
 
 
 def execute(node):

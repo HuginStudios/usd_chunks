@@ -42,6 +42,14 @@ def _on_type_changed(owner, notice, sender) -> None:
     _show(owner, sender.value)
 
 
+def _on_loaded(owner, notice, sender) -> None:
+    """Show the saved shape's params on reopen: a restored value sends no change, and a cook
+    that is skipped (nothing changed) never reaches the _show in execute()."""
+    shape_type = owner.get_param("shape_type")
+    if shape_type is not None:
+        _show(owner, shape_type.value)
+
+
 def _author(node, stage, path, shape: str) -> None:
     axis = node.get_param("axis", chunk.is_param_t(str)).value
     if shape == "Cube":
@@ -100,6 +108,7 @@ def main():
         group.set_state(_HIDE)
         chunk_api.add_param(group)
     chunk_api.add_callback(_on_type_changed, sender=shape_type)
+    chunk_api.add_callback(_on_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
     return chunk_api
 
 

@@ -25,6 +25,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -454,6 +455,27 @@ class TestAuthoring:
         mass_api = UsdPhysics.MassAPI(stage.GetPrimAtPath("/World/robot/base"))
         assert mass_api.GetMassAttr().Get() == pytest.approx(2.5)
         assert tuple(mass_api.GetCenterOfMassAttr().Get()) == pytest.approx((0, 0, 0.1))
+
+    def test_the_whole_inertia_tensor_arrives_as_principal_moments_and_axes(self, scene, tmp_path):
+        """URDF gives a full tensor (with ixy, ixz, iyz) in the inertial frame. UsdPhysics wants
+        its principal moments and the rotation to them, both authored or neither: usdchecker
+        rejected every link of a real robot (the SO-101) that had only diagonalInertia, and
+        the off-diagonal terms were dropped. Inertia is mass times length squared, so it
+        scales with the square of Scale."""
+        stage, _ = scene
+        tensor = np.array([[0.04, 0.01, 0.0], [0.01, 0.03, 0.005], [0.0, 0.005, 0.02]])
+        urdf = TWO_LINK.replace('<inertia ixx="0.01" iyy="0.02" izz="0.03"/>',
+                                '<inertia ixx="0.04" ixy="0.01" ixz="0" iyy="0.03" iyz="0.005" izz="0.02"/>')
+        _import(scene, urdf, tmp_path, scale=100.0)
+        mass_api = UsdPhysics.MassAPI(stage.GetPrimAtPath("/World/robot/base"))
+        moments = mass_api.GetDiagonalInertiaAttr()
+        axes = mass_api.GetPrincipalAxesAttr()
+        assert moments.HasAuthoredValue() and axes.HasAuthoredValue()
+
+        # Rotate the principal moments back by the authored axes: the original tensor.
+        rotation = np.array(Gf.Matrix3d(Gf.Rotation(axes.Get())))  # rows: principal axes in link space
+        rebuilt = rotation.T @ np.diag(np.array(moments.Get(), dtype=float)) @ rotation
+        assert rebuilt == pytest.approx(tensor * 100.0 ** 2, rel=1e-4, abs=1e-3)  # float32 attrs
 
     def test_collision_geometry_is_guide_purpose(self, scene, tmp_path):
         """Present for physics, out of the way of a render -- the appliance drop lost an

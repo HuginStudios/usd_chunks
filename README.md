@@ -50,6 +50,9 @@ Built for anyone whose pipeline runs on USD:
   ([Remesh](chunks/modelling/remesh_proxy.py) → [Bake](chunks/modelling/bake_textures.py)),
   and asset libraries rebuilt with `batch`.
 
+Each of these has a script you can run, from CAD to a rendered image:
+[Pipeline examples](docs/pipeline-examples.md).
+
 - **One network, every host.** The same network opens as a node graph in usdview, Houdini
   or Blender, and cooks from the terminal with no UI at all.
 - **Native USD, no proprietary format.** A node is a prim, a wire is a USD connection, and each

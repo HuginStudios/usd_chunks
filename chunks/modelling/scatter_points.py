@@ -189,29 +189,9 @@ def _collect_triangles(prim):
     if not prim or not prim.IsValid():
         return _TriangleSoup.empty()
 
-    parts = []
-    for p in Usd.PrimRange(prim):
-        mesh = UsdGeom.Mesh(p)
-        points = mesh.GetPointsAttr().Get()
-        if not points:
-            continue
-        counts = mesh.GetFaceVertexCountsAttr().Get()
-        indices = mesh.GetFaceVertexIndicesAttr().Get()
-        if not counts or not indices:
-            continue
-        triangles, _, _ = mesh_math.fan_triangulate(counts, indices)
-        if not len(triangles):
-            continue
-        fan = tuple(triangles.T)
-        parts.append(_TriangleSoup.from_arrays(mesh_math.world_points(p, points), *fan))
-
-    if len(parts) == 1:
-        return parts[0]
+    parts = [soup for p in Usd.PrimRange(prim) if (soup := _mesh_soup(p)) is not None]
     if parts:
-        return _TriangleSoup(*(
-            np.concatenate([getattr(part, name) for part in parts])
-            for name in ("v0", "v1", "v2", "n")
-        ))
+        return _joined(parts)
 
     # Fallback: a flat quad on the top face of the bounding box.
     bbox_cache = UsdGeom.BBoxCache(0, [UsdGeom.Tokens.default_])
@@ -236,6 +216,32 @@ def _collect_triangles(prim):
         corners[[2, 3]],
         np.asarray([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
     )
+
+
+def _mesh_soup(prim):
+    """*prim*'s own faces as a world-space `_TriangleSoup`, or None when it has none."""
+    mesh = UsdGeom.Mesh(prim)
+    points = mesh.GetPointsAttr().Get()
+    if not points:
+        return None
+    counts = mesh.GetFaceVertexCountsAttr().Get()
+    indices = mesh.GetFaceVertexIndicesAttr().Get()
+    if not counts or not indices:
+        return None
+    triangles, _, _ = mesh_math.fan_triangulate(counts, indices)
+    if not len(triangles):
+        return None
+    return _TriangleSoup.from_arrays(mesh_math.world_points(prim, points), *tuple(triangles.T))
+
+
+def _joined(parts):
+    """One `_TriangleSoup` of several."""
+    if len(parts) == 1:
+        return parts[0]
+    return _TriangleSoup(*(
+        np.concatenate([getattr(part, name) for part in parts])
+        for name in ("v0", "v1", "v2", "n")
+    ))
 
 
 def _triangle_bounds(triangles):
@@ -340,9 +346,11 @@ class _AvoidSet:
 
     Each point may carry a radius of its own (half a curve's width there), added to the
     distance: a wide run of water is kept clear edge to edge, not centre to centre.
+
+    A *footprint* (`_Footprint`) adds the ground under meshes: a point there is near too.
     """
 
-    def __init__(self, points, distance, radii=None, extra_max=0.0):
+    def __init__(self, points, distance, radii=None, extra_max=0.0, footprint=None):
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         radii = np.zeros(len(points)) if radii is None else np.asarray(radii, dtype=np.float64)
         self._dist = distance + (float(radii.max()) if len(radii) else 0.0)
@@ -350,9 +358,15 @@ class _AvoidSet:
         # One cell spans the furthest a point can reach, so a query only ever looks one cell out.
         self._cell = max(self._dist + extra_max, 1e-6)
         self._points, self._radii = points, radii
+        self._footprint = footprint
         # Each built on first use: the grid by near(), the tree by near_many().
         self._grid: dict | None = None
         self._tree = None
+
+    @property
+    def active(self):
+        """Whether anything can be near: a reach past zero, or ground to keep off."""
+        return self._dist > 0.0 or self._footprint is not None
 
     def _key(self, pt):
         c = self._cell
@@ -361,6 +375,12 @@ class _AvoidSet:
     def near_many(self, pts, extra, kdtree):
         """near() for (N, 3) *pts*, each with its own *extra*, through a *kdtree* (scipy's
         cKDTree) of the points: the same test, as one query rather than a call per point."""
+        out = self._near_points(pts, extra, kdtree)
+        if self._footprint is not None and len(pts):
+            out |= self._footprint.near_many(pts, self._base + np.maximum(extra, 0.0), kdtree)
+        return out
+
+    def _near_points(self, pts, extra, kdtree):
         out = np.zeros(len(pts), dtype=bool)
         if self._dist <= 0.0 or not len(self._points) or not len(pts):
             return out
@@ -383,6 +403,10 @@ class _AvoidSet:
         return out
 
     def near(self, pt, extra=0.0):
+        if self._footprint is not None:
+            reach = np.asarray([self._base + max(extra, 0.0)])
+            if self._footprint.near_many(np.asarray([pt], dtype=np.float64), reach, None)[0]:
+                return True
         if self._dist <= 0.0:
             return False
         if self._grid is None:
@@ -461,6 +485,146 @@ def _avoid_points(stage, paths, step):
     if not out:
         return np.zeros((0, 3)), np.zeros(0)
     return np.concatenate(out), np.concatenate(out_r)
+
+
+class _Footprint:
+    """The ground under a set of meshes, seen from above: what Keep Away From keeps off
+    besides their points.
+
+    A mesh's points mark only its corners, so a scatter kept away from a house still filled
+    its floor. The faces are drawn into a grid once, looking down the up axis. A point is
+    near when its cell is covered, or when it is within its reach of the covered area's edge;
+    both in the ground plane, so height doesn't count. A face seen edge-on from above -- a
+    wall, a fence panel -- covers nothing, so a fenced yard stays open while the ground under
+    a roof does not.
+    """
+
+    #: Cells along the footprint's longer side: a 10 m house in 2 cm cells.
+    DIVISIONS = 512
+
+    def __init__(self, soup, up_idx):
+        self._a, self._b = (i for i in range(3) if i != up_idx)
+        self._tree = None
+        tri_a = np.stack([soup.v0[:, self._a], soup.v1[:, self._a], soup.v2[:, self._a]], axis=1)
+        tri_b = np.stack([soup.v0[:, self._b], soup.v1[:, self._b], soup.v2[:, self._b]], axis=1)
+        span = max(float(np.ptp(tri_a)), float(np.ptp(tri_b))) if len(tri_a) else 0.0
+        area = ((tri_a[:, 1] - tri_a[:, 0]) * (tri_b[:, 2] - tri_b[:, 0])
+                - (tri_a[:, 2] - tri_a[:, 0]) * (tri_b[:, 1] - tri_b[:, 0]))
+        # Edge-on faces (walls) come out at rounding-error size, not exactly zero.
+        flat = np.abs(area) > 1e-9 * span * span
+        tri_a, tri_b = tri_a[flat], tri_b[flat]
+        self.empty = not len(tri_a)
+        if self.empty:
+            return
+        lo = np.array([tri_a.min(), tri_b.min()])
+        hi = np.array([tri_a.max(), tri_b.max()])
+        self._cell = cell = max(float((hi - lo).max()) / self.DIVISIONS, 1e-9)
+        # An empty cell all round, so every covered cell has four neighbours to look at.
+        self._lo, self._hi = lo - cell, hi + cell
+        shape = tuple(int(n) for n in np.ceil((self._hi - self._lo) / cell).astype(np.int64) + 1)
+        self._grid = grid = self._rasterise(tri_a, tri_b, shape)
+        inner = np.zeros_like(grid)
+        inner[1:-1, 1:-1] = grid[:-2, 1:-1] & grid[2:, 1:-1] & grid[1:-1, :-2] & grid[1:-1, 2:]
+        ia, ib = np.nonzero(grid & ~inner)
+        self._edge = self._lo + (np.stack([ia, ib], axis=1) + 0.5) * cell
+
+    def _rasterise(self, tri_a, tri_b, shape):
+        """The cells whose centre a triangle covers, plus each triangle's own centre cell so
+        a face smaller than a cell still counts.
+
+        Row by row rather than cell by cell: each triangle crosses a row's centre line in
+        one span, found from its edges, and a running sum along the row fills every span at
+        once. Testing each cell against each triangle cost 120 ms on the House chunk.
+        """
+        cell, lo = self._cell, self._lo
+        grid = np.zeros(shape, dtype=bool)
+        ca = np.clip(((tri_a.mean(axis=1) - lo[0]) / cell).astype(np.int64), 0, shape[0] - 1)
+        cb = np.clip(((tri_b.mean(axis=1) - lo[1]) / cell).astype(np.int64), 0, shape[1] - 1)
+        grid[ca, cb] = True
+        # The rows whose centre line crosses each triangle.
+        a0 = np.maximum(np.ceil((tri_a.min(axis=1) - lo[0]) / cell - 0.5), 0).astype(np.int64)
+        a1 = np.minimum(np.floor((tri_a.max(axis=1) - lo[0]) / cell - 0.5), shape[0] - 1).astype(np.int64)
+        rows = np.maximum(a1 - a0 + 1, 0)
+        if not rows.sum():
+            return grid
+        tri = np.repeat(np.arange(len(rows)), rows)
+        row = a0[tri] + np.arange(int(rows.sum())) - np.repeat(np.cumsum(rows) - rows, rows)
+        x = lo[0] + (row + 0.5) * cell
+        # Where the row's line meets each edge that spans it: the span is the lowest to the
+        # highest of those.
+        low = np.full(len(tri), np.inf)
+        high = np.full(len(tri), -np.inf)
+        ta, tb = tri_a[tri], tri_b[tri]
+        for p, q in ((0, 1), (1, 2), (2, 0)):
+            pa, qa, pb, qb = ta[:, p], ta[:, q], tb[:, p], tb[:, q]
+            run = qa - pa
+            hit = (np.minimum(pa, qa) <= x) & (x <= np.maximum(pa, qa)) & (run != 0.0)
+            at = pb + (x - pa) / np.where(hit, run, 1.0) * (qb - pb)
+            low = np.where(hit, np.minimum(low, at), low)
+            high = np.where(hit, np.maximum(high, at), high)
+        b0 = np.maximum(np.ceil((low - lo[1]) / cell - 0.5), 0)
+        b1 = np.minimum(np.floor((high - lo[1]) / cell - 0.5), shape[1] - 1)
+        real = np.isfinite(low) & (b0 <= b1)
+        row, b0, b1 = row[real], b0[real].astype(np.int64), b1[real].astype(np.int64)
+        # +1 where a span starts, -1 just past where it ends; a cell is covered while the
+        # running sum along its row is above zero.
+        wide = shape[1] + 1
+        marks = np.bincount(row * wide + b0, minlength=shape[0] * wide)
+        marks -= np.bincount(row * wide + b1 + 1, minlength=shape[0] * wide)
+        grid |= np.cumsum(marks.reshape(shape[0], wide), axis=1)[:, :-1] > 0
+        return grid
+
+    def near_many(self, pts, reach, kdtree):
+        """True where a point of (N, 3) *pts* is on the footprint, or within its own *reach*
+        of the footprint's edge. *kdtree* is scipy's cKDTree, or None for a slow scan."""
+        flat = np.asarray(pts, dtype=np.float64)[:, [self._a, self._b]]
+        ia = np.floor((flat[:, 0] - self._lo[0]) / self._cell).astype(np.int64)
+        ib = np.floor((flat[:, 1] - self._lo[1]) / self._cell).astype(np.int64)
+        ok = (ia >= 0) & (ib >= 0) & (ia < self._grid.shape[0]) & (ib < self._grid.shape[1])
+        out = np.zeros(len(flat), dtype=bool)
+        out[ok] = self._grid[ia[ok], ib[ok]]
+        reach = np.broadcast_to(np.maximum(reach, 0.0), (len(flat),))
+        widest = float(reach.max()) if len(reach) else 0.0
+        if widest <= 0.0 or not len(self._edge):
+            return out
+        # The edge is held as cell centres, up to ~0.7 cell inside the true one: a little
+        # more reach, so a point is never let closer than asked.
+        slack = 0.75 * self._cell
+        cand = np.flatnonzero(~out & np.all(flat >= self._lo - widest - slack, axis=1)
+                              & np.all(flat <= self._hi + widest + slack, axis=1))
+        if not len(cand):
+            return out
+        if kdtree is None:
+            dist = np.sqrt(((flat[cand, None, :] - self._edge[None]) ** 2).sum(axis=-1)).min(axis=1)
+        else:
+            if self._tree is None:
+                self._tree = kdtree(self._edge)
+            dist, _ = self._tree.query(flat[cand], k=1, distance_upper_bound=widest + slack)
+        out[cand] = dist < reach[cand] + slack
+        return out
+
+
+def _avoid_footprint(stage, paths, up_idx):
+    """The `_Footprint` of every mesh under *paths*, or None when they cover no ground.
+
+    An instancer's prototypes are skipped: they are drawn where its instances are, not
+    where they stand, and the instances already count as points.
+    """
+    parts = []
+    for path in paths:
+        root = stage.GetPrimAtPath(path) if path else None
+        if not root:
+            continue
+        it = iter(Usd.PrimRange(root))
+        for prim in it:
+            if prim.IsA(UsdGeom.PointInstancer):
+                it.PruneChildren()
+            elif prim.IsA(UsdGeom.Mesh) and (soup := _mesh_soup(prim)) is not None:
+                parts.append(soup)
+    if not parts:
+        return None
+    footprint = _Footprint(_joined(parts), up_idx)
+    return None if footprint.empty else footprint
 
 
 def _draw_scale(rng, lo, hi, bias):
@@ -3129,8 +3293,9 @@ def execute(node):
             avoid = None
             if avoid_paths:
                 pts_, radii_ = _avoid_points(scratch_stage, avoid_paths, max(avoid_distance, spacing, 1e-6) * 0.5)
-                avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5)
-                if avoid._dist <= 0.0:
+                avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5,
+                                  footprint=_avoid_footprint(scratch_stage, avoid_paths, up_idx))
+                if not avoid.active:
                     avoid = None
             if len(surf_tris) and sampling == "Tiles" and spacing > 0 and max_slope <= 90.0:
                 # Sampling: Tiles -- the same rules from a laid blue-noise tile (opt-in: a
@@ -3673,8 +3838,9 @@ def main():
             "Keep Away From",
             # PRIM_PATHS: a cook reads these prims, so an edit to them must re-run it.
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
-            tooltip="Surface mode: prims whose points (curves along their length) instances "
-            "stay clear of -- e.g. a Trails output. Comma-separate several.",
+            tooltip="Surface mode: prims instances stay clear of -- their points, curves "
+            "along their length, and the ground under a mesh (a house's floor, not a fenced "
+            "yard). E.g. a Trails output or a building. Comma-separate several.",
         )
     )
     dist_grp.add_param(
@@ -3683,7 +3849,7 @@ def main():
             "Keep Away Distance",
             default_value=0.0,
             tooltip="How far an instance's edge stays from Keep Away From -- from a curve's "
-            "edge where it has widths.",
+            "edge where it has widths, and from the edge of the ground under a mesh.",
         )
     )
     dist_grp.add_param(
@@ -4068,7 +4234,7 @@ def config():
         # param's default, so its layout doesn't move on reopen).
         new_values={"sampling": "Tiles"},
         description=(
-            "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
+            "Scatters rocks, trees, grass or any prototypes across a mesh as a PointInstancer.\n"
             "\n"
             "Prototypes are a list: each row takes a prim (globs and %collection allowed), a share of the mix\n"
             "as a percentage, and its own scale multiplier. A variant selection can be written\n"
