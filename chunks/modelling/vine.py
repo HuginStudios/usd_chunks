@@ -1576,15 +1576,29 @@ class _Grown:
     `seated` is the skeleton after smoothing and re-seating on the surface, for the Smoothing
     it was done at: (passes, positions, normals). Re-seating projects every node, and is most
     of what is left of a cook once the growth is reused.
+
+    `leaves` is the grown vine's leaves, for the settings they were drawn with: (key, leaves),
+    the key from `_leaf_key`. Every Growth % cuts them, so dragging Growth draws them once.
     """
 
-    __slots__ = ("key", "nodes", "projector", "roots", "roots_note", "hand_placed", "grown", "seated")
+    __slots__ = ("key", "nodes", "projector", "roots", "roots_note", "hand_placed", "grown", "seated", "leaves")
 
     def __init__(self, nodes, projector, roots, roots_note, hand_placed, grown):
         self.key = None
         self.nodes, self.projector = nodes, projector
         self.roots, self.roots_note, self.hand_placed, self.grown = roots, roots_note, hand_placed, grown
         self.seated = None
+        self.leaves = None
+
+
+#: What the grown vine's leaves depend on besides the skeleton: its Smoothing, the stem widths
+#: and lift they sit on, and the leaf settings.
+_LEAF_SETTINGS = ("smooth", "base_width", "taper", "lift", "leaves", "leaf_spacing", "leaf_spread",
+                  "leaf_bare", "leaf_young")
+
+
+def _leaf_key(settings):
+    return tuple(settings[name] for name in _LEAF_SETTINGS)
 
 
 def _growth_key(surface, settings, seed, cloud):
@@ -1745,13 +1759,22 @@ def execute(node):
         _resurface(nodes, projector)
         grown.seated = (settings["smooth"], nodes.position.copy(), nodes.normal.copy())
     growth = _growth_of(nodes)
-    drawn = _draw(nodes, growth, settings["growth"], settings)
+    full = settings["growth"] >= 1.0
+    drawn = _draw(nodes, growth, settings["growth"], settings, with_leaves=full)
     if drawn is None:
         _bail(node, stage, layer, where, "nothing grown yet — raise Growth")
         return
     strands = drawn[0]
     # The leaves are the grown vine's, cut to Growth % (see `_leaves_at`), on every frame too.
-    grown_leaves = drawn[4] if settings["growth"] >= 1.0 else _draw(nodes, growth, 1.0, settings)[4]
+    # Drawn once for the skeleton and kept: dragging Growth % only cuts them.
+    leaf_key = _leaf_key(settings)
+    if full:
+        grown_leaves = drawn[4]
+    elif grown.leaves is not None and grown.leaves[0] == leaf_key:
+        grown_leaves = grown.leaves[1]
+    else:
+        grown_leaves = _draw(nodes, growth, 1.0, settings)[4]
+    grown.leaves = (leaf_key, grown_leaves)
     leaf_count = int(np.count_nonzero(grown_leaves[2] <= settings["growth"] + 1e-12))
 
     frames = _frames(settings)
@@ -1761,7 +1784,7 @@ def execute(node):
         _author_curves(stage, where[1], drawn, settings, node)
         _author_leaves(stage, where[2], grown_leaves, settings, node, grown_to=settings["growth"])
         for frame, fraction in frames:
-            at = _draw(nodes, growth, fraction, settings)
+            at = _draw(nodes, growth, fraction, settings, with_leaves=False)
             time = Usd.TimeCode(frame)
             _author_curves(stage, where[1], at, settings, node, time)
             # The grown vine's leaves, each from the frame the vine reaches it, kept by index,
@@ -1780,7 +1803,7 @@ def execute(node):
     )
 
 
-def _draw(nodes, growth, fraction, settings):
+def _draw(nodes, growth, fraction, settings, with_leaves=True):
     """The vine as drawn at one moment of its growth.
 
     Shared by the still image and every animated frame, so frame N of an animation is exactly
@@ -1791,6 +1814,8 @@ def _draw(nodes, growth, fraction, settings):
         growth: When each node grew, from `_growth_of`.
         fraction: How far grown, 0..1.
         settings: From `_settings`.
+        with_leaves: Place the leaves too. Off where only the stems are wanted: a part-grown
+            vine's leaves are the grown vine's, cut (see `_leaves_at`).
 
     Returns:
         (strands, nodes, radii, growth, leaves) for what has grown, or None before anything
@@ -1807,7 +1832,7 @@ def _draw(nodes, growth, fraction, settings):
     _lift(cut, radii, settings["lift"])
     leaves = (
         _leaf_points(strands, cut.position, cut.normal, radii, cut_growth, settings, cut.hanging)
-        if settings["leaves"]
+        if settings["leaves"] and with_leaves
         else _NO_LEAVES
     )
     return strands, cut, radii, cut_growth, leaves
