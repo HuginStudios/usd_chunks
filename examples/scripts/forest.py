@@ -3,9 +3,10 @@
     USD_CHUNK_DIRS=chunks python examples/scripts/forest.py
 
   Stage Settings   Z up, metres: what the Poly Haven assets are made in
-  Mesh (grid)      an 80 m ground
-  Inline USD       the prototypes, Poly Haven firs, logs, rocks, shrubs and grass (fetched
-                   the first time; see example_assets.py), and a forest-floor material
+  Mesh (grid)      an 80 m ground, with a forest-floor texture (example_assets.texture_look)
+  Reference ...    the prototypes: Poly Haven firs, logs, rocks, shrubs and grass (fetched
+                   the first time), each one Reference, all put at the origin and given
+                   their looks (example_assets.add_models)
   Noise Field      where the forest is thick and where the clearings are
   Scatter Points   four layers, each growing near, or away from, the ones before it:
                    trees on the noise, deadwood near the trees, undergrowth under them,
@@ -32,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 # Results go to the folder given on the command line, else examples/scripts/out.
 OUT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else HERE / "out"
 
-# Prototype name: (Poly Haven asset, the variation to keep, or None for the whole asset).
+# Prototype name: (Poly Haven model, the variation to use, or None for a model of one part).
 PROTOS = {
     "fir_a": ("fir_sapling", "fir_sapling_a"),
     "fir_b": ("fir_sapling", "fir_sapling_b"),
@@ -74,10 +75,8 @@ if __name__ == "__main__":
         last = scene.create.mesh(last, prim_path="/ground", mesh_type="grid", dimx1=100, dimy1=100,
                                  width1=32.0, height2=32.0)
         last = scene.create.transform(last, primpath_location="/ground", sx=2.5, sy=2.5)
-        last = scene.create.inline_usd(last, name="Prototypes", code=assets.prototypes("/protos", PROTOS))
-        last = scene.create.inline_usd(last, name="ForestFloor",
-                                       code=assets.ground_material("/looks/forest_floor", "brown_mud_leaves_01"))
-        last = scene.create.bind_material(last, material_path="/looks/forest_floor", primpath_location="/ground")
+        last = assets.texture_look(scene, last, "/looks/forest_floor", "brown_mud_leaves_01", "/ground")
+        last = assets.add_models(scene, last, "/protos", PROTOS, OUT)
 
         last = scene.create.noise_field(last, name="Clearings", prim_path="/ground", primvar="forest",
                                         size=16.0, threshold=0.45, softness=0.25, seed=3)

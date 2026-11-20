@@ -11,10 +11,13 @@ Nothing is downloaded twice.
 Files go to `examples/assets/downloads/`, or to the folder in `USD_CHUNK_EXAMPLE_ASSETS`.
 Set that to share one download between checkouts.
 
+The second half builds with chunks: `add_models()` brings models in with Reference, Reset
+Transform and Bind Material chunks, and `texture_look()` puts a texture on a mesh.
+
 Poly Haven's USD files come from Blender. Their MaterialX networks don't render in Storm or
 Aurora (plants come out black, or Aurora crashes), and their preview networks leave out the
-leaf cut-outs. `prototypes()` gives each asset a plain UsdPreviewSurface built from its own
-textures instead, which every Hydra renderer draws.
+leaf cut-outs. So each model gets a plain UsdPreviewSurface built from its own textures,
+which every Hydra renderer draws.
 """
 from __future__ import annotations
 
@@ -123,7 +126,7 @@ def fetch_all() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ready to render
+# Building the scene with chunks
 # ---------------------------------------------------------------------------
 
 
@@ -146,149 +149,170 @@ def _texture_files(material: Usd.Prim) -> dict[str, str]:
     return found
 
 
-def _texture_prim(at: str, name: str, path: str, colour_space: str) -> str:
-    return f'''
-def Shader "{name}"
-{{
-    uniform token info:id = "UsdUVTexture"
-    asset inputs:file = @{path}@
-    token inputs:sourceColorSpace = "{colour_space}"
-    float2 inputs:st.connect = <{at}/look_st.outputs:result>
-    token inputs:wrapS = "repeat"
-    token inputs:wrapT = "repeat"
-    float outputs:r
-    color3f outputs:rgb
-}}'''
+def _read_model(asset: str, variation: str | None) -> tuple[str, dict, dict, str]:
+    """What the chunks need to know about a Poly Haven model, read from its file.
 
-
-def _preview(at: str, files: dict[str, str], varname: str, roughness: float = 0.75) -> str:
-    """Shader prims for a UsdPreviewSurface named look under the material at *at*."""
-    inputs = [f"float inputs:roughness = {roughness}"]
-    prims = [f'''
-def Shader "look_st"
-{{
-    uniform token info:id = "UsdPrimvarReader_float2"
-    string inputs:varname = "{varname}"
-    float2 outputs:result
-}}''']
-    if "diffuse" in files:
-        inputs.append(f"color3f inputs:diffuseColor.connect = <{at}/look_diff.outputs:rgb>")
-        prims.append(_texture_prim(at, "look_diff", files["diffuse"], "sRGB"))
-    if "alpha" in files:
-        # A cut-out, not a see-through leaf: below the threshold is not drawn at all.
-        inputs += [f"float inputs:opacity.connect = <{at}/look_alpha.outputs:r>", "float inputs:opacityThreshold = 0.5"]
-        prims.append(_texture_prim(at, "look_alpha", files["alpha"], "raw"))
-    body = "\n    ".join(inputs)
-    return f'''
-def Shader "look"
-{{
-    uniform token info:id = "UsdPreviewSurface"
-    {body}
-    token outputs:surface
-}}''' + "".join(prims)
-
-
-def _nest(names: list[str], body: str, specifier: str = "over") -> str:
-    """*body* inside nested prims *names* (outermost first), indented."""
-    for name in reversed(names):
-        body = f'{specifier} "{name}"\n{{\n' + _indent(body) + "\n}"
-    return body
-
-
-def _indent(text: str) -> str:
-    return "\n".join("    " + line if line else line for line in text.strip("\n").split("\n"))
-
-
-def _prototype(path: str, asset: str, variation: str | None) -> str:
-    """One prototype: the asset referenced at *path*, one variation, preview materials."""
-    file = model(asset)
-    stage = Usd.Stage.Open(str(file))
+    Returns the prim to import (the variation, or the model's only part), its materials as
+    {name: [prims bound to it, relative to that prim]} and {name: texture files}, and the
+    primvar its texture coordinates are in.
+    """
+    stage = Usd.Stage.Open(str(model(asset)))
     root = stage.GetDefaultPrim()
-    body = []
-    if variation:
-        # Poly Haven puts a set's variations side by side; keep one, moved to the origin, and
-        # deactivate the rest so no renderer loads them.
-        t = UsdGeom.Xformable(root.GetChild(variation)).GetLocalTransformation().ExtractTranslation()
-        body += [f"double3 xformOp:translate = ({-t[0]}, {-t[1]}, {-t[2]})",
-                 'uniform token[] xformOpOrder = ["xformOp:translate"]']
-        body += [f'over "{child.GetName()}" (\n    active = false\n)\n{{\n}}' for child in root.GetChildren()
-                 if child.IsA(UsdGeom.Xformable) and child.GetName() != variation]
+    if variation is None:
+        parts = [c.GetName() for c in root.GetChildren() if c.IsA(UsdGeom.Xformable)]
+        if len(parts) != 1:
+            raise ValueError(f"{asset} has {len(parts)} parts ({', '.join(parts)}): name the one to use")
+        variation = parts[0]
+    part = root.GetChild(variation)
+    bound, files = {}, {}
+    for prim in Usd.PrimRange(part):
+        targets = UsdShade.MaterialBindingAPI(prim).GetDirectBindingRel().GetTargets()
+        if targets:
+            name = targets[0].name
+            bound.setdefault(name, []).append(prim.GetPath().MakeRelativePath(part.GetPath()).pathString)
+            # Colour and cut-out only: their roughness maps are EXR, which Aurora can't read.
+            textures = _texture_files(stage.GetPrimAtPath(targets[0]))
+            files.setdefault(name, {k: v for k, v in textures.items() if k != "rough"})
     readers = [UsdShade.Shader(p).GetInput("varname") for p in stage.Traverse()
                if p.IsA(UsdShade.Shader) and UsdShade.Shader(p).GetIdAttr().Get() == "UsdPrimvarReader_float2"]
     varname = next((str(r.Get()) for r in readers if r and r.Get()), "st")
-    # One override per material, grouped by parent: a layer may hold each prim spec once.
-    groups: dict[str, list[str]] = {}
-    for material in (p for p in stage.Traverse() if p.IsA(UsdShade.Material)):
-        rel = material.GetPath().MakeRelativePath(root.GetPath()).pathString
-        at = f"{path}/{rel}"
-        groups.setdefault(rel.rpartition("/")[0], []).append(_nest([material.GetName()], f"""token outputs:mtlx:surface.connect = None
-token outputs:displacement.connect = None
-token outputs:surface.connect = <{at}/look.outputs:surface>
-{_preview(at, _texture_files(material), varname)}"""))
-    for parent, overs in groups.items():
-        body.append(_nest(parent.split("/") if parent else [], "\n".join(overs)))
-    leaf = path.rsplit("/", 1)[-1]
-    return f'def Xform "{leaf}" (\n    prepend references = @{file.as_posix()}@\n)\n{{\n' + _indent("\n".join(body)) + "\n}"
+    return part.GetPath().pathString, bound, files, varname
 
 
-def prototypes(root: str, items: dict[str, tuple[str, str | None]], hidden: bool = True) -> str:
-    """A layer for Inline USD: a Scope *root* holding one asset per item, ready to render.
+def _texture_shader(material: str, name: str, file: str, colour_space: str, output: str) -> str:
+    return f'''
+    def Shader "{name}"
+    {{
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @{file}@
+        token inputs:sourceColorSpace = "{colour_space}"
+        float2 inputs:st.connect = <{material}/st.outputs:result>
+        token inputs:wrapS = "repeat"
+        token inputs:wrapT = "repeat"
+        {output}
+    }}'''
 
-    *items* maps a name to (Poly Haven asset, variation to keep or None). Hidden, for
-    prototypes a Scatter Points copies; *hidden* False for props placed as they are.
+
+def _look(path: str, files: dict[str, str], varname: str = "st") -> str:
+    """A Material at *path*: a UsdPreviewSurface reading *files* (diffuse, rough, alpha)."""
+    name = path.rsplit("/", 1)[-1]
+    inputs = []
+    shaders = [f'''
+    def Shader "st"
+    {{
+        uniform token info:id = "UsdPrimvarReader_float2"
+        string inputs:varname = "{varname}"
+        float2 outputs:result
+    }}''']
+    if "diffuse" in files:
+        inputs.append(f"color3f inputs:diffuseColor.connect = <{path}/diffuse.outputs:rgb>")
+        shaders.append(_texture_shader(path, "diffuse", files["diffuse"], "sRGB", "color3f outputs:rgb"))
+    if "rough" in files:
+        inputs.append(f"float inputs:roughness.connect = <{path}/rough.outputs:r>")
+        shaders.append(_texture_shader(path, "rough", files["rough"], "raw", "float outputs:r"))
+    else:
+        inputs.append("float inputs:roughness = 0.75")
+    if "alpha" in files:
+        # A cut-out, not a see-through leaf: below the threshold is not drawn at all.
+        inputs += [f"float inputs:opacity.connect = <{path}/alpha.outputs:r>", "float inputs:opacityThreshold = 0.5"]
+        shaders.append(_texture_shader(path, "alpha", files["alpha"], "raw", "float outputs:r"))
+    body = "\n        ".join(inputs)
+    return f'''def Material "{name}"
+{{
+    token outputs:surface.connect = <{path}/surface.outputs:surface>
+
+    def Shader "surface"
+    {{
+        uniform token info:id = "UsdPreviewSurface"
+        {body}
+        token outputs:surface
+    }}''' + "".join(shaders) + "\n}"
+
+
+def looks_layer(root: str, looks: dict[str, tuple[dict[str, str], str]]) -> str:
+    """A layer for Inline USD: a Scope *root* of textured materials, {name: (files, uv primvar)}.
+
+    The one part of these examples that is plain USD. A texture wired into a material from
+    chunks (Preview Surface, UV Texture, Primvar Reader) doesn't reach the real shaders yet,
+    and a material needs that for its colour, roughness and leaf cut-out maps.
     """
-    protos = "\n".join(_prototype(f"{root}/{name}", asset, variation) for name, (asset, variation) in items.items())
-    if hidden:
-        protos = 'token visibility = "invisible"\n' + protos
     names = [p for p in root.split("/") if p]
-    return "#usda 1.0\n" + _nest(names[:-1], _nest(names[-1:], protos, "def Scope")) + "\n"
+    body = "\n\n".join(_look(f"{root}/{name}", files, varname) for name, (files, varname) in looks.items())
+    body = "\n".join("    " + line if line else line for line in body.split("\n"))
+    text = f'def Scope "{names[-1]}"\n{{\n{body}\n}}'
+    for name in reversed(names[:-1]):
+        text = f'over "{name}"\n{{\n' + "\n".join("    " + line if line else line for line in text.split("\n")) + "\n}"
+    return "#usda 1.0\n" + text + "\n"
 
 
-def ground_material(path: str, name: str) -> str:
-    """A layer for Inline USD: a Material at *path* with Poly Haven texture *name*, once per st unit.
+def texture_look(scene, upstream, path: str, name: str, prims: str):
+    """Chunks for Poly Haven texture *name* on *prims* (the ground, say): the material at *path*.
 
-    Aurora ignores a UsdTransform2d, so to make the texture repeat every few metres, build
-    the ground mesh small and scale it up with a Transform: its st stays in the small units.
+    It repeats once per unit of the mesh's own st. Aurora ignores a UsdTransform2d (UV
+    Transform), so to make it repeat every few metres, build the ground mesh small and scale
+    it up with a Transform: its st stays in the small units.
     """
-    files = texture(name)
-    names = [p for p in path.split("/") if p]
-    material = f'''token outputs:surface.connect = <{path}/look.outputs:surface>
-def Shader "look"
-{{
-    uniform token info:id = "UsdPreviewSurface"
-    color3f inputs:diffuseColor.connect = <{path}/diffuse.outputs:rgb>
-    float inputs:roughness.connect = <{path}/rough.outputs:r>
-    token outputs:surface
-}}
-def Shader "st"
-{{
-    uniform token info:id = "UsdPrimvarReader_float2"
-    string inputs:varname = "st"
-    float2 outputs:result
-}}'''
-    for shader, file, space, out in (("diffuse", files["diffuse"], "sRGB", "color3f outputs:rgb"),
-                                     ("rough", files["rough"], "raw", "float outputs:r")):
-        material += f'''
-def Shader "{shader}"
-{{
-    uniform token info:id = "UsdUVTexture"
-    asset inputs:file = @{file.as_posix()}@
-    token inputs:sourceColorSpace = "{space}"
-    float2 inputs:st.connect = <{path}/st.outputs:result>
-    token inputs:wrapS = "repeat"
-    token inputs:wrapT = "repeat"
-    {out}
-}}'''
-    return "#usda 1.0\n" + _nest(names[:-1], _nest(names[-1:], material, "def Material")) + "\n"
+    files = {key: file.as_posix() for key, file in texture(name).items()}
+    root, _, look = path.rpartition("/")
+    title = look.title().replace("_", "")
+    last = scene.create.inline_usd(upstream, name=f"{title}Look", code=looks_layer(root, {look: (files, "st")}))
+    return scene.create.bind_material(last, name=f"Bind{title}", material_path=path, primpath_location=prims)
+
+
+def add_models(scene, upstream, root: str, items: dict[str, tuple[str, str | None]], network_dir: Path,
+               hidden: bool = True, looks: str = "/looks"):
+    """Chunks that bring Poly Haven models in under *root*, ready to render. Returns the last.
+
+    *items* maps a name to (Poly Haven model, the variation to use, or None for a model of
+    one part). *network_dir* is the folder the network is saved in: file paths are written
+    relative to it, so the network keeps working when moved together with the assets.
+
+      Prim             a Scope at *root*, made invisible when *hidden* (prototypes that a
+                       Scatter Points copies, not things to render where they stand)
+      Reference        per item, the variation's prim (Import Prim Path), at <root>/<name>
+      Reset Transform  every variation at the origin: Poly Haven sets them side by side
+      Inline USD       the looks, a UsdPreviewSurface per material from the model's own
+                       textures (see looks_layer), under *looks*. Their own MaterialX renders black in
+                       Storm and crashes Aurora, so the Reference leaves it out.
+      Bind Material    per look, onto the meshes and face subsets the model bound it to.
+                       Weaker than Descendants, so a face subset (a fir's twigs) keeps its
+                       own look rather than the mesh's (the bark).
+    """
+    last = scene.create.prim(upstream, name=f"{root.rsplit('/', 1)[-1].title()}Root", primpath_location=root,
+                             prim_type="Scope")
+    if hidden:
+        last = scene.create.property_editor(last, name="HidePrototypes", prim=root, edits='visibility = "invisible"')
+    materials, binds = {}, {}
+    for name, (asset, variation) in items.items():
+        part, bound, files, varname = _read_model(asset, variation)
+        file = Path(os.path.relpath(model(asset), network_dir)).as_posix()
+        last = scene.create.reference(last, name=name.title().replace("_", ""), file_path=file,
+                                      import_primpath=part, primpath_location=f"{root}/{name}")
+        for look, prims in bound.items():
+            materials[look] = (files[look], varname)
+            binds.setdefault(look, []).extend(f"{root}/{name}" + ("" if p == "." else f"/{p}") for p in prims)
+    last = scene.create.reset_transform(last, name="ToOrigin", prim_path=",".join(f"{root}/{n}" for n in items))
+    last = scene.create.inline_usd(last, name="ModelLooks", code=looks_layer(looks, materials))
+    for look, prims in binds.items():
+        last = scene.create.bind_material(last, name=f"Bind_{look}", material_path=f"{looks}/{look}",
+                                          primpath_location=",".join(prims), strength="Weaker than Descendants")
+    return last
 
 
 def aurora_settings(path: str = "/Render/aurora", samples: int = 128) -> str:
-    """A layer for Inline USD: RenderSettings that stop Aurora after *samples*, denoised."""
-    names = [p for p in path.split("/") if p]
-    settings = f"""int aurora:max_samples = {samples}
-bool aurora:is_denoising_enabled = 1
-bool aurora:use_environment_image_as_background = 1"""
-    return "#usda 1.0\n" + _nest(names[:-1], _nest(names[-1:], settings, "def RenderSettings"), "def Scope") + "\n"
+    """A session layer for usdrecord: RenderSettings that stop Aurora after *samples*, denoised."""
+    scope, _, name = path.strip("/").rpartition("/")
+    return f"""#usda 1.0
+def Scope "{scope}"
+{{
+    def RenderSettings "{name}"
+    {{
+        int aurora:max_samples = {samples}
+        bool aurora:is_denoising_enabled = 1
+        bool aurora:use_environment_image_as_background = 1
+    }}
+}}
+"""
 
 
 def render_params(out: Path, samples: int = 128) -> dict:

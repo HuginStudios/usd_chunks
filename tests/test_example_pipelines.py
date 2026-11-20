@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from pxr import Sdr, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdr, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from usd_chunks import Scene
 
@@ -114,8 +114,16 @@ def test_urdf_robot_arrives_as_an_articulated_physics_rig(urdf) -> None:
     assert len(revolute) == 6, "the SO-101 has six moving joints, gripper included"
     assert stage.GetPrimAtPath("/World/physicsScene").IsA(UsdPhysics.Scene)
     assert stage.GetPrimAtPath("/World/anchor").IsA(UsdPhysics.FixedJoint)
+    assert stage.GetPrimAtPath("/World/anchor").GetRelationship("physics:body1").GetTargets() == [
+        "/World/so101/base_link"]
     assert stage.GetPrimAtPath("/World/floor").HasAPI(UsdPhysics.CollisionAPI)
     assert _bound_material(stage, "/World/floor") == "/World/looks/concrete"
+    block = stage.GetPrimAtPath("/World/block")
+    for api in (UsdPhysics.RigidBodyAPI, UsdPhysics.CollisionAPI, UsdPhysics.MeshCollisionAPI, UsdPhysics.MassAPI):
+        assert block.HasAPI(api), api
+    assert UsdPhysics.MeshCollisionAPI(block).GetApproximationAttr().Get() == "convexHull"
+    assert UsdPhysics.MassAPI(block).GetMassAttr().Get() == pytest.approx(0.02)
+    assert _bound(stage, "/World/block").GetMin()[2] == pytest.approx(0.0, abs=1e-6), "the block sits on the floor"
 
 
 @needs_so101
@@ -126,7 +134,7 @@ def test_urdf_drives_hold_the_pose_they_target(urdf) -> None:
     assert wrist.GetAttribute("drive:angular:physics:stiffness").Get() == pytest.approx(40.0)
     jaw = _bound(stage, "/World/so101/moving_jaw_so101_v1_link")
     assert jaw.GetMin()[2] > 0.0, "the posed arm reaches down to the block without going through the floor"
-    _reopens_as_chunks(urdf / "urdf_network.usda", "Pose", "Render")
+    _reopens_as_chunks(urdf / "urdf_network.usda", "Pose", "PhysicsScene", "Anchor", "Colliders", "Render")
 
 
 # ---------------------------------------------------------------------------
@@ -142,13 +150,17 @@ def test_forest_scatters_every_layer_from_real_assets(tmp_path_factory) -> None:
     for layer in ("trees", "deadwood", "undergrowth", "grass"):
         ids = UsdGeom.PointInstancer(stage.GetPrimAtPath(f"/forest/{layer}")).GetProtoIndicesAttr().Get()
         assert ids, f"nothing was scattered in {layer}"
-    # The prototypes render with the preview network written for them, not Poly Haven's MaterialX.
-    twigs = UsdShade.Material(stage.GetPrimAtPath("/protos/fir_a/_materials/fir_sapling_twigs"))
-    source = twigs.GetSurfaceOutput().GetConnectedSources()[0][0].source
-    assert source.GetPath() == "/protos/fir_a/_materials/fir_sapling_twigs/look"
-    assert not stage.GetPrimAtPath("/protos/fir_a/fir_sapling_b").IsActive(), "only one variation is kept"
+    # One variation per Reference, at the origin, without Poly Haven's MaterialX.
+    fir = stage.GetPrimAtPath("/protos/fir_b")
+    assert [c.GetName() for c in fir.GetChildren()] == ["Cylinder_069"], "only fir_sapling_b's mesh"
+    assert UsdGeom.Xformable(fir).GetLocalTransformation() == Gf.Matrix4d(1), "moved back to the origin"
+    assert not any(p.IsA(UsdShade.Material) for p in Usd.PrimRange(stage.GetPrimAtPath("/protos")))
+    # The mesh is bark, and its twig face subset keeps the twigs: the binding is weaker than the subset's.
+    assert _bound_material(stage, "/protos/fir_b/Cylinder_069") == "/looks/fir_sapling_branches"
+    assert _bound_material(stage, "/protos/fir_b/Cylinder_069/fir_sapling_twigs") == "/looks/fir_sapling_twigs"
     assert _bound_material(stage, "/ground") == "/looks/forest_floor"
-    _reopens_as_chunks(out / "forest_network.usda", "Trees", "Grass", "Render")
+    _reopens_as_chunks(out / "forest_network.usda", "FirA", "ToOrigin", "Bind_fir_sapling_twigs", "Trees", "Grass",
+                       "Render")
 
 
 # ---------------------------------------------------------------------------

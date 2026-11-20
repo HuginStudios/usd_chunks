@@ -10,8 +10,10 @@
   Pose Articulation  one slider per moving joint, named after the link it moves; it also
                      sets each joint drive's target angle
   Property Editor    a stiffness on those drives, so a simulator holds the pose
-  Inline USD         a PhysicsScene (gravity), a fixed joint bolting the base to the world,
-                     a floor that is a collider, and a block to pick up
+  Prim               a PhysicsScene (gravity), and a fixed joint bolting the base to the
+                     world (Property Editor sets the joint's body)
+  Mesh               a textured floor, and a block to pick up
+  Apply Schema       the floor and the block collide; the block is a rigid body with a mass
   lights, camera
   Render             writes urdf_render.png: Aurora when it is installed, else Storm
 
@@ -40,49 +42,6 @@ OUT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else HERE / "out"
 JOINTS = {"shoulder_link": "shoulder_pan", "upper_arm_link": "shoulder_lift", "lower_arm_link": "elbow_flex",
           "wrist_link": "wrist_flex", "gripper_link": "wrist_roll", "moving_jaw_so101_v1_link": "gripper"}
 
-WORLD = """#usda 1.0
-over "World"
-{
-    def PhysicsScene "physicsScene"
-    {
-        vector3f physics:gravityDirection = (0, 0, -1)
-        float physics:gravityMagnitude = 9.81
-    }
-
-    # Bolt the base to the world (body0 left empty), as a bench arm is. Leave it out for a
-    # mobile robot.
-    def PhysicsFixedJoint "anchor"
-    {
-        rel physics:body1 = </World/so101/base_link>
-    }
-
-    # The floor the Mesh chunk below builds, made a collider.
-    over "floor" (
-        prepend apiSchemas = ["PhysicsCollisionAPI"]
-    )
-    {
-    }
-
-    # A 3 cm block in reach, a rigid body the gripper can push or pick up.
-    # A moving mesh collides as its convex hull: PhysX takes no triangle mesh on a dynamic body.
-    def Mesh "block" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysicsMassAPI"]
-    )
-    {
-        uniform token physics:approximation = "convexHull"
-        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
-        int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 0, 4, 5, 1, 2, 3, 7, 6, 0, 2, 6, 4, 1, 5, 7, 3]
-        point3f[] points = [(-0.015, -0.015, 0), (0.015, -0.015, 0), (-0.015, 0.015, 0), (0.015, 0.015, 0),
-                            (-0.015, -0.015, 0.03), (0.015, -0.015, 0.03), (-0.015, 0.015, 0.03), (0.015, 0.015, 0.03)]
-        color3f[] primvars:displayColor = [(0.05, 0.25, 0.7)]
-        float physics:mass = 0.02
-        double3 xformOp:translate = (0.3, 0.17, 0)
-        float3 xformOp:rotateXYZ = (0, 0, 25)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
-    }
-}
-"""
-
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     # Relative to the network file, as USD paths are, so the network keeps working if moved
@@ -96,18 +55,41 @@ if __name__ == "__main__":
         # URDF has no joint stiffness, only damping, so the drives Pose sets a target on would
         # hold nothing in a simulator: give them a spring to hold the pose with.
         joints = ",".join(f"/World/so101/{link}/joint_{joint}" for link, joint in JOINTS.items())
-        last = scene.create.property_editor(last, prim=joints, edits="float drive:angular:physics:stiffness = 40")
-        last = scene.create.inline_usd(last, name="World", code=WORLD)
+        last = scene.create.property_editor(last, name="Stiffness", prim=joints,
+                                            edits="float drive:angular:physics:stiffness = 40")
 
-        # A concrete floor that is also the collider: 4 m, built 8 units wide and scaled by
-        # half, so its texture repeats every 0.5 m (see example_assets.ground_material).
+        # The physics scene: gravity, at its default, 9.81 m/s² down the stage's up axis.
+        last = scene.create.prim(last, name="PhysicsScene", primpath_location="/World/physicsScene",
+                                 prim_type="PhysicsScene")
+        # Bolt the base to the world, as a bench arm is: a fixed joint with body0 left empty.
+        # Leave these two out for a mobile robot.
+        last = scene.create.prim(last, name="Anchor", primpath_location="/World/anchor", prim_type="PhysicsFixedJoint")
+        last = scene.create.property_editor(last, name="AnchorBase", prim="/World/anchor",
+                                            edits='physics:body1 = "/World/so101/base_link"')
+
+        # A concrete floor: 4 m, built 8 units wide and scaled by half, so its texture repeats
+        # every 0.5 m (see example_assets.texture_look).
         last = scene.create.mesh(last, prim_path="/World/floor", mesh_type="grid", dimx1=2, dimy1=2,
                                  width1=8.0, height2=8.0)
         last = scene.create.transform(last, primpath_location="/World/floor", sx=0.5, sy=0.5)
-        last = scene.create.inline_usd(last, name="Concrete",
-                                       code=assets.ground_material("/World/looks/concrete", "concrete_floor_02"))
-        last = scene.create.bind_material(last, material_path="/World/looks/concrete",
-                                          primpath_location="/World/floor")
+        last = assets.texture_look(scene, last, "/World/looks/concrete", "concrete_floor_02", "/World/floor")
+
+        # A 3 cm block in reach, a rigid body the gripper can push or pick up.
+        last = scene.create.mesh(last, prim_path="/World/block", mesh_type="cube", width=0.03, height=0.03,
+                                 depth=0.03)
+        last = scene.create.transform(last, primpath_location="/World/block", tx=0.3, ty=0.17, tz=0.015,
+                                      rz=25.0)
+        last = scene.create.set_display_color(last, prim_path="/World/block", color_r=0.05, color_g=0.25,
+                                              color_b=0.7)
+        # The floor and the block collide. The block also moves (a rigid body) and weighs 20 g.
+        last = scene.create.apply_schema(last, name="Colliders", prim="/World/floor,/World/block",
+                                         schemas="PhysicsCollisionAPI")
+        for schema in ("PhysicsRigidBodyAPI", "PhysicsMeshCollisionAPI", "PhysicsMassAPI"):
+            last = scene.create.apply_schema(last, name=schema.removeprefix("Physics").removesuffix("API"),
+                                             prim="/World/block", schemas=schema)
+        # A moving mesh collides as its convex hull: PhysX takes no triangle mesh on a moving body.
+        last = scene.create.property_editor(last, name="BlockPhysics", prim="/World/block",
+                                            edits='physics:approximation = "convexHull"\nphysics:mass = 0.02')
 
         # Normalize makes Intensity the light that lands, not the brightness of the sun's disc.
         sun = scene.create.distant_light(last, primpath_location="/World/sun", intensity=3.0, normalize=True)

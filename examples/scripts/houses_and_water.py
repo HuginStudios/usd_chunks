@@ -49,9 +49,7 @@ if __name__ == "__main__":
         last = scene.create.mesh(last, prim_path="/World/ground", mesh_type="grid", dimx1=2, dimy1=2,
                                  width1=30.0, height2=30.0)
         last = scene.create.transform(last, primpath_location="/World/ground", sx=2.0, sz=2.0)
-        last = scene.create.inline_usd(last, name="Lawn",
-                                       code=assets.ground_material("/World/looks/lawn", "grass_path_2"))
-        last = scene.create.bind_material(last, material_path="/World/looks/lawn", primpath_location="/World/ground")
+        last = assets.texture_look(scene, last, "/World/looks/lawn", "grass_path_2", "/World/ground")
 
         # One chunk type, three houses: each is its own node with its own values.
         x = -9.0

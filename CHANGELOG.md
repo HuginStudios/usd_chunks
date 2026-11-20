@@ -17,8 +17,12 @@ This file starts with the first release; development before that is in the commi
   Isaac Sim, a batch over an asset library, a forest scattered from Poly Haven assets, a
   block that breaks as it lands, and houses with a water sim. Each saves its network and
   exports plain USD; all but the batch render an image, in Aurora when it is installed.
-  `examples/scripts/example_assets.py` fetches the free assets they use (Poly Haven, CC0;
-  SO-ARM100, Apache 2.0) once, and makes Poly Haven's plants render in Storm and Aurora.
+  They are built from chunks: models come in through Reference, Reset Transform and Bind
+  Material, and the robot's physics scene and colliders through Prim, Apply Schema and
+  Property Editor. `examples/scripts/example_assets.py` fetches the free assets they use
+  (Poly Haven, CC0; SO-ARM100, Apache 2.0) once, and gives Poly Haven's models materials
+  that render in Storm and Aurora. Needs the Prim, Property Editor and Bind Material changes
+  below.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

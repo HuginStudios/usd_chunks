@@ -5,7 +5,8 @@
   Stage Settings   Z up, metres, frames 1-60
   Mesh (grid)      a concrete yard, textured (Poly Haven; fetched the first time, see
                    example_assets.py)
-  Inline USD       props for scale: road barriers and barrels, placed with Transforms
+  Reference ...    props for scale: road barriers and barrels (example_assets.add_models),
+                   placed with Transforms
   Mesh (Cube)      the source block, 1 m, 5 m up and tipped onto a corner, in rock
   Fracture         breaks it in advance into a tree of pieces that fit together exactly:
                    rock on the outside, a paler stone on the cuts
@@ -49,20 +50,16 @@ if __name__ == "__main__":
         last = scene.create.mesh(last, prim_path="/World/ground", mesh_type="grid", dimx1=2, dimy1=2,
                                  width1=12.0, height2=12.0)
         last = scene.create.transform(last, primpath_location="/World/ground", sx=2.0, sy=2.0)
-        last = scene.create.inline_usd(last, name="Concrete",
-                                       code=assets.ground_material("/World/looks/concrete", "concrete_floor_02"))
-        last = scene.create.bind_material(last, material_path="/World/looks/concrete",
-                                          primpath_location="/World/ground")
+        last = assets.texture_look(scene, last, "/World/looks/concrete", "concrete_floor_02", "/World/ground")
 
-        last = scene.create.inline_usd(last, name="Props", code=assets.prototypes("/World/props", PROPS, hidden=False))
+        last = assets.add_models(scene, last, "/World/props", PROPS, OUT, hidden=False, looks="/World/looks")
         for name, (x, y, turn) in PLACES.items():
             last = scene.create.transform(last, primpath_location=f"/World/props/{name}", tx=x, ty=y, rz=turn)
 
         # The source block: a 1 m cube (its bottom on its origin), up in the air, on a corner.
         last = scene.create.cube(last, prim_path="/World/block", width=1.0)
         last = scene.create.transform(last, primpath_location="/World/block", tz=5.0, rx=35.0, ry=25.0)
-        last = scene.create.inline_usd(last, name="Rock", code=assets.ground_material("/World/looks/rock", "rock_boulder_dry"))
-        last = scene.create.bind_material(last, material_path="/World/looks/rock", primpath_location="/World/block")
+        last = assets.texture_look(scene, last, "/World/looks/rock", "rock_boulder_dry", "/World/block")
         last = scene.create.preview_surface(last, mat_path="/World/looks/cut", primpath_location="",
                                             diffuse_color=(0.5, 0.47, 0.42), roughness=0.9)
 

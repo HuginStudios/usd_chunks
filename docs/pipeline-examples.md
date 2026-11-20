@@ -48,11 +48,22 @@ at once (about 230 MB), or to keep it somewhere else:
 USD_CHUNK_EXAMPLE_ASSETS=D:/assets/examples python examples/scripts/example_assets.py
 ```
 
-`example_assets.py` also makes Poly Haven's models render. Their USD files come from
-Blender, with MaterialX networks that Storm draws black and that crash Aurora, and preview
-networks without the leaf cut-outs. `prototypes()` writes each asset as a reference with a
-plain UsdPreviewSurface made from its own textures, keeps one variation of a set (Poly Haven
-puts them side by side), and hands that to Inline USD.
+**Chunks, not USD code.** The scripts build everything with chunks, so each step is a node
+you can open, change and rewire. `example_assets.py` adds the chunks that bring a Poly Haven
+model in, since four scripts share them. `add_models()` adds, per model:
+
+- a **Reference** that imports one variation (Import Prim Path), since Poly Haven keeps a
+  set's variations side by side in one file;
+- one **Reset Transform** that puts them all at the origin;
+- one **Bind Material** per material, set to Weaker than Descendants so that a face subset
+  (a fir's twigs) keeps its own material and doesn't get the mesh's (the bark).
+
+The materials are the one piece still written as USD, in an Inline USD chunk. Poly Haven's
+own MaterialX renders black in Storm and crashes Aurora, so each model gets a plain
+UsdPreviewSurface made from its own textures. A texture wired into a material from chunks
+(Preview Surface, UV Texture, Primvar Reader) doesn't reach the real shaders yet, and
+these materials need their colour, roughness and leaf cut-out maps. `texture_look()` does the
+same for a ground texture.
 
 **Optional libraries.** Some chunks need a library the first time they cook: CAD Import
 needs `cadquery-ocp`, Fracture `manifold3d`, the RBD Solver `mujoco`, Particle Solver
@@ -178,8 +189,10 @@ python examples/scripts/urdf_to_isaac.py
 ```
 
 ```
-Stage Settings (Z up) → URDF Import → Pose Articulation → Property Editor → Inline USD
-  → Mesh (floor) → Transform → Inline USD → Bind Material → lights → Camera → Render
+Stage Settings (Z up) → URDF Import → Pose Articulation → Property Editor (stiffness)
+  → Prim (PhysicsScene) → Prim (PhysicsFixedJoint) → Property Editor (its body)
+  → Mesh (floor) → Transform → material → Mesh (block) → Transform → Set Display Color
+  → Apply Schema × 4 → Property Editor (convex hull, mass) → lights → Camera → Render
 ```
 
 The robot is the [SO-101](https://github.com/TheRobotStudio/SO-ARM100), an open 6-axis arm
@@ -197,9 +210,15 @@ What the example adds for a simulator:
 - **Stiffness on the drives.** URDF carries joint damping but no stiffness, so a drive would
   hold nothing. A Property Editor sets `float drive:angular:physics:stiffness = 40` on the
   six joints.
-- **A physics scene, a fixed joint** bolting the base to the world, a block to pick up and a
-  collider on the floor, written as plain USD with Inline USD. Leave the fixed joint out for
-  a mobile robot.
+- **A physics scene**: a Prim of type `PhysicsScene`. Gravity is at its default, 9.81 m/s²
+  down the stage's up axis.
+- **A fixed joint** bolting the base to the world: a Prim of type `PhysicsFixedJoint`, and a
+  Property Editor that sets its `physics:body1` to the base link. Leave both out for a
+  mobile robot.
+- **A floor and a block that collide.** Apply Schema gives both `PhysicsCollisionAPI`, and
+  the block `PhysicsRigidBodyAPI`, `PhysicsMeshCollisionAPI` and `PhysicsMassAPI`. A
+  Property Editor sets its mass, 20 g, and makes it collide as its convex hull: PhysX takes
+  no triangle mesh on a moving body.
 
 Open `out/so101_scene.usda` in Isaac Sim and press Play. Try another pose without opening
 anything:
@@ -255,9 +274,9 @@ firs on the noise, logs, stumps and rocks near the trees, shrubs and nettles und
 grass out in the open. Every layer reads the one before through Grow Near, so there is no
 field to paint.
 
-- The prototypes are Poly Haven assets, written by `example_assets.prototypes()` into one
-  Inline USD under `/protos`, hidden. Each layer lists its prototypes with a weight and a
-  scale: a young fir is 1.2 m, scaled 3.5 to 6 times.
+- The prototypes are Poly Haven models under `/protos`, hidden, brought in by
+  `example_assets.add_models()` (see Assets above). Each layer lists its prototypes with a
+  weight and a scale: a young fir is 1.2 m, scaled 3.5 to 6 times.
 - The forest floor is a texture on an 80 m grid. Aurora ignores a UsdTransform2d, so the
   grid is built 32 units wide and scaled 2.5 times: the texture repeats every 2.5 m.
 - Instanced triangles add up: 220 firs of 150,000 triangles each is 34 million. Scatter
@@ -281,8 +300,8 @@ python examples/scripts/boom.py
 ```
 
 ```
-Stage Settings → Mesh (yard) → Inline USD (props) → Transforms → Cube → Transform
-  → materials → Fracture → RBD Solver → lights → Camera → Render
+Stage Settings → Mesh (yard) → material → References (props) → Transforms → Cube
+  → Transform → materials → Fracture → RBD Solver → lights → Camera → Render
 ```
 
 A 1 m stone block is dropped from 5 m into a concrete yard, by Poly Haven road barriers and
