@@ -4068,7 +4068,7 @@ def config():
         # param's default, so its layout doesn't move on reopen).
         new_values={"sampling": "Tiles"},
         description=(
-            "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
+            "Scatters rocks, trees, grass or any prototypes across a mesh as a PointInstancer.\n"
             "\n"
             "Prototypes are a list: each row takes a prim (globs and %collection allowed), a share of the mix\n"
             "as a percentage, and its own scale multiplier. A variant selection can be written\n"

@@ -4077,10 +4077,23 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
                             # (the bookkeeping layer, session by default) -- so every edit
                             # after the first landed in a weaker layer than the value it was
                             # meant to replace, and a vector never changed again.
-                            home = chunk_utils.get_attr_home_layer(usd_attr) or chunk_utils.get_bookkeeping_layer(
-                                stage, self.get_chunk()
-                            )
-                            if not is_expr:
+                            home = chunk_utils.get_attr_home_layer(usd_attr)
+                            if home is None and usd_attr.GetPrim().GetTypeName() != chunk_naming.CHUNK_PRIM_TYPENAME:
+                                # Still bound straight to the prim it shows (show_attribute: a
+                                # Light's colour set at create, before it is promoted to drive
+                                # the light): the chunk's own layer, where its cook authors
+                                # that prim. The bookkeeping layer is the network's root,
+                                # stronger than every chunk, so the chunk could never change
+                                # the value again.
+                                home = self.get_edit_context()
+                                if home is None or not stage.HasLocalLayer(home):
+                                    home = None
+                                    usd_attr = None
+                            elif home is None:
+                                home = chunk_utils.get_bookkeeping_layer(stage, self.get_chunk())
+                            if not usd_attr:
+                                pass  # no layer of this stage to write it in: see above
+                            elif not is_expr:
                                 current = usd_attr.Get(0)
                                 if current != val:
                                     with chunk_utils.edit_context_for(stage, self._var_selections, home):

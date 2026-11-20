@@ -353,14 +353,26 @@ def _author_inertial(prim, link, scale):
     mass_api = UsdPhysics.MassAPI.Apply(prim)
     if (mass := inertial.find("mass")) is not None:
         mass_api.CreateMassAttr(float(mass.get("value", 0.0)))
-    position, _ = _origin(inertial)
+    position, rotation = _origin(inertial)
     mass_api.CreateCenterOfMassAttr(Gf.Vec3f(*[float(v) for v in position * scale]))
     if (inertia := inertial.find("inertia")) is not None:
-        mass_api.CreateDiagonalInertiaAttr(Gf.Vec3f(
-            float(inertia.get("ixx", 0.0)),
-            float(inertia.get("iyy", 0.0)),
-            float(inertia.get("izz", 0.0)),
-        ))
+        # URDF gives the whole tensor, in the inertial frame. UsdPhysics wants its principal
+        # moments and the rotation to them, in the link's frame, both authored or neither.
+        # Inertia is mass times length squared, so it scales with the square of Scale.
+        def term(name):
+            return float(inertia.get(name, 0.0))
+
+        tensor = np.array([[term("ixx"), term("ixy"), term("ixz")],
+                           [term("ixy"), term("iyy"), term("iyz")],
+                           [term("ixz"), term("iyz"), term("izz")]])
+        turn = np.array(Gf.Matrix3d(rotation))  # rows: the inertial frame's axes in the link
+        tensor = turn.T @ tensor @ turn * (scale * scale)
+        moments, axes = np.linalg.eigh(tensor)  # columns: the principal axes in the link
+        if np.linalg.det(axes) < 0.0:
+            axes[:, 2] *= -1.0  # a rotation, not a reflection
+        mass_api.CreateDiagonalInertiaAttr(Gf.Vec3f(*[float(m) for m in moments]))
+        principal = Gf.Matrix3d(*[float(v) for v in axes.T.flatten()]).ExtractRotation().GetQuat()
+        mass_api.CreatePrincipalAxesAttr(Gf.Quatf(principal))
 
 
 def _author_joint(stage, joint, parent_path, child_path, scale):

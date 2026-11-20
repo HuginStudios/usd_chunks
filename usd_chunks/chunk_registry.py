@@ -1332,6 +1332,8 @@ class ChunkModule:
         self.module_file = Path(module_file)
 
         self.loaded = False
+        #: Why the last load failed (a missing package, an import error), None once it loads.
+        self.load_error: str | None = None
         # self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
         self.func: Callable[[], core.ChunkBase | list[core.ChunkBase]] | None = None
 
@@ -1475,8 +1477,11 @@ class ChunkModule:
 
         try:
             self.func = getattr(self.module, "main")
-        except Exception:
+        except Exception as exc:
             # This module failed to load. Set to file_name so we can try loading it again later
+            # Kept for whoever asks what the chunk takes (usdchunks show), so it can say why not.
+            self.load_error = (f"it needs {', '.join(missing)}, which is not installed" if missing
+                               else f"{type(exc).__name__}: {exc}")
             if missing:
                 # The import of what was declined is what failed: say that, not the
                 # traceback -- install_packages has already said how to install it.
@@ -1500,6 +1505,7 @@ class ChunkModule:
             return False
 
         self.loaded = True
+        self.load_error = None
         return True
 
     def load(self) -> Sequence[core.ChunkBase]:

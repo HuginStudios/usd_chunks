@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pxr import Gf, UsdGeom
 
-from usd_chunks import Scene
+from usd_chunks import Scene, chunk, cook_cache, open_cache
 
 
 def _range(stage, path):
@@ -59,3 +59,24 @@ def test_its_entries_do_not_shadow_meshs() -> None:
         stage = scene.get_stage()
         assert stage.GetPrimAtPath("/World/mesh_box").GetTypeName() == "Mesh"
         assert stage.GetPrimAtPath("/World/usd_box").GetTypeName() == "Cube"
+
+
+@pytest.mark.parametrize("entry, shown, hidden", [
+    ("usd_cube", {"cube"}, {"axis", "sphere", "round", "plane"}),
+    ("usd_cylinder", {"round", "axis"}, {"cube", "sphere", "plane"}),
+])
+def test_a_reopened_shape_shows_its_own_params(tmp_path, monkeypatch, entry, shown, hidden) -> None:
+    # A reopened USD Cube showed Axis and hid its Size. With the open cache on, as it is for
+    # users, a reopened chunk's result is read back and execute() never runs, and a restored
+    # value sends no change: nothing put the params back.
+    monkeypatch.setenv(open_cache.ENV, "1")
+    monkeypatch.setenv(cook_cache.ENV, "1")
+    monkeypatch.setenv(cook_cache.ENV_DIR, str(tmp_path / "cache"))
+    path = str(tmp_path / "shape.usda")
+    scene = Scene.new(path=path)
+    made = getattr(scene.create, entry)(name="Shape")
+    scene.set_output(made)
+    scene.save(path)
+    reopened = Scene.open(path).get_chunk("Shape")
+    visible = {p.name for p in reopened.get_my_params() if not p.has_state(chunk.ChunkFlags.State.HIDDEN)}
+    assert shown <= visible and not (hidden & visible), visible
