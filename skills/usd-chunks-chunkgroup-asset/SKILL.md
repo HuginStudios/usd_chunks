@@ -114,6 +114,9 @@ with Scene.open("shot.usda") as scene:
   reference" is expected: the network's chunks point at scene prims like `/post/geo`, which
   live outside `/chunks`. The asset still cooks.
 
+To make it a **style** (a look put on whatever object is picked, listed in the Styles menu),
+write its prim paths against `/` and save it into a `styles` folder: see `docs/styles.md`.
+
 ## 6. Hand it over
 
 Tell the user the file path, the group's description, and each lofted param with its

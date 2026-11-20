@@ -20,6 +20,11 @@ This file starts with the first release; development before that is in the commi
 - Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
   Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
   tints the band so you can see it.
+- Styles: ready-made looks you put on an object in one go. Select a mesh, open the node
+  graph's Styles menu and click a picture (or pick one under Styles in the Tab menu). Four
+  come with usd_chunks: Worn Paint, Dirty Stone, Rubble and Hanging Vines. Each is a saved
+  network in a `styles` folder, so you can make your own; see [Styles](docs/styles.md).
+- Edge Field's Width is a handle in the viewport: pick the mesh and drag it.
 - Edge Field chunk: marks the sharp edges or the inner corners of meshes. Use it as a Scatter
   Points' Density Field to drop rubble along edges, or read it in a material for worn paint
   or dirt in corners. Multiply With a Noise Field breaks it into patches; Show Field tints it.
@@ -41,6 +46,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A ChunkGroup file referenced into a graph that already had chunks kept its lofted params
+  at their defaults in usdview (Scatter On Terrain came in at Density 0).
+- A Reference with a Location that hosts a network no longer turns the prim at that
+  Location into an Xform, and no longer opens the network as a tab of its own.
+- A Scatter's prototype rows inside a referenced network now find their prims under the
+  Reference's Location.
+- Vine keeps the vines on the surface when its Vine Path is under a moved prim.
 - Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
   its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
   of that ground. A fence covers no ground from above, so a fenced yard still fills.

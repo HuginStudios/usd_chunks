@@ -63,16 +63,18 @@ def style_dirs() -> list[Path]:
     """The folders styles are found in, first wins on a duplicate name.
 
     Returns:
-        Each USD_CHUNK_STYLE_DIRS folder, then the ``styles`` folder of each chunk folder
-        the registry searched, those that exist.
+        Each USD_CHUNK_STYLE_DIRS folder, then the ``styles`` folder of each chunk folder on
+        USD_CHUNK_DIRS (the bundled chunks included) and of any other the registry searched,
+        those that exist.
     """
     found: list[Path] = []
     extra = [Path(p) for p in os.environ.get(STYLE_DIRS_ENV, "").split(os.pathsep) if p.strip()]
-    # The folders the registry searched; before it has searched any (a script that has made no
-    # Scene yet), the ones it will search.
-    searched = sorted(getattr(chunk_registry.ChunkRegistry, "registered_directories", set()), key=str) \
-        or [Path(d) for d in chunk_registry.USD_CHUNK_DIRS()]
-    for folder in extra + [Path(d) / STYLE_FOLDER for d in searched]:
+    # The chunk folders in USD_CHUNK_DIRS order, then any other the registry searched (the
+    # marketplace's): the registry keeps its folders as a set, which has no order.
+    searched = [Path(os.path.abspath(d)) for d in chunk_registry.USD_CHUNK_DIRS()]
+    searched += sorted((Path(d) for d in getattr(chunk_registry.ChunkRegistry, "registered_directories", set())
+                        if Path(d) not in searched), key=str)
+    for folder in extra + [d / STYLE_FOLDER for d in searched]:
         folder = folder.resolve()
         if folder.is_dir() and folder not in found:
             found.append(folder)

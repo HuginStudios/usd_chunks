@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import shutil
 
 import numpy as np
@@ -192,3 +193,14 @@ def test_a_style_has_a_handle_on_the_object_for_its_width():
 
         assert dirt.get_param("width").value == pytest.approx(0.5)
         assert (_primvar(stage, "/steps", "dirt") > 0).mean() > before
+
+
+def test_an_earlier_chunk_folder_wins_on_a_style_name(tmp_path, monkeypatch):
+    for name in ("b_first", "a_second"):
+        (tmp_path / name / "styles").mkdir(parents=True)
+        (tmp_path / name / "styles" / "mossy.usda").write_text("#usda 1.0\n")
+    monkeypatch.setenv("USD_CHUNK_DIRS", os.pathsep.join(str(tmp_path / n) for n in ("b_first", "a_second")))
+
+    [mossy] = [s for s in styles.find_styles() if s.name == "mossy"]
+
+    assert mossy.path.parent.parent.name == "b_first", "USD_CHUNK_DIRS order, not A-Z"
