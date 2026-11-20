@@ -42,7 +42,7 @@ network can rebuild a thousand assets on a farm.
 Built for anyone whose pipeline runs on USD:
 
 - **Manufacturing and automotive:** CAD turned into structured, simulation-ready USD
-  ([CAD Import](chunks/modelling/cad_import.py)).
+  ([CAD Import](chunks/modelling/cad_import.py): STEP, IGES and DXF).
 - **Robotics and AI simulation:** [physics solves](chunks/dynamics/rbd_solver.py) and
   synthetic training data, with [Wedge](chunks/core/wedge.py) variations written out as
   [KITTI datasets](chunks/datasets/kitti_writer.py).
