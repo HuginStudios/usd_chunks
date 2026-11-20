@@ -1557,10 +1557,14 @@ def _articulated_steps(
 def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarray | None:
     """One prototype's mesh vertices, for its convex-hull collider (extracted once).
 
-    Points are gathered in the prototype's world-bound space -- the same space the
-    caller measures proto extent/centre in -- so per-instance scaling stays
-    consistent with the sphere/box path. Subsampled to *cap* points to keep the
-    per-asset hull build cheap. Returns None if the prototype has no mesh data.
+    Points are gathered relative to the prototype's PARENT -- its own transform included,
+    everything above it left out. That is the space a PointInstancer places a prototype in,
+    and the space the caller measures proto extent/centre in (ComputeLocalBound), so
+    per-instance scaling stays consistent with the sphere/box path. World space would bake
+    the instancer's own transform into every hull: under a moved instancer each collider
+    then sits that far from its instance, and the instances fall through what they land on.
+    Subsampled to *cap* points to keep the per-asset hull build cheap. Returns None if the
+    prototype has no mesh data.
     """
     if _np is None or not proto_path:
         return None
@@ -1568,13 +1572,14 @@ def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarr
     if not proto_prim:
         return None
     xc = UsdGeom.XformCache()
+    parent = proto_prim.GetParent()
     verts = []
     for c in Usd.PrimRange(proto_prim):
         mesh = UsdGeom.Mesh(c)
         pts = mesh.GetPointsAttr().Get()
         if not pts:
             continue
-        cxf = xc.GetLocalToWorldTransform(c)
+        cxf, _ = xc.ComputeRelativeTransform(c, parent)
         for p in pts:
             w = cxf.Transform(Gf.Vec3d(p[0], p[1], p[2]))
             verts.append([float(w[0]), float(w[1]), float(w[2])])
