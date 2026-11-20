@@ -17,6 +17,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- `usdchunks list <words>` finds chunks by task words, best first: whole words only ("rain"
+  no longer lists every fence for "terrain"), every word of the query, the name counting most.
+  Scatter Points is found for rocks, trees and grass, Inline USD for keyframes.
+
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
   leaved like the wall, they hung like a fringe cut straight, in clumps.

@@ -61,8 +61,9 @@ def _summary(description: str) -> str:
 
 
 def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Entry]:
-    """Every module and menu entry, sorted by name; with query, those whose name, module or
-    description mention it (any case).
+    """Every module and menu entry, sorted by name; with query, the ones it finds, best first.
+
+    A query is task words ("scatter rocks", "fence"): see `search`.
 
     Named as scene.create resolves them: a module by its file name first, then a menu entry
     by its label. A label two entries share names neither, so it is left out, and so is a
@@ -85,12 +86,59 @@ def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Ent
         if name not in found and len(same) == 1:
             found[name] = same[0]
     rows = sorted(found.values(), key=lambda e: e.name)
-    if not query:
+    if not query.split():
         return rows
-    q = query.lower()
-    descriptions = {m.module_name.split(".")[-1]: (m.config.description or "").lower()
-                    for m in registry.get_chunk_modules()}
-    return [e for e in rows if q in e.name or q in e.module or q in descriptions.get(e.module, "")]
+    descriptions = {m.module_name.split(".")[-1]: m.config.description or "" for m in registry.get_chunk_modules()}
+    return search(rows, descriptions, query)
+
+
+#: How much a query word counts where it is found: in the name, the summary line, the rest.
+_NAME, _SUMMARY, _DESCRIPTION = 6.0, 3.0, 1.0
+
+
+def _words(text: str) -> str:
+    """text lowered, underscores as spaces, so "usd_cube" holds the word "cube"."""
+    return " " + re.sub(r"[_\W]+", " ", text.lower()) + " "
+
+
+def _word_score(word: str, name: str, summary: str, description: str) -> float:
+    """How well one query word matches: a word of the text that starts with it ("rock" finds
+    "rocks", but "rain" doesn't find "terrain"), best place first."""
+    needle = " " + word
+    if needle in name:
+        return _NAME
+    if needle in summary:
+        return _SUMMARY
+    if needle in description:
+        return _DESCRIPTION
+    return 0.0
+
+
+def search(rows: list[Entry], descriptions: dict[str, str], query: str) -> list[Entry]:
+    """The rows query finds, best first.
+
+    Each word of the query matches the start of a word in a row's name, its summary line or
+    the rest of its module's description, counting most in the name. Rows that match every
+    word come first; when none does, rows that match some of them. A menu entry is matched
+    by its own name and presets, not its module's description, so "terrain" finds Fence once
+    rather than every fence preset. Ties go by name.
+    """
+    words = [_words(w).strip() for w in query.split()]
+    words = [w for w in words if w]
+    scored = []
+    for e in rows:
+        name = _words(e.name) + (_words(e.module) if e.presets is None else "")
+        if e.presets is None:
+            summary, description = _words(e.summary), _words(descriptions.get(e.module, ""))
+        else:
+            summary, description = _words(e.summary), ""
+        per_word = [_word_score(w, name, summary, description) for w in words]
+        if any(per_word):
+            scored.append((all(per_word), sum(per_word), e))
+    if any(every for every, _, _ in scored):
+        scored = [s for s in scored if s[0]]
+    scored.sort(key=lambda s: (-s[1], s[2].name))
+    return [e for _, _, e in scored]
 
 
 def find(registry: chunk_registry.ChunkRegistry, name: str) -> Entry | None:
