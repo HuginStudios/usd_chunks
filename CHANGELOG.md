@@ -11,11 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
-- Height Field chunk: paints a height band on meshes as a 0..1 primvar, 1 between Min
-  Height and Max Height and fading out over Softness. Wire it into a Scatter Points'
-  Density Field to keep trees below a tree line, and Multiply With a Noise Field to combine
-  them. Face Subset also puts the band's faces in a GeomSubset, so Bind Material can give a
-  shore sand or the peaks rock.
+- Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
+  Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
+  tints the band so you can see it.
 
 ### Changed
 
