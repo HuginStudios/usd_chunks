@@ -95,9 +95,9 @@ if __name__ == "__main__":
                                       file=assets.hdri().as_posix())
         # A lat-long image has its poles on Y; the stage is Z up, so turn the dome to match.
         pole = scene.create.transform(sky, primpath_location="/World/sky", rx=90.0)
-        cam = scene.create.camera(pole, primpath_location="/World/cam", tx=-34.0, ty=-9.0, tz=6.0,
-                                  focalLength=30.0, clippingRange=(0.1, 1000.0),
-                                  aim_at_point=True, aim_point=(0.0, 0.0, 2.5))
+        cam = scene.create.camera(pole, primpath_location="/World/cam", tx=-44.0, ty=-1.5, tz=5.0,
+                                  focalLength=32.0, clippingRange=(0.1, 1000.0),
+                                  aim_at_point=True, aim_point=(4.0, 0.5, 3.0))
         render = scene.create.render(cam, camera="/World/cam", mode="Command", image_width=1280,
                                      camera_light=False, output_image=str(OUT / "street.png"),
                                      **assets.render_params(OUT))
