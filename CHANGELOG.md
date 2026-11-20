@@ -15,6 +15,12 @@ This file starts with the first release; development before that is in the commi
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
   leaved like the wall, they hung like a fringe cut straight, in clumps.
 
+### Fixed
+
+- A reopened Shape chunk (USD Cube, Sphere ...) shows its own params again. A USD Cube showed
+  Axis and hid its Size: with the open cache on, the reopened chunk never cooked, and nothing else
+  put its params back.
+
 ## [1.0.0-rc.2] - 2026-11-19
 
 ### Added
