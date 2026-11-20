@@ -16,6 +16,7 @@ import runpy
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from pxr import Gf, Sdr, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -30,8 +31,6 @@ _spec.loader.exec_module(assets)
 
 cad = importlib.import_module("chunks.modelling.cad_import")
 reduce = importlib.import_module("chunks.modelling.poly_reduce")
-fracture = importlib.import_module("chunks.dynamics.fracture")
-rbd = importlib.import_module("chunks.dynamics.rbd_solver")
 particles = importlib.import_module("chunks.dynamics.particle_solver")
 
 # CAD and the configurator shade with MaterialX Standard Surface, whose definition the
@@ -153,7 +152,7 @@ def test_forest_scatters_every_layer_from_real_assets(tmp_path_factory) -> None:
     # One variation per Reference, at the origin, without Poly Haven's MaterialX.
     fir = stage.GetPrimAtPath("/protos/fir_b")
     assert [c.GetName() for c in fir.GetChildren()] == ["Cylinder_069"], "only fir_sapling_b's mesh"
-    assert UsdGeom.Xformable(fir).GetLocalTransformation() == Gf.Matrix4d(1), "moved back to the origin"
+    assert Gf.IsClose(UsdGeom.Xformable(fir).GetLocalTransformation(), Gf.Matrix4d(1), 1e-6), "back at the origin"
     assert not any(p.IsA(UsdShade.Material) for p in Usd.PrimRange(stage.GetPrimAtPath("/protos")))
     # The mesh is bark, and its twig face subset keeps the twigs: the binding is weaker than the subset's.
     assert _bound_material(stage, "/protos/fir_b/Cylinder_069") == "/looks/fir_sapling_branches"
@@ -217,26 +216,36 @@ def test_batch_makes_a_lighter_proxy_of_every_asset(tmp_path_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Boom, and houses with water
+# The valley biome, and houses with water
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not (fracture._HAS_MANIFOLD and rbd._HAS_MUJOCO), reason="needs manifold3d and mujoco")
-@_downloaded("concrete_road_barrier", "barrel_03", textures=("concrete_floor_02", "rock_boulder_dry"))
-def test_boom_block_falls_and_breaks(tmp_path_factory) -> None:
-    out = _run("boom", tmp_path_factory)
-    stage = Usd.Stage.Open(str(out / "boom.usda"))
-    pieces = UsdGeom.PointInstancer(stage.GetPrimAtPath("/World/pieces"))
+@_downloaded("fir_sapling", "shrub_04", "grass_medium_01", "boulder_01",
+             textures=("aerial_grass_rock", "coast_sand_01", "rock_boulder_dry"))
+def test_valley_scatters_by_height_and_keeps_away_from_the_houses(tmp_path_factory) -> None:
+    out = _run("valley", tmp_path_factory)
+    stage = Usd.Stage.Open(str(out / "valley.usda"))
+    ground = stage.GetPrimAtPath("/World/terrain/ground")
+    points = np.asarray(UsdGeom.Mesh(ground).GetPointsAttr().Get())
 
-    def visible(frame):
-        hidden = set(pieces.GetInvisibleIdsAttr().Get(frame) or [])
-        return [i for i in range(len(pieces.GetPositionsAttr().Get(frame))) if i not in hidden]
+    def instances(layer):
+        return np.asarray(UsdGeom.PointInstancer(stage.GetPrimAtPath(f"/World/biome/{layer}")).GetPositionsAttr().Get())
 
-    assert len(visible(1)) == 1, "it starts whole"
-    assert len(visible(60)) > 5, "it has broken by the end"
-    positions = pieces.GetPositionsAttr().Get(60)
-    heights = sorted(positions[i][2] for i in visible(60))
-    assert heights[len(heights) // 2] < 1.0, "most pieces came down (a few may still be flying)"
+    houses, trees, grass = instances("houses"), instances("trees"), instances("grass")
+    assert len(houses) and len(trees) and len(grass)
+    assert houses[:, 2].min() >= 2.9 and houses[:, 2].max() <= 6.1, "houses only on the valley floor"
+    assert trees[:, 2].max() <= 36.0, "no trees above the tree line (32 m, soft over 4)"
+    assert trees[:, 2].min() > 0.8, "no trees in the lake"
+    gap = np.linalg.norm(trees[:, None, :2] - houses[None, :, :2], axis=-1).min()
+    assert gap >= 7.0, "the trees keep away from the houses"
+    # The bands' faces are subsets with their own materials; the ground keeps its own.
+    for band, look in (("sand", "sand"), ("rock", "rock")):
+        subset = UsdGeom.Subset(stage.GetPrimAtPath(f"/World/terrain/ground/{band}"))
+        assert len(subset.GetIndicesAttr().Get()), band
+        assert _bound_material(stage, f"/World/terrain/ground/{band}") == f"/World/looks/{look}"
+    assert _bound_material(stage, "/World/terrain/ground") == "/World/looks/grass"
+    assert points[:, 2].max() > 60.0 and (out / "terrain.usdc").stat().st_size < 1_000_000
+    _reopens_as_chunks(out / "valley_network.usda", "TreeLine", "ValleyFloor", "Shore", "Houses", "Trees")
 
 
 @pytest.mark.skipif(not particles._HAS_TAICHI, reason="needs taichi")

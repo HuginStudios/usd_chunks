@@ -12,7 +12,7 @@ from the command line.
 | [URDF for Isaac Sim](#urdf-for-isaac-sim) | `urdf_to_isaac.py` | The SO-101 arm: URDF Import, Pose Articulation, a sim-ready physics scene |
 | [Batch an asset library](#batch-an-asset-library) | `batch_library.py` | `usdchunks batch` over a folder, Poly Reduce |
 | [Scatter a forest](#scatter-a-forest) | `forest.py` | Scatter Points in layers, with Poly Haven firs, logs, shrubs and grass |
-| [Break something](#break-something) | `boom.py` | Fracture and the RBD Solver |
+| [Scatter a biome by height](#scatter-a-biome-by-height) | `valley.py` | Height Field, Keep Away From, face subsets: a village, forest and lake in a valley |
 | [Buildings and water](#buildings-and-water) | `houses_and_water.py` | House, Particle Solver |
 
 For a network packed into one file you can reference anywhere, see
@@ -27,22 +27,22 @@ USD_CHUNK_DIRS=chunks python examples/scripts/cad_to_render.py
 ```
 
 Each script writes into `examples/scripts/out/`, or into a folder you give it as the first
-argument: `python examples/scripts/boom.py C:/tmp/boom`.
+argument: `python examples/scripts/valley.py C:/tmp/valley`.
 
 **Which Python.** The scripts need a Python with `pxr` and usd_chunks. There are two kinds:
 
 - **The usd-core wheel** (`pip install -e ".[dev]"`). It builds every network and writes
   every USD file, but it can't render, and it has no MaterialX shader definitions. The
-  URDF, batch, scatter, boom and water scripts work with it. They skip the image and log
+  URDF, batch, forest, valley and water scripts work with it. They skip the image and log
   `Render: 'usdrecord' not found on PATH`.
 - **A full USD build:** usdview's, Houdini's or Blender's Python. It renders, and it has
   MaterialX. Use it for the CAD and configurator scripts, and for the images.
 
-**Assets.** The URDF, forest, boom and houses scripts use free assets: models, textures and
+**Assets.** The URDF, forest, valley and houses scripts use free assets: models, textures and
 an HDRI from [Poly Haven](https://polyhaven.com) (CC0) and the SO-101 arm from
 [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) (Apache 2.0). Each script fetches
 what it needs the first time it runs, into `examples/assets/downloads/`. To fetch all of it
-at once (about 230 MB), or to keep it somewhere else:
+at once (about 200 MB), or to keep it somewhere else:
 
 ```
 USD_CHUNK_EXAMPLE_ASSETS=D:/assets/examples python examples/scripts/example_assets.py
@@ -50,7 +50,7 @@ USD_CHUNK_EXAMPLE_ASSETS=D:/assets/examples python examples/scripts/example_asse
 
 **Chunks, not USD code.** The scripts build everything with chunks, so each step is a node
 you can open, change and rewire. `example_assets.py` adds the chunks that bring a Poly Haven
-model in, since four scripts share them. `add_models()` adds, per model:
+model in, since the forest and the valley share them. `add_models()` adds, per model:
 
 - a **Reference** that imports one variation (Import Prim Path), since Poly Haven keeps a
   set's variations side by side in one file;
@@ -66,7 +66,7 @@ these materials need their colour, roughness and leaf cut-out maps. `texture_loo
 same for a ground texture.
 
 **Optional libraries.** Some chunks need a library the first time they cook: CAD Import
-needs `cadquery-ocp`, Fracture `manifold3d`, the RBD Solver `mujoco`, Particle Solver
+needs `cadquery-ocp`, Particle Solver
 `taichi` and Poly Reduce `fast-simplification`. The chunk asks before it installs. Set
 `USD_CHUNK_AUTO_INSTALL=1` to install without asking (see [Install](install.md)).
 
@@ -76,7 +76,7 @@ That runs USD's `usdrecord` in its own process, which makes its own OpenGL conte
 Storm works from a terminal too. Use an absolute `output_image`: a relative one is taken from
 the working directory, not from the network's folder.
 
-The URDF, forest, boom and houses scripts render with **Aurora**, the path tracer in the
+The URDF, forest, valley and houses scripts render with **Aurora**, the path tracer in the
 2026-11 USD bundle, when it is installed, and with Storm otherwise. Aurora gives soft shadows
 and light that bounces. Two things to know:
 
@@ -291,39 +291,50 @@ usdchunks run examples/scripts/out/forest_network.usda Clearings.seed=7 Trees.ma
 
 `biome.py` is the same idea with stand-in shapes, and needs no download.
 
-## Break something
+## Scatter a biome by height
 
-![A stone block breaking apart as it lands in a concrete yard, by road barriers and barrels](assets/examples/boom.jpg)
-
-```
-python examples/scripts/boom.py
-```
+![A lake with a sandy shore in a valley, a village of cottages beyond it, firs up the slopes and bare rock on a peak](assets/examples/valley.jpg)
 
 ```
-Stage Settings → Mesh (yard) → material → References (props) → Transforms → Cube
-  → Transform → materials → Fracture → RBD Solver → lights → Camera → Render
+python examples/scripts/valley.py
 ```
 
-A 1 m stone block is dropped from 5 m into a concrete yard, by Poly Haven road barriers and
-barrels. **Fracture** breaks it in advance into a tree of
-pieces that fit together exactly, with one material on the outside and another on the
-cuts. The **RBD Solver** drops it with MuJoCo. When an impact is stronger than a piece's
-Strength, the piece breaks into its children. The whole fall is baked as animation on a
-PointInstancer. Open `out/boom.usda` in usdview and scrub the timeline.
-
-- Strength is in multiples of a piece's own weight. Lower means it breaks more easily; the
-  example uses 0.6.
-- Fracture keeps the source's UVs, so a texture on the block carries onto the pieces. The
-  cut faces get the inside material.
-- Break Kick is how fast new pieces spring apart.
-- Headless (scripts, `usdchunks run`), the solver bakes when it cooks. In a UI, press
-  **Run Simulation**.
-
 ```
-usdchunks run examples/scripts/out/boom_network.usda Fracture.seed=3 RBD.strength=4
+Stage Settings → Reference (terrain) → Height Field × 5, Noise Field → materials
+  → Mesh (lake) → Preview Surface → House × 3 → References (models)
+  → Scatter Points × 5 → lights → Camera → Render
 ```
 
-[Breakage](breakage.md) explains the whole setup.
+A valley between two ridges, with a lake. What grows where depends on height, as it does on
+a real hillside:
+
+- **Height Field** paints a 0..1 field for a band of height: 1 between Min Height and Max
+  Height, fading out over Softness. A Scatter Points reads it as its Density Field. The
+  valley floor (3 to 6 m) is where houses go, the tree line keeps firs below 32 m, the grass
+  stays low, and boulders lie only on the peaks. Multiply With combines a band with
+  another field: the trees' band is multiplied with a Noise Field, for clearings.
+- **Face Subset** puts a band's faces in a subset of the ground mesh. Bind Material gives the
+  shore's faces sand and the peaks' faces rock. The ground's own grass is bound Weaker than
+  Descendants, so the subsets keep theirs.
+- **Keep Away From**: the houses are scattered first, from three House chunks. Every layer
+  after names the houses' instancer in Keep Away From, with a Keep Away Distance, so
+  nothing grows through a house.
+- **Max Slope** keeps houses on flat ground (6 degrees) and trees off cliffs (35).
+
+The terrain is the one piece the script writes as plain USD: a 240 m grid shaped into a
+valley with numpy, saved next to the network as `terrain.usdc` (under 200 KB) and brought in
+with a Reference. Use your own terrain by pointing the Reference at it, and set the Height
+Fields' bands to its heights.
+
+Move the tree line or thin the village without opening anything:
+
+```
+usdchunks run examples/scripts/out/valley_network.usda TreeLine.max_height=18 Houses.max_count=3
+```
+
+The grass and the trees are 60 and 40 million triangles once instanced, past what Scatter
+Points warns about. Aurora renders it; lower the counts, or put a Poly Reduce on a
+prototype, for a smaller GPU.
 
 ## Buildings and water
 

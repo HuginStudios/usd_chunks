@@ -1,6 +1,6 @@
 """The free assets the pipeline examples use: downloaded once, and made ready to render.
 
-    python examples/scripts/example_assets.py      # fetch everything now, about 230 MB
+    python examples/scripts/example_assets.py      # fetch everything now, about 200 MB
 
 Running this first is optional: each example fetches what it needs the first time it runs.
 Nothing is downloaded twice.
@@ -38,9 +38,10 @@ AGENT = {"User-Agent": "usd_chunks-examples"}
 SO101_COMMIT = "eecbe3e0a9ebb23e25ad7b2759b03884c6660903"
 SO101_RAW = f"https://raw.githubusercontent.com/TheRobotStudio/SO-ARM100/{SO101_COMMIT}/Simulation/SO101/"
 
-MODELS = ("fir_sapling", "fern_02", "shrub_04", "grass_medium_01", "nettle_plant", "boulder_01",
-          "rock_moss_set_01", "dead_tree_trunk_02", "tree_stump_01", "barrel_03", "concrete_road_barrier")
-TEXTURES = ("brown_mud_leaves_01", "grass_path_2", "concrete_floor_02", "rock_boulder_dry")
+MODELS = ("fir_sapling", "shrub_04", "grass_medium_01", "nettle_plant", "boulder_01", "dead_tree_trunk_02",
+          "tree_stump_01")
+TEXTURES = ("brown_mud_leaves_01", "grass_path_2", "concrete_floor_02", "rock_boulder_dry", "coast_sand_01",
+            "aerial_grass_rock")
 HDRIS = ("kloofendal_48d_partly_cloudy_puresky",)
 
 
@@ -256,7 +257,10 @@ def texture_look(scene, upstream, path: str, name: str, prims: str):
     root, _, look = path.rpartition("/")
     title = look.title().replace("_", "")
     last = scene.create.inline_usd(upstream, name=f"{title}Look", code=looks_layer(root, {look: (files, "st")}))
-    return scene.create.bind_material(last, name=f"Bind{title}", material_path=path, primpath_location=prims)
+    # Weaker than Descendants: a face subset of the mesh (a Height Field's sand band) keeps
+    # the material bound to it.
+    return scene.create.bind_material(last, name=f"Bind{title}", material_path=path, primpath_location=prims,
+                                      strength="Weaker than Descendants")
 
 
 def add_models(scene, upstream, root: str, items: dict[str, tuple[str, str | None]], network_dir: Path,
