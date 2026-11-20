@@ -154,6 +154,7 @@ def test_forest_scatters_every_layer_from_real_assets(tmp_path_factory) -> None:
     assert [c.GetName() for c in fir.GetChildren()] == ["Cylinder_069"], "only fir_sapling_b's mesh"
     assert Gf.IsClose(UsdGeom.Xformable(fir).GetLocalTransformation(), Gf.Matrix4d(1), 1e-6), "back at the origin"
     assert not any(p.IsA(UsdShade.Material) for p in Usd.PrimRange(stage.GetPrimAtPath("/protos")))
+    assert UsdGeom.Imageable(fir).ComputePurpose() == UsdGeom.Tokens.guide, "no renderer draws the prototypes"
     # The mesh is bark, and its twig face subset keeps the twigs: the binding is weaker than the subset's.
     assert _bound_material(stage, "/protos/fir_b/Cylinder_069") == "/looks/fir_sapling_branches"
     assert _bound_material(stage, "/protos/fir_b/Cylinder_069/fir_sapling_twigs") == "/looks/fir_sapling_twigs"
@@ -244,6 +245,9 @@ def test_valley_scatters_by_height_and_keeps_away_from_the_houses(tmp_path_facto
         assert len(subset.GetIndicesAttr().Get()), band
         assert _bound_material(stage, f"/World/terrain/ground/{band}") == f"/World/looks/{look}"
     assert _bound_material(stage, "/World/terrain/ground") == "/World/looks/grass"
+    for cottage in ("/World/protos/cottage1", "/World/biome/houses/Prototypes/proto_0"):
+        expected = UsdGeom.Tokens.guide if "protos" in cottage else UsdGeom.Tokens.default_
+        assert UsdGeom.Imageable(stage.GetPrimAtPath(cottage)).ComputePurpose() == expected, cottage
     assert points[:, 2].max() > 60.0 and (out / "terrain.usdc").stat().st_size < 1_000_000
     _reopens_as_chunks(out / "valley_network.usda", "TreeLine", "ValleyFloor", "Shore", "Houses", "Trees")
 

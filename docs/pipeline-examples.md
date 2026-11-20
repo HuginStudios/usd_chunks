@@ -78,12 +78,15 @@ the working directory, not from the network's folder.
 
 The URDF, forest, valley and houses scripts render with **Aurora**, the path tracer in the
 2026-11 USD bundle, when it is installed, and with Storm otherwise. Aurora gives soft shadows
-and light that bounces. Two things to know:
+and light that bounces. Three things to know:
 
 - Aurora reads its own settings (samples, denoiser, the HDRI as the background) only from
   the session layer, not from the stage. `example_assets.render_params()` writes them to a
   small file and passes it with `--sessionLayer` in the Render chunk's Extra Args.
 - Aurora reads a Dome Light's image path as written, so give it an absolute path.
+- Aurora ignores an inherited `visibility = invisible`, so hidden scatter prototypes are
+  drawn where they stand. `add_models()` also makes them `purpose = guide`, which no
+  renderer draws; the scattered copies aren't under them, so they still render.
 
 **A Distant Light needs Normalize.** Its Intensity is the brightness of the sun's disc, not
 the light that lands. A disc a degree wide at Intensity 3 lights almost nothing, in Storm or

@@ -271,13 +271,14 @@ def add_models(scene, upstream, root: str, items: dict[str, tuple[str, str | Non
     one part). *network_dir* is the folder the network is saved in: file paths are written
     relative to it, so the network keeps working when moved together with the assets.
 
-      Prim             a Scope at *root*, made invisible when *hidden* (prototypes that a
-                       Scatter Points copies, not things to render where they stand)
+      Prim             a Scope at *root*, hidden when *hidden* (prototypes that a Scatter
+                       Points copies, not things to render where they stand)
       Reference        per item, the variation's prim (Import Prim Path), at <root>/<name>
       Reset Transform  every variation at the origin: Poly Haven sets them side by side
       Inline USD       the looks, a UsdPreviewSurface per material from the model's own
-                       textures (see looks_layer), under *looks*. Their own MaterialX renders black in
-                       Storm and crashes Aurora, so the Reference leaves it out.
+                       textures (see looks_layer), under *looks*. Their own MaterialX
+                       renders black in Storm and crashes Aurora, so the Reference leaves
+                       it out.
       Bind Material    per look, onto the meshes and face subsets the model bound it to.
                        Weaker than Descendants, so a face subset (a fir's twigs) keeps its
                        own look rather than the mesh's (the bark).
@@ -285,7 +286,11 @@ def add_models(scene, upstream, root: str, items: dict[str, tuple[str, str | Non
     last = scene.create.prim(upstream, name=f"{root.rsplit('/', 1)[-1].title()}Root", primpath_location=root,
                              prim_type="Scope")
     if hidden:
-        last = scene.create.property_editor(last, name="HidePrototypes", prim=root, edits='visibility = "invisible"')
+        # Invisible, and a guide too: Aurora ignores an inherited visibility and drew every
+        # prototype at the origin, but no renderer draws guides. The scattered copies sit
+        # elsewhere, so they inherit neither.
+        last = scene.create.property_editor(last, name="HidePrototypes", prim=root,
+                                            edits='visibility = "invisible"\npurpose = "guide"')
     materials, binds = {}, {}
     for name, (asset, variation) in items.items():
         part, bound, files, varname = _read_model(asset, variation)
