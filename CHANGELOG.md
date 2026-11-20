@@ -11,6 +11,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
+  [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
+  street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
+  configurator, and a batch over a folder. Each saves its network, exports USD and renders
+  a picture. They are built from chunks. `example_assets.py` fetches the free assets they
+  use, once.
 - Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
   Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
   tints the band so you can see it.

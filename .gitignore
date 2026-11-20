@@ -43,3 +43,7 @@ CONTEXT-MAP.md
 
 # Old location of the camera chunk's download cache (now per user); stale copies remain.
 chunks/modelling/cameras.json
+
+# Results the example scripts write, and the free assets they download.
+examples/scripts/out/
+examples/assets/downloads/
