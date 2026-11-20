@@ -15,6 +15,11 @@ This file starts with the first release; development before that is in the commi
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
   leaved like the wall, they hung like a fringe cut straight, in clumps.
 
+### Fixed
+
+- `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
+  what it needs, instead of listing no params as if it took none.
+
 ## [1.0.0-rc.2] - 2026-11-19
 
 ### Added

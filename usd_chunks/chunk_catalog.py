@@ -108,6 +108,13 @@ def describe(registry: chunk_registry.ChunkRegistry, name: str) -> tuple[Entry, 
     variants = [e for e in entries(registry) if e.module == entry.module and e.presets is not None]
     chunks = module.create() if module.loaded else module.load()
     params = _tree(chunks[0]) if chunks else []
+    if not chunks:
+        # Its config() still reads (that's how it is listed), so say what it is and why its
+        # params can't be listed, rather than show a chunk that takes nothing.
+        needs = ", ".join(module.config.requirements or [])
+        description += ("\n\nIts params can't be listed here: the module didn't load"
+                        f" ({module.load_error or 'see the log'})."
+                        + (f" It needs {needs}." if needs else ""))
     return entry, description, variants, params
 
 
