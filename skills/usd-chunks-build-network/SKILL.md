@@ -17,8 +17,10 @@ ground with three coloured boxes and a camera" becomes ground → cube → trans
 set_display_color (×3) → dome_light → camera.
 
 Start from [common-chunks.md](common-chunks.md): the chunks most networks use, each with its
-key params, so most steps need no lookup. For the rest, find the chunk with the CLI, before
-reading any chunk source:
+key params, so most steps need no lookup. [chunks-by-task.md](chunks-by-task.md) lists every
+chunk by the job it does, with when to pick it over its neighbours: read it for any step
+common-chunks doesn't cover. For params, find the chunk with the CLI, before reading any
+chunk source:
 
 - `usdchunks list` lists every chunk you can make, one line each: its script name, its
   category and what it does. `usdchunks list scatter` lists only those mentioning a word.
@@ -37,9 +39,11 @@ below). Check a candidate with `usdchunks show`; never guess a param. If none of
 it either, say so and offer the `usd-chunks-write-chunk` skill. Don't do the step with
 Python (`script_runner`) unless the user agrees.
 
-Before you model an object, look for one: a `.usd`/`.usda`/`.usdc` file beside the network,
-in its `assets/` folder, or next to the files it already references. Bring it in with
-`reference`. If nothing fits, build it with chunks: real size and the main parts first, a
+Before you model an object, look for a chunk that builds it (`fence`, `house`, `vine`,
+`scatter_points` for rocks and trees: see chunks-by-task.md, or `usdchunks list fence`), then
+for a file: a `.usd`/`.usda`/`.usdc` beside the network, in its `assets/` folder, or next to
+the files it already references. Bring a file in with `reference`. If nothing fits, build it
+from primitives: real size and the main parts first, a
 material on it (`preview_surface`), then the details that show at the shot distance. Tell
 the user what you modelled and why no file was used.
 

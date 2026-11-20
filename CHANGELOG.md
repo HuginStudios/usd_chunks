@@ -9,6 +9,12 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- The build-network skill has a chunks-by-task page: every chunk by the job it does, with
+  when to pick it over its neighbours. Agents now look for a chunk that builds an object (Fence,
+  House) before they model it from boxes.
+
 ### Changed
 
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it

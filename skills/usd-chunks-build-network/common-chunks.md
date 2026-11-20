@@ -6,7 +6,7 @@ isn't listed. Recipes that combine them are in SKILL.md ("Common jobs").
 `tests/test_skill_common_chunks.py` checks every chunk and param named here exists.
 
 - shape: USD Cube, Sphere, Cylinder, Cone, Capsule or Plane prims (menu: usd_cube, usd_sphere, usd_cylinder ...), centred on their origin. Params: prim_path, shape_type, cube_size, sphere_radius, round_radius, round_height, axis.
-- mesh: polygon meshes with UVs (menu: ground, grid, plane, cube, sphere ...); a grid is width1 (X) by height2 (Z) and binds a checker unless grid_checker=False; mesh_type values are lowercase. Params: prim_path, mesh_type, width1, height2, grid_checker, width, height, depth, radius1.
+- mesh: polygon meshes with UVs (menu: ground, grid, plane, cube, sphere ...); a grid is width1 (X) by height2 (Z) and binds a checker unless grid_checker=False; mesh_type is one of none, cube, sphere, torus, cone, grid, tube: the ground and plane entries are grid presets, so make `ground` itself, not mesh_type="ground". Params: prim_path, mesh_type, width1, height2, grid_checker, width, height, depth, radius1.
 - transform: moves, turns and scales existing prims; aim_at_point with aim_point turns the prim's -Z to a point. Params: primpath_location, tx, ty, tz, rx, ry, rz, sx, sy, sz, aim_at, aim_at_point, aim_point.
 - duplicate_prim: N copies in a row, ring or spiral; copy i is the source moved i times by the per-copy offset, about copy_pivot; copies are named after the source. Params: source_prim, dest_path, copies, copy_translate, copy_rotate, copy_pivot, as_instances.
 - prune_prim: removes prims; exports leave them out. Params: prim_path.
