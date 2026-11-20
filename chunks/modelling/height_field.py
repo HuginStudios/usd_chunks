@@ -206,7 +206,7 @@ def config() -> chunk.DefaultConfig:
         category=chunk.StandardCategory.MODELLING,
         icon="layers",
         description="""
-        Marks a height band on meshes, to scatter below a tree line or give a shore sand.
+        Marks a height band on meshes, to scatter below a tree line or shade a shore.
 
         Paints a 0..1 primvar: 1 between Min Height and Max Height, fading to 0 over
         Softness. Put it in a Scatter Points' Density Field to keep a layer inside the band,
