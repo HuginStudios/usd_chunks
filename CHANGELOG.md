@@ -11,9 +11,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
-- Bind Material has a Strength: Weaker than Descendants lets what is bound below the target
-  win. Bind a tree's mesh to bark, and its leaf face subset keeps its own material. Stronger
-  than Descendants stays the default.
+- Bind Material has a Strength. Weaker than Descendants lets a face subset keep its own
+  material: bind a tree to bark, and its leaves stay leaves.
 
 ### Changed
 
@@ -23,16 +22,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
-- Prim offers the scene-level prims no other chunk makes: PhysicsScene, a Physics joint
-  (Fixed, Revolute, Prismatic, Spherical), RenderSettings and RenderProduct. A script that
-  asked for one got an Xform.
-- Render in Command mode finds files the network names relative to its folder, for a
-  network built with `Scene.new(path=...)`. The stage it hands usdrecord went to the temp
-  folder, and the render came out without them.
-- Reset Transform resets every prim its Prim names, by paths or a pattern. It reset only
-  the first.
-- Property Editor makes a relationship the prim doesn't have yet with a `rel` edit:
-  `rel physics:body1 = "/World/robot/base"`. The edit was skipped as an unknown type.
+- Prim can make a PhysicsScene, a physics joint, RenderSettings or RenderProduct. Asking for
+  one gave an Xform.
+- Render in Command mode finds files next to a network made with `Scene.new(path=...)`.
+  They were missing from the render.
+- Reset Transform resets every prim you give it, not just the first.
+- Property Editor can make a new relationship: `rel physics:body1 = "/World/robot/base"`.
+  The edit was skipped.
 
 ## [1.0.0-rc.2] - 2026-11-19
 
