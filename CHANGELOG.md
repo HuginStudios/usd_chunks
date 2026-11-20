@@ -20,6 +20,9 @@ This file starts with the first release; development before that is in the commi
 - Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
   Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
   tints the band so you can see it.
+- Edge Field chunk: marks the sharp edges or the inner corners of meshes. Use it as a Scatter
+  Points' Density Field to drop rubble along edges, or read it in a material for worn paint
+  or dirt in corners. Multiply With a Noise Field breaks it into patches; Show Field tints it.
 - Bind Material has a Strength. Weaker than Descendants lets a face subset keep its own
   material: bind a tree to bark, and its leaves stay leaves.
 - The build-network skill has a chunks-by-task page: every chunk by the job it does, with

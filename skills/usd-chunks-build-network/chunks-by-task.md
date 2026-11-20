@@ -33,6 +33,7 @@ modelling it from boxes: look here before you model anything.
 - `noise_field`: a noise density for `scatter_points`, so instances clump in patches instead of an even spread.
 - `proximity_field`: a density from nearness to other points: grass around rocks, undergrowth under trees.
 - `height_field`: a density from height: trees below a tree line, nothing on the peaks. Its `subset` gives the band its own material (a sandy shore, rocky tops).
+- `edge_field`: a density from sharp edges (`find` Outer Edges) or inner corners (Inner Corners): chips and rubble along a building's edges, dirt in its corners, worn paint read in a material. Needs a mesh with divisions.
 - `scatter_brush`: paint where `scatter_points` (or `vine`) may place, by hand.
 - `merge_instancers`: join PointInstancers that share assets, so a renderer builds each asset once.
 - `points_to_instancer`: animated Points (dust, sparks, a particle bake) as instanced meshes, for renderers that draw no Points.
