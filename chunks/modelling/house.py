@@ -1770,6 +1770,10 @@ def config():
 
         Swedish House — builds a Falu-red cottage from a box.
 
+        The footprint runs from the prim's origin to Width along +X and Depth along
+        +Z, with the eaves past it; to centre the house on a point, move it by half
+        its Width and Depth with a Transform.
+
         Width is the headline control: stretching it re-tiles the window bays to
         stay evenly spaced, re-spans and re-tiles the roof, and carries the
         chimney with it, instead of just scaling a fixed shape. Floors adds a

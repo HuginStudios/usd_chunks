@@ -17,7 +17,6 @@ def _run(owner, notice, sender):
     prims = _chunk.get_param("prim_path").get_prims()
     if not prims:
         return
-    prim = prims[0]
 
     layer = owner.get_edit_context()
     if not layer:
@@ -26,7 +25,8 @@ def _run(owner, notice, sender):
         lreg.clear_layer(layer.identifier)
 
     # Callbacks already run inside the chunk's edit context (NoticeConnection).
-    UsdGeom.Xformable(prim).ClearXformOpOrder()
+    for prim in prims:
+        UsdGeom.Xformable(prim).ClearXformOpOrder()
 
 
 def execute(node: chunk.Chunk) -> None:
@@ -45,7 +45,7 @@ def main():
         "prim_path",
         "Prim",
         flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="The prim whose transform ops to clear — pick it in the viewport or type a path.",
+        tooltip="The prims whose transform ops to clear: pick them in the viewport, or type paths or a pattern.",
     )
     chunk_api.add_param(prim_path)
 
@@ -62,10 +62,10 @@ def config():
         icon="move",
         description=(
             """
-        Resets a prim's transform: clears its authored transform ops.
+        Resets prims' transforms: clears their authored transform ops.
 
-        Clears all authored transform ops on the target prim, resetting it to its
-        underlying composed transform. Authors in the chunk layer, so the prim's
+        Clears all authored transform ops on every prim named (paths or a pattern),
+        putting each back at its parent's origin. Authors in the chunk layer, so the prim's
         original definition is untouched — remove the chunk to restore it.
         """
         ),

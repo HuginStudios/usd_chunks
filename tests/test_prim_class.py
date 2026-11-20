@@ -36,3 +36,13 @@ def test_xform_is_still_a_def(scene):
 
     prim = scene.get_stage().GetPrimAtPath("/geo")
     assert (prim.GetSpecifier(), prim.GetTypeName()) == (Sdf.SpecifierDef, "Xform")
+
+
+@pytest.mark.parametrize("prim_type", ["PhysicsScene", "PhysicsFixedJoint", "RenderSettings"])
+def test_physics_and_render_types_are_offered(scene, prim_type):
+    """A PhysicsScene, a joint or RenderSettings from a Prim. The menu listed only Xform,
+    Scope and Class, so a script asking for a PhysicsScene got an Xform."""
+    node = scene.add("prim", primpath_location="/World/thing", prim_type=prim_type)
+
+    assert scene.get_stage().GetPrimAtPath("/World/thing").GetTypeName() == prim_type
+    assert node.get_param("prim_type").value == prim_type

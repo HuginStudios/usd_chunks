@@ -45,7 +45,7 @@ try:
 except ImportError:  # only used to spot an empty frame
     Image = None
 
-from usd_chunks import chunk, chunk_utils, live
+from usd_chunks import asset_paths, chunk, chunk_utils, live
 
 
 # Parented under "usd_chunks" rather than left at the bare module name. A chunk module
@@ -544,14 +544,12 @@ def _resolve_command(command):
 def _staging_dir(stage):
     """Where to write the flattened stage handed to an external renderer.
 
-    Next to the root layer when there is one, so relative asset paths inside the
-    network still resolve; the system temp dir only when the stage has never been
-    saved, where relative paths are already unresolvable anyway.
+    In the network's folder, so relative asset paths inside the network still resolve:
+    its root layer's folder, or for a network whose root layer is not a file (built with
+    Scene.new(path=...)), the folder it was given. The system temp dir only when the
+    network has no folder at all, where relative paths are already unresolvable anyway.
     """
-    root_layer = stage.GetRootLayer()
-    if root_layer and root_layer.realPath:
-        return os.path.dirname(root_layer.realPath)
-    return tempfile.gettempdir()
+    return asset_paths.network_folder(stage) or tempfile.gettempdir()
 
 
 def _export_for_render(stage):

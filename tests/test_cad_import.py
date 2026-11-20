@@ -17,11 +17,12 @@ wheel, and it is the half with the composition rules in it, so it is tested unco
 from __future__ import annotations
 
 import importlib
+import shutil
 
 import pytest
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from usd_chunks import sdf_authoring
+from usd_chunks import Scene, chunk, sdf_authoring
 
 try:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
@@ -487,3 +488,94 @@ def test_every_point_gets_a_uv_even_without_a_parameterisation(widget) -> None:
     interpolation is invalid and the mesh will not load."""
     for proto in widget.protos:
         assert len(proto.uvs) == len(proto.points)
+
+
+@pytest.fixture(scope="module")
+def bolts(tmp_path_factory):
+    """A red bolt placed three times, the third painted blue on its component.
+
+    The colour on the part itself is how most CAD packages export one, and it is already in
+    the bolt's prototype; only the blue is a colour of one placement.
+    """
+    pytest.importorskip("OCP", reason="needs cadquery-ocp")
+
+    app = XCAFApp_Application.GetApplication_s()
+    doc = TDocStd_Document(TCollection_ExtendedString("BinXCAF"))
+    doc = app.NewDocument(TCollection_ExtendedString("BinXCAF"), doc)[0]
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    color_tool = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
+
+    bolt = shape_tool.AddShape(BRepPrimAPI_MakeCylinder(4.0, 30.0).Shape(), False)
+    TDataStd_Name.Set_s(bolt, TCollection_ExtendedString("Bolt"))
+    color_tool.SetColor(bolt, Quantity_Color(0.8, 0.1, 0.1, Quantity_TOC_RGB), XCAFDoc_ColorType.XCAFDoc_ColorGen)
+
+    assembly = shape_tool.NewShape()
+    TDataStd_Name.Set_s(assembly, TCollection_ExtendedString("Bolts"))
+    for i, name in enumerate(("a", "b", "blue")):
+        trsf = gp_Trsf()
+        trsf.SetTranslation(gp_Vec(20.0 * i, 0.0, 0.0))
+        component = shape_tool.AddComponent(assembly, bolt, TopLoc_Location(trsf))
+        TDataStd_Name.Set_s(component, TCollection_ExtendedString(name))
+        if name == "blue":
+            color_tool.SetColor(component, Quantity_Color(0.1, 0.1, 0.8, Quantity_TOC_RGB),
+                                XCAFDoc_ColorType.XCAFDoc_ColorGen)
+    shape_tool.UpdateAssemblies()
+
+    path = tmp_path_factory.mktemp("cad") / "bolts.stp"
+    writer = STEPCAFControl_Writer()
+    writer.Transfer(doc, STEPControl_StepModelType.STEPControl_AsIs)
+    writer.Write(str(path))
+    return ci._extract(str(path), ci._Settings(0.1, True, 30.0, False))
+
+
+@needs_ocp
+def test_a_coloured_part_placed_twice_is_still_instanced(bolts) -> None:
+    """The part's own colour is in its prototype: only a component's own colour is a
+    per-placement override. Counting the part's colour as one left every coloured part
+    un-instanced, which on a real assembly is nearly every part."""
+    a, b, blue = bolts.roots[0].children
+    assert a.color is None and b.color is None
+    assert blue.color == pytest.approx((0.1, 0.1, 0.8), abs=1e-3)
+
+    stage = Usd.Stage.CreateInMemory()
+    _author(stage, bolts.protos, bolts.roots)
+    assert stage.GetPrimAtPath("/Asset/Bolts/a").IsInstanceable()
+    assert stage.GetPrimAtPath("/Asset/Bolts/b").IsInstanceable()
+    assert not stage.GetPrimAtPath("/Asset/Bolts/blue").IsInstanceable(), "its own colour wins"
+
+
+@needs_ocp
+@pytest.mark.parametrize("in_block", [False, True])
+def test_a_scripted_location_is_kept(step_file, in_block) -> None:
+    """Picking a file fills in the location from its name, but never over one that was set.
+
+    Inside a change_block the file's notice arrives after the script set both values, and
+    used to put /widget back over the script's /World/Widget.
+    """
+    with Scene.new() as scene:
+        def make():
+            return scene.create.cad_import(file_path=step_file, primpath_location="/World/Widget")
+
+        if in_block:
+            with chunk.change_block():
+                cad = make()
+        else:
+            cad = make()
+        scene.set_output(cad)
+        scene.commit()
+        assert cad.get_param("primpath_location").value == "/World/Widget"
+        assert scene.get_stage().GetPrimAtPath("/World/Widget/Widget/left")
+
+
+@needs_ocp
+def test_picking_another_file_still_renames_a_filled_in_location(step_file, tmp_path) -> None:
+    other = tmp_path / "gearbox.stp"
+    shutil.copy(step_file, other)
+    with Scene.new() as scene:
+        cad = scene.create.cad_import(file_path=step_file)
+        assert cad.get_param("primpath_location").value == "/widget"
+        cad.get_param("file_path").value = str(other)
+        assert cad.get_param("primpath_location").value == "/gearbox"
+        cad.get_param("primpath_location").value = "/World/Mine"
+        cad.get_param("file_path").value = step_file
+        assert cad.get_param("primpath_location").value == "/World/Mine", "a location set by hand stays"

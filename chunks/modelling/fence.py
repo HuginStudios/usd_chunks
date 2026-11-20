@@ -682,6 +682,9 @@ def config():
         Runs straight, or follows a curve/points prim including its terrain height.
         Picket tops can be flat, pointed or dog-eared, and per-piece lean, height
         jitter and missing pickets take it from new-built to derelict.
+
+        A straight fence starts at the prim's origin and runs Length along +X; to
+        centre one on a point, move it by half its Length with a Transform.
         """
         ),
         variants=[

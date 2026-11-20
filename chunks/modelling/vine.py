@@ -1998,6 +1998,12 @@ def _wiring_changed(owner, notice, sender):
     _sync_params(owner.get_chunk() or owner)
 
 
+def _loaded(owner, notice, sender):
+    """Hide what the saved values make useless, on reopen: restored values send no change,
+    and with the open cache on the reopened chunk never cooks, so execute() doesn't either."""
+    _sync_params(owner.get_chunk() or owner)
+
+
 def main():
     chunk_api = chunk.Chunk("Vine")
 
@@ -2449,6 +2455,7 @@ def main():
         chunk.ColorPicker("leaf_color", "Leaf Color", default_value=(0.35, 0.62, 0.22))
     )
     chunk_api.add_param(display)
+    chunk_api.add_callback(_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api
 
