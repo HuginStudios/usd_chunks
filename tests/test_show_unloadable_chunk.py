@@ -48,7 +48,11 @@ def test_show_says_the_params_cant_be_listed_and_what_it_needs(module_file, monk
     with Scene():
         registry = chunk_registry.ChunkRegistry()
         registry.register_module(chunk_registry.ChunkModule(module_name=module_file.stem, module_file=module_file))
-        entry, description, _, params = chunk_catalog.describe(registry, "needs_a_package")
+        try:
+            entry, description, _, params = chunk_catalog.describe(registry, "needs_a_package")
+        finally:
+            # The registry is shared by every test in this process: leave no stranger in it.
+            registry.registered_modules.pop(module_file.stem, None)
     assert params == []
     assert "Its params can't be listed here: the module didn't load" in description
     assert "no_such_package_for_this_test" in description and "It needs no_such_package_for_this_test>=1" in description
