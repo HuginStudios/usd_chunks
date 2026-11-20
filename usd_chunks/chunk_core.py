@@ -3754,7 +3754,7 @@ class ChunkBase(ChunkGroupBase):
         The single place a chunk's behaviour hooks -- execute, commit, the gizmo hooks -- are
         resolved: everything that runs module code for a chunk asks here rather than reading
         the module itself. It reads the module get_chunk_module finds in the registry, so
-        whatever the registry holds -- after ChunkRegistry.reload_modules too -- is what runs.
+        whatever the registry holds -- after Reload Chunks too -- is what runs.
 
         Args:
             name: The hook's name in the module, e.g. "execute".

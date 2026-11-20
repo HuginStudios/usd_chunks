@@ -648,8 +648,7 @@ class ChunksPluginContainer(PluginContainer):
         dial.show()
 
     def reloadChunks(self, usdviewApi):
-        reg = chunk_registry.ChunkRegistry()
-        reg.reload_modules()
+        chunk_stage.ChunkStageSync().reload_chunks()
 
     def saveLayers(self, usdviewApi):
         reg = chunk_stage.ChunkLayerManager()
