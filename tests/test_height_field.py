@@ -92,3 +92,103 @@ def test_no_subset_unless_named():
         scene.create.height_field(prim_path="/ground")
 
         assert not stage.GetPrimAtPath("/ground").GetChildren()
+
+
+def test_a_changed_band_repaints_at_once():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _slope(stage)
+        node = scene.create.height_field(prim_path="/ground", min_height=0.0, max_height=2.0, softness=0.0)
+        assert _values(stage).tolist() == [1.0, 1.0, 0.0, 0.0, 0.0]
+
+        node.get_param("max_height").value = 6.0
+
+        assert _values(stage).tolist() == [1.0, 1.0, 1.0, 1.0, 0.0]
+
+
+def test_a_height_past_the_slider_range_is_kept():
+    """A centimetre scene's heights run into thousands, past the sliders' 500."""
+    with Scene() as scene:
+        stage = scene.get_stage()
+        mesh = _slope(stage)
+        UsdGeom.Xformable(mesh).AddScaleOp().Set(Gf.Vec3f(1000.0))
+        node = scene.create.height_field(prim_path="/ground", min_height=3000.0, max_height=5000.0, softness=0.0)
+
+        assert node.get_param("min_height").value == pytest.approx(3000.0)
+        assert _values(stage).tolist() == [0.0, 0.0, 1.0, 0.0, 0.0], "heights 0 to 8000: only 4000 is in"
+
+
+def test_min_above_max_is_read_the_other_way_round():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _slope(stage)
+        scene.create.height_field(prim_path="/ground", min_height=4.0, max_height=2.0, softness=0.0)
+
+        assert _values(stage).tolist() == [0.0, 1.0, 1.0, 0.0, 0.0]
+
+
+def test_a_face_varying_primvar_is_not_multiplied_in(caplog):
+    """One value per face corner is not one per point: taking the first ones would be wrong."""
+    with Scene() as scene:
+        stage = scene.get_stage()
+        mesh = _slope(stage)
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("noise", Sdf.ValueTypeNames.FloatArray,
+                                                 UsdGeom.Tokens.faceVarying).Set([0.0] * 16)
+        scene.create.height_field(prim_path="/ground", base_primvar="noise", min_height=0.0, max_height=4.0,
+                                  softness=0.0)
+
+        assert _values(stage).tolist() == [1.0, 1.0, 1.0, 0.0, 0.0]
+        assert "not multiplied in" in caplog.text
+
+
+def test_a_constant_primvar_scales_every_point():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        mesh = _slope(stage)
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("noise", Sdf.ValueTypeNames.Float,
+                                                 UsdGeom.Tokens.constant).Set(0.25)
+        scene.create.height_field(prim_path="/ground", base_primvar="noise", min_height=0.0, max_height=100.0)
+
+        assert _values(stage).tolist() == [0.25] * 5
+
+
+def test_a_face_with_no_corners_is_skipped():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        mesh = _slope(stage)
+        mesh.GetFaceVertexCountsAttr().Set([4, 0, 4, 4, 4])
+        scene.create.height_field(prim_path="/ground", min_height=2.0, max_height=6.0, subset="band")
+
+        assert list(UsdGeom.Subset(stage.GetPrimAtPath("/ground/band")).GetIndicesAttr().Get()) == [2, 3]
+
+
+def test_show_field_tints_the_band_and_unticking_puts_the_look_back():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _slope(stage)
+        node = scene.create.height_field(prim_path="/ground", min_height=0.0, max_height=0.0, softness=0.0,
+                                         show_field=True)
+        colours = UsdGeom.Mesh(stage.GetPrimAtPath("/ground")).GetDisplayColorAttr().Get()
+        assert tuple(colours[0]) == pytest.approx((0.15, 0.55, 1.0)), "inside the band: the field colour"
+        assert tuple(colours[-1]) == pytest.approx((0.5, 0.5, 0.5)), "outside: the mesh's own grey"
+
+        node.get_param("show_field").value = False
+
+        assert not UsdGeom.Mesh(stage.GetPrimAtPath("/ground")).GetDisplayColorAttr().HasAuthoredValue()
+
+
+def test_a_saved_network_paints_the_same_when_reopened(tmp_path):
+    path = tmp_path / "net.usda"
+    with Scene.new(path=str(path)) as scene:
+        last = scene.create.mesh(prim_path="/ground", mesh_type="grid", dimx1=4, dimy1=4)
+        last = scene.create.transform(last, primpath_location="/ground", rx=30.0)
+        scene.create.height_field(last, name="Band", prim_path="/ground", min_height=0.0, max_height=0.2,
+                                  subset="low")
+        before = list(UsdGeom.PrimvarsAPI(scene.get_stage().GetPrimAtPath("/ground")).GetPrimvar("height_band").Get())
+        scene.save()
+
+    with Scene.open(str(path)) as scene:
+        stage = scene.get_stage()
+        after = list(UsdGeom.PrimvarsAPI(stage.GetPrimAtPath("/ground")).GetPrimvar("height_band").Get())
+        assert after == pytest.approx(before) and 0 < sum(after) < len(after)
+        assert len(UsdGeom.Subset(stage.GetPrimAtPath("/ground/low")).GetIndicesAttr().Get())

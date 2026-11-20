@@ -1,20 +1,18 @@
-"""Height Field chunk -- a 0..1 primvar on meshes for a band of height, and its faces as a subset.
+"""Height Field chunk -- marks a band of height on meshes, to scatter or shade by height.
 
-What grows where on a hillside depends on how high it is: trees below the tree line, grass
-on the valley floor, sand along a shore, bare rock on the peaks. This chunk paints that as a
-field. Every vertex between **Min Height** and **Max Height** gets 1, every vertex further
-than **Softness** outside the band gets 0, with a smooth fade between. Wired into a Scatter
-Points' **Density Field**, it keeps that layer inside the band.
+On a hillside, what grows depends on height: trees stop at a tree line, sand lines the shore,
+the peaks are bare rock. This chunk paints that as a 0..1 primvar on the meshes: 1 between
+Min Height and Max Height, 0 further than Softness outside them, a smooth fade between.
 
-* **Multiply With** -- an existing primvar on the same meshes (a Noise Field, a Proximity
-  Field) the result is multiplied into, so height combines with clumping and nesting into
-  the one field a Scatter reads;
-* **Face Subset** -- also put the faces whose centre is inside the band in a GeomSubset of
-  that name (family materialBind), so Bind Material can give the band its own material: a
-  sand shore, a rock face above the tree line.
+* Wire the primvar into a Scatter Points' Density Field to keep a layer inside the band.
+* Multiply With: multiply in another field on the same meshes (a Noise Field's, say), so
+  height and noise make the one field a Scatter reads.
+* Face Subset: also put the faces inside the band in a GeomSubset, so Bind Material can give
+  the band its own material.
+* Show Field: tint the meshes by the field, to see the band in the viewport.
 
-Height is measured in world space along the stage's up axis, in scene units. The field is
-per vertex, so its edge is as fine as the mesh.
+Height is world space along the stage's up axis, in scene units. The field is per vertex, so
+its edge is as fine as the mesh.
 
 Requires: pxr (OpenUSD), usd_chunks, numpy.
 """
@@ -29,6 +27,9 @@ from pxr import Sdf, Usd, UsdGeom, UsdShade, Vt
 from usd_chunks import chunk, chunk_stage, chunk_utils
 
 logger = logging.getLogger(__name__)
+
+#: Show Field's tint: blue, since usdview highlights the selection in yellow (as Noise Field).
+_COLOUR = (0.15, 0.55, 1.0)
 
 
 def _report(node, text: str) -> None:
@@ -46,31 +47,48 @@ def band(heights: np.ndarray, low: float, high: float, softness: float) -> np.nd
 
 
 def _base_values(prim, name, count):
-    """The *name* primvar on *prim*, flattened to one value per vertex, or None."""
+    """The *name* primvar on *prim*, one value per vertex, or None (with a warning)."""
     if not name:
         return None
     pv = UsdGeom.PrimvarsAPI(prim).GetPrimvar(name)
     if not pv or not pv.HasValue():
         logger.warning("%s has no primvars:%s to multiply with", prim.GetPath(), name)
         return None
-    values = np.asarray(pv.ComputeFlattened(), dtype=np.float64)
-    if len(values) == 1:
+    values = np.asarray(pv.ComputeFlattened(), dtype=np.float64).reshape(-1)
+    if pv.GetInterpolation() == UsdGeom.Tokens.constant or len(values) == 1:
         return np.full(count, values[0])
-    if len(values) < count:
-        logger.warning("%s has %d %s values for %d points; ignoring it", prim.GetPath(), len(values), name, count)
+    if pv.GetInterpolation() not in (UsdGeom.Tokens.vertex, UsdGeom.Tokens.varying) or len(values) != count:
+        logger.warning("%s: primvars:%s is %s with %d values, not one per point (%d); not multiplied in",
+                       prim.GetPath(), name, pv.GetInterpolation(), len(values), count)
         return None
-    return values[:count]
+    return values
 
 
 def _faces_in_band(mesh: UsdGeom.Mesh, heights: np.ndarray, low: float, high: float) -> np.ndarray:
-    """Indices of the faces whose centre (the mean of its vertices) is inside [low, high]."""
+    """Indices of the faces whose centre (the mean of its corners) is inside [low, high]."""
     counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
     indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
     if not len(counts) or counts.sum() != len(indices) or (len(indices) and indices.max() >= len(heights)):
         return np.zeros(0, dtype=np.int64)
     starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
-    centres = np.add.reduceat(heights[indices], starts) / counts
+    real = counts > 0  # a face with no corners has no centre, and would break reduceat
+    centres = np.full(len(counts), np.nan)
+    centres[real] = np.add.reduceat(heights[indices], starts[real]) / counts[real]
     return np.flatnonzero((centres >= low) & (centres <= high))
+
+
+def _write_tint(out, mesh, values, colour):
+    """Show the field: the mesh's own colour moved toward *colour* by the field, with the
+    material set aside, since displayColor loses to any shader. The layer is cleared on every
+    cook, so unticking Show Field puts the look back."""
+    base = mesh.GetDisplayColorAttr().Get()
+    under = np.asarray(base, dtype=np.float64).reshape(-1, 3) if base else np.full((1, 3), 0.5)
+    if len(under) != len(values):
+        under = np.repeat(under[-1:], len(values), axis=0)
+    tint = under + (colour - under) * np.clip(values, 0.0, 1.0)[:, None]
+    display = UsdGeom.Gprim(out.GetPrim()).CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex)
+    display.Set(Vt.Vec3fArray.FromNumpy(tint.astype(np.float32)))
+    out.GetPrim().CreateRelationship("material:binding", False).SetTargets([])
 
 
 def execute(node) -> None:
@@ -86,6 +104,8 @@ def execute(node) -> None:
     low, high = node.get_param("min_height", is_f).value, node.get_param("max_height", is_f).value
     low, high = min(low, high), max(low, high)
     softness = max(0.0, node.get_param("softness", is_f).value)
+    show = node.get_param("show_field", chunk.is_param_t(bool)).value
+    colour = np.asarray(node.get_param("field_color").value or _COLOUR, dtype=np.float64) if show else None
     if not paths:
         _report(node, "set the meshes to paint")
         return
@@ -118,6 +138,8 @@ def execute(node) -> None:
                 out = UsdGeom.PrimvarsAPI(stage.OverridePrim(prim.GetPath()))
                 pv = out.CreatePrimvar(name, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex)
                 pv.Set(Vt.FloatArray.FromNumpy(values.astype(np.float32)))
+                if colour is not None:
+                    _write_tint(out, mesh, values, colour)
                 if subset_name:
                     inside = _faces_in_band(mesh, heights, low, high)
                     subset = UsdGeom.Subset.Define(stage, prim.GetPath().AppendChild(subset_name))
@@ -143,29 +165,38 @@ def main() -> chunk.Chunk:
     labeled = chunk.ChunkFlags.ParamFlags.LABELED
     chunk_api.add_param(chunk.LineEdit(
         "prim_path", "Meshes", flags=labeled | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
-        tooltip="Meshes (or parents of meshes) to paint: the ground the next layer scatters on.",
+        tooltip="The ground to paint: meshes, or prims with meshes under them. Comma-separate several.",
     ))
     chunk_api.add_param(chunk.LineEdit(
         "primvar", "Primvar", default_value="height_band", flags=labeled,
-        tooltip="Name of the float primvar written. Wire it into a Scatter Points' Density Field.",
+        tooltip="Name of the primvar written. Put it in a Scatter Points' Density Field.",
     ))
     chunk_api.add_param(chunk.LineEdit(
         "base_primvar", "Multiply With", flags=labeled,
-        tooltip="A primvar already on the meshes (a Noise Field's) to multiply the result into. "
-        "Empty: the height band alone.",
+        tooltip="Another primvar on the same meshes (a Noise Field's) to multiply in. Empty: height only.",
     ))
+    # Sliders keep a typed value outside their range: a centimetre scene's heights run into thousands.
     chunk_api.add_param(chunk.Slider("min_height", "Min Height", min_value=-100.0, max_value=500.0,
-                                     default_value=0.0, tooltip="The bottom of the band, scene units up."))
+                                     default_value=0.0, tooltip="The bottom of the band, in scene units."))
     chunk_api.add_param(chunk.Slider("max_height", "Max Height", min_value=-100.0, max_value=500.0,
                                      default_value=10.0, tooltip="The top of the band: a tree line, say."))
     chunk_api.add_param(chunk.Slider("softness", "Softness", min_value=0.0, max_value=50.0, default_value=2.0,
-                                     tooltip="How far outside the band the field fades to 0, scene units. "
+                                     tooltip="How far past the band the field fades out, in scene units. "
                                      "0 = a hard edge."))
     chunk_api.add_param(chunk.LineEdit(
         "subset", "Face Subset", flags=labeled,
-        tooltip="Also put the faces inside the band in a face subset of this name, for Bind Material "
-        "(a sand shore, rock on the peaks). Empty: no subset.",
+        tooltip="Also put the faces inside the band in a face subset with this name, for Bind Material "
+        "(sand on a shore, rock on the peaks). Empty: no subset.",
     ))
+    display = chunk.Group("display_grp", "Display", icon="eye")
+    display.add_param(chunk.ColorPicker("field_color", "Field Color", default_value=_COLOUR,
+                                        tooltip="The colour Show Field tints the band."))
+    display.add_param(chunk.Checkbox(
+        "show_field", "Show Field", default_value=False, flags=labeled,
+        tooltip="Tint the meshes by the field to see the band. It hides their material, so turn it off "
+        "for a render.",
+    ))
+    chunk_api.add_param(display)
     chunk_api.add_param(chunk.Label("readout", "nothing painted yet", default_value="nothing painted yet"))
     return chunk_api
 
@@ -175,12 +206,13 @@ def config() -> chunk.DefaultConfig:
         category=chunk.StandardCategory.MODELLING,
         icon="layers",
         description="""
-        Paints a height band on meshes, to scatter below a tree line or give a shore sand.
+        Marks a height band on meshes, to scatter below a tree line or give a shore sand.
 
-        Paints a 0..1 primvar on meshes, 1 between Min Height and Max Height and fading to 0
-        over Softness outside them. Wire it into a Scatter Points' Density Field to keep a layer
-        inside the band, and Multiply With another field to combine them. Face Subset also puts
-        the faces inside the band in a GeomSubset, so Bind Material can give it its own material.
+        Paints a 0..1 primvar: 1 between Min Height and Max Height, fading to 0 over
+        Softness. Put it in a Scatter Points' Density Field to keep a layer inside the band,
+        and Multiply With another field to combine them. Face Subset puts the band's faces in
+        a GeomSubset, so Bind Material can give the band its own material. Show Field tints
+        the meshes so you can see it.
         """,
         requirements=["numpy>=2,<3"],
     )
