@@ -616,6 +616,26 @@ def test_a_change_that_only_redraws_does_not_grow_again(host, monkeypatch) -> No
     assert grown
 
 
+def test_dragging_growth_places_the_grown_vines_leaves_once(host, monkeypatch) -> None:
+    """A part-grown vine's leaves are the grown vine's, cut. Placing them is a walk of every
+    strand, so it is done once for a skeleton, not again at every Growth %."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(seed=3, growth=30.0)
+    module = _loaded_vine(host)
+    placed = []
+    real = module._leaf_points
+    monkeypatch.setattr(module, "_leaf_points", lambda *args: placed.append(1) or real(*args))
+    before = len(host.leaves().GetPointsAttr().Get())
+
+    for growth in (45.0, 60.0, 75.0):
+        node.get_param("growth").value = growth
+
+    assert not placed
+    assert len(host.leaves().GetPointsAttr().Get()) > before
+    node.get_param("leaf_spacing").value = 6.0
+    assert placed
+
+
 def test_a_reused_growth_draws_what_a_fresh_cook_draws(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(seed=3)

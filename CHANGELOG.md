@@ -45,6 +45,7 @@ This file starts with the first release; development before that is in the commi
   and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
   Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
   that id, so on a Vine's leaves the mix is a share, not an exact quota.
+  Dragging Growth % places the grown vine's leaves once and only cuts them after that.
 - Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
   its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
   of that ground. A fence covers no ground from above, so a fenced yard still fills.
