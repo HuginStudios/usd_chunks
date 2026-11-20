@@ -13,7 +13,8 @@ them is saved or copied. The list is saved and copied, as the "edits" text param
 
 An edit can also make an attribute the prim does not have yet: put its type before the name,
 as in a .usda file (`bool vray:env:bg:tex:use = true`). Without a type, a prim that lacks the
-attribute is skipped.
+attribute is skipped. `rel` makes a relationship, its targets comma-joined in one string
+(`rel physics:body1 = "/World/robot/base"`).
 
 Lofting a widget to a group needs something saved to publish, which a widget is not. So
 lofting one promotes it: a saved param for that attribute appears under Lofted, and that is
@@ -477,9 +478,12 @@ def _as_usd_value(attr: Usd.Attribute, value):
 
 
 def _apply(prim: Usd.Prim, name: str, value, type_name: str | None = None) -> None:
-    """Author one edit on one prim. A missing attribute is created when type_name is given,
-    else the prim is skipped."""
-    if rel := prim.GetRelationship(name):
+    """Author one edit on one prim. A missing attribute is created when type_name is given
+    (a relationship when it is "rel"), else the prim is skipped."""
+    rel = prim.GetRelationship(name)
+    if not rel and type_name == "rel" and not prim.GetAttribute(name):
+        rel = prim.CreateRelationship(name, custom=True)
+    if rel:
         rel.SetTargets([Sdf.Path(p.strip()) for p in str(value).split(",") if p.strip()])
         return
     attr = prim.GetAttribute(name)
