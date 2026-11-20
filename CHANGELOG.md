@@ -38,6 +38,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
+  its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
+  of that ground. A fence covers no ground from above, so a fenced yard still fills.
 - Chunks > Reload Chunks in usdview keeps the network and runs your edited code. It built
   fresh chunks instead: every param went back to its default, wires were lost, and the new
   chunks went into a second root group, so the graph looked empty. The old module also stayed
