@@ -57,6 +57,10 @@ def _run(name: str, tmp_path_factory) -> Path:
     elsewhere = tmp_path_factory.mktemp("cwd")
     with pytest.MonkeyPatch.context() as mp:
         mp.chdir(elsewhere)
+        # conftest sets Qt's offscreen platform for the in-process Qt tests. The Render chunk's
+        # usdrecord inherits it and makes its GL context through Qt, and Storm then crashes on
+        # some scenes (the street, every time): leave it out of the renders.
+        mp.delenv("QT_QPA_PLATFORM", raising=False)
         mp.syspath_prepend(str(SCRIPTS))  # the scripts import example_assets from beside them
         mp.setattr(sys, "argv", [str(SCRIPTS / f"{name}.py"), str(out)])
         runpy.run_path(str(SCRIPTS / f"{name}.py"), run_name="__main__")
@@ -258,10 +262,11 @@ def test_street_houses_stand_on_both_sides_facing_it(tmp_path_factory) -> None:
     for i in range(1, 9):
         house = _bound(stage, f"/World/houses/house{i}")
         assert house.GetMin()[2] == pytest.approx(0.0, abs=0.1), f"house{i} stands on the ground"
+        # Behind the fence along its side of the street (4.5 m out), eaves and all.
         if i <= 4:
-            assert house.GetMin()[1] >= 5.9, f"house{i} is on the north side, behind its front garden"
+            assert house.GetMin()[1] > 4.5, f"house{i} is on the north side, behind its fence"
         else:
-            assert house.GetMax()[1] <= -5.9, f"house{i} is on the south side, behind its front garden"
+            assert house.GetMax()[1] < -4.5, f"house{i} is on the south side, behind its fence"
     two_floors = _bound(stage, "/World/houses/house2").GetMax()[2]
     assert two_floors > _bound(stage, "/World/houses/house1").GetMax()[2], "two floors stand taller than one"
     assert _bound_material(stage, "/World/street") == "/World/looks/street"

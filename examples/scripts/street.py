@@ -45,7 +45,7 @@ SOUTH = [
     {"width": 7.0, "roof_style": "Gable", "floors": 2, "wall_color": YELLOW},
 ]
 STREET = 3.5  # half the street's width, metres
-SETBACK = 6.0  # from the middle of the street to a house's front wall
+SETBACK = 7.0  # from the middle of the street to a house's front wall
 GAP = 4.0  # between neighbouring houses
 START = -22.0  # where each row begins along the street
 
@@ -80,9 +80,9 @@ if __name__ == "__main__":
                     last = scene.create.transform(last, primpath_location=path, tx=x + house["width"], ty=-SETBACK,
                                                   rz=180.0)
                 x += house["width"] + GAP
-        # A picket fence along each row of front gardens, a metre and a half off the street.
+        # A picket fence along each row of front gardens, a metre off the street.
         length = 2.0 * -START
-        for side, y in (("North", STREET + 1.5), ("South", -STREET - 1.5)):
+        for side, y in (("North", STREET + 1.0), ("South", -STREET - 1.0)):
             path = f"/World/fences/{side.lower()}"
             last = scene.create.fence(last, name=f"Fence{side}", prim_path=path, length=length, height=0.9)
             last = scene.create.transform(last, primpath_location=path, tx=START, ty=y)
