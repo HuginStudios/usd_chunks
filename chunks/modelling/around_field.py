@@ -228,7 +228,9 @@ def main() -> chunk.Chunk:
         tooltip="What the ground goes around: a mesh, or a prim with meshes under it.",
     ))
     chunk_api.add_param(chunk.LineEdit(
-        "ground", "Ground", flags=labeled | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+        # PRIM_PATHS, not PRIM_SELECTION: the ground is outside the object, so in a style it is
+        # not put under the object as the style's own paths are, and it is still read by mask.
+        "ground", "Ground", flags=labeled | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
         tooltip="The ground the object stands on: the patch follows its heights. Empty: flat at the "
         "object's lowest point.",
     ))

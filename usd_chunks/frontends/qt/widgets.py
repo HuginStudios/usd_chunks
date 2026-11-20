@@ -3573,7 +3573,10 @@ class ChunkWidget(ContainerWidget[chunk.ChunkBase]):
             return
         # A Params page shows its chunks in its two boxes (_refresh_page), so whatever else it
         # is given is the group's own interface: it goes in the group's box.
-        if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT)
+        # A Reference that hosts a network became a group after its widget was built, so it has
+        # no box for lofted params: they go in its list. Raising here stopped the group's lofted
+        # params being made at all after the first -- a style's node showed one of its four.
+        if (self.group.has_flag(ChunkFlags.GroupFlags.CONTEXT) and hasattr(self, "_lofted_layout")
                 and (model is not None or self._is_tab_context_widget)):
             widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum)
             labeled = LabeledWidget(widget, self, inline=self._in_inline_body())

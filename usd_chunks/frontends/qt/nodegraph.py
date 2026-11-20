@@ -32,6 +32,7 @@ from usd_chunks.graph import layout as chunk_graph_layout
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import chunk_trace
+from usd_chunks import styles
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
 from usd_chunks.frontends.qt import node_theme, prim_trace, styles_menu, window_state
@@ -7408,6 +7409,7 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         if not scene:
             return
         context = self._graph_context()
+        ground = styles.picked_ground()  # read before the add too
         tail = self._chain_tail()  # read before the add, which can change the selection
         if tail is None:
             # No node picked and none the view or Output shows (picking prims in the viewport
@@ -7428,6 +7430,22 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
                 scene.add_chunk(c)
         new_path = chunk_stage.get_chunk_prim_path(chunks[0])
         self._chain_when_shown(tail, new_path, context)
+        if ground:
+            self._set_style_ground(chunks[0], ground)
+
+    def _set_style_ground(self, host, ground: str, tries: int = 80) -> None:
+        """Give the style its ground (the second prim picked) once its network is in.
+
+        Its Ground param is lofted from the network the Reference hosts, which is there only
+        after the Reference has cooked, and a node held until it is wired does not react to a
+        change: until it is both, try again.
+        """
+        param = host.get_param(styles.GROUND_PARAM) if not getattr(host, "_deleting", False) else None
+        if param is None or host.is_blocked():
+            if tries > 0:
+                QtCore.QTimer.singleShot(50, self, lambda: self._set_style_ground(host, ground, tries - 1))
+            return
+        param.value = ground
 
     def _chain_when_shown(self, tail: str | None, new_path: str, context, tries: int = 60) -> None:
         """_chain_after once the new node is in the graph.

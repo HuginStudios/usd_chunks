@@ -11,13 +11,12 @@ def Scope "chunks"
     )
     {
         uniform token info:chunkType = "chunkgroup"
-        custom float inputs:Corners_width = 0.15
-        string inputs:doc = """Small stones gathered in the inner corners: the foot of a wall, the back of each step.
-Writes <object>/rubble: the stones as a PointInstancer, and the one stone they copy. Needs a mesh with divisions.
-Params: Corners_width, how far from a corner the stones spread; Scatter_spacing, how close together they are; Scatter_scale_max, the size of the biggest; Scatter_seed, another pattern."""
-        custom float inputs:Scatter_scale_max = 1.6
+        custom float inputs:Corners_width = 0.18
+        string inputs:doc = """Broken concrete and stones gathered in the inner corners: the foot of a wall, the back of a step.
+Needs a mesh with divisions. The assets come from Poly Haven (CC0), downloaded the first time.
+Params: Corners_width, how far from a corner the stones spread; Scatter_spacing, how close together they are; Scatter_seed, another pattern."""
         custom int inputs:Scatter_seed = 0
-        custom float inputs:Scatter_spacing = 0.03
+        custom float inputs:Scatter_spacing = 0.035
         uniform token outputs:chunk
         uniform float2 ui:nodegraph:node:pos = (0, 0)
 
@@ -30,7 +29,7 @@ Params: Corners_width, how far from a corner the stones spread; Scatter_spacing,
             string inputs:prim_path = "/"
             string inputs:primvar = "rubble"
             float inputs:softness = 0
-            float inputs:width = 0.15
+            float inputs:width = 0.18
             float inputs:width.connect = </chunks/Rubble.inputs:Corners_width>
             uniform token outputs:chunk
             rel ui:gizmo:width:anchor = None
@@ -43,65 +42,76 @@ Params: Corners_width, how far from a corner the stones spread; Scatter_spacing,
             uniform float2 ui:nodegraph:node:pos = (0, 0)
         }
 
-        def Chunk "Stone" (
+        def Chunk "Concrete" (
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
         {
-            uniform token info:chunkType = "mesh"
+            uniform token info:chunkType = "polyhaven_material"
             token inputs:chunk.connect = </chunks/Rubble/Corners.outputs:chunk>
-            bool inputs:grid:grid_checker = 0
-            string inputs:mesh_type = "sphere"
-            string inputs:prim_path = "@Corners.prim_path@/rubble/stone"
-            string inputs:prim_path.connect = </chunks/Rubble/Corners.inputs:prim_path>
-            int inputs:sphere:dimx2 = 7
-            int inputs:sphere:dimy2 = 5
-            float inputs:sphere:radius1 = 0.03
+            string inputs:material_path = "/materials/style_concrete"
+            string inputs:texture = "concrete_debris"
             uniform token outputs:chunk
             uniform float2 ui:nodegraph:node:pos = (260, 0)
         }
 
-        def Chunk "Squash" (
+        def Chunk "Block" (
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
         {
-            uniform token info:chunkType = "transform"
-            token inputs:chunk.connect = </chunks/Rubble/Stone.outputs:chunk>
-            string inputs:primpath_location = "/rubble/stone"
-            float inputs:scale_grp:sx = 1.2
-            float inputs:scale_grp:sy = 0.6
-            float inputs:scale_grp:sz = 0.9
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/Rubble/Concrete.outputs:chunk>
+            float inputs:cube:depth = 0.26
+            float inputs:cube:height = 0.18
+            float inputs:cube:width = 0.3
+            bool inputs:grid:grid_checker = 0
+            string inputs:mesh_type = "cube"
+            string inputs:prim_path = "@Corners.prim_path@/style_kit/block"
+            string inputs:prim_path.connect = </chunks/Rubble/Corners.inputs:prim_path>
             uniform token outputs:chunk
-            rel ui:gizmo:transform:anchor = </rubble/stone>
-            uniform token ui:gizmo:transform:anchorSource = "primpath_location"
-            uniform token ui:gizmo:transform:driver.connect = [
-                </chunks/Rubble/Squash.inputs:translate_grp:tx>,
-                </chunks/Rubble/Squash.inputs:translate_grp:ty>,
-                </chunks/Rubble/Squash.inputs:translate_grp:tz>,
-                </chunks/Rubble/Squash.inputs:rotate_grp:rx>,
-                </chunks/Rubble/Squash.inputs:rotate_grp:ry>,
-                </chunks/Rubble/Squash.inputs:rotate_grp:rz>,
-                </chunks/Rubble/Squash.inputs:scale_grp:sx>,
-                </chunks/Rubble/Squash.inputs:scale_grp:sy>,
-                </chunks/Rubble/Squash.inputs:scale_grp:sz>,
-            ]
-            uniform token[] ui:gizmo:transform:editmode = ["onPrimSelection"]
-            uniform token ui:gizmo:transform:label = "Squash"
-            uniform token ui:gizmo:transform:type = "transform"
             uniform float2 ui:nodegraph:node:pos = (520, 0)
         }
 
-        def Chunk "Colour" (
+        def Chunk "Break" (
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
         {
-            uniform token info:chunkType = "set_display_color"
-            token inputs:chunk.connect = </chunks/Rubble/Squash.outputs:chunk>
-            float inputs:Color:color_b = 0.17
-            float inputs:Color:color_g = 0.19
-            float inputs:Color:color_r = 0.2
-            string inputs:prim_path = "/rubble/stone"
+            uniform token info:chunkType = "fracture"
+            token inputs:chunk.connect = </chunks/Rubble/Block.outputs:chunk>
+            int inputs:generations = 3
+            float inputs:jaggedness = 0.6
+            string inputs:output_path = "@Corners.prim_path@/style_kit/chunks"
+            string inputs:output_path.connect = </chunks/Rubble/Corners.inputs:prim_path>
+            string inputs:source_prims = "/style_kit/block"
+            float inputs:Surface:bevel = 0.3
+            string inputs:Surface:inside_material = "/materials/style_concrete"
+            string inputs:Surface:outside_material = "/materials/style_concrete"
             uniform token outputs:chunk
             uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "HideBlock" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "property_editor"
+            token inputs:chunk.connect = </chunks/Rubble/Break.outputs:chunk>
+            string inputs:edits_grp:edits = 'visibility = "invisible"'
+            string inputs:prim = "@Corners.prim_path@/style_kit/chunks"
+            string inputs:prim.connect = </chunks/Rubble/Corners.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "Kit_stones" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/Rubble/HideBlock.outputs:chunk>
+            string inputs:model = "namaqualand_stones_01"
+            string inputs:primpath_location = "/style_kit/stones"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
         }
 
         def Chunk "Scatter" (
@@ -109,27 +119,27 @@ Params: Corners_width, how far from a corner the stones spread; Scatter_spacing,
         )
         {
             uniform token info:chunkType = "scatter_points"
-            token inputs:chunk.connect = </chunks/Rubble/Colour.outputs:chunk>
+            token inputs:chunk.connect = </chunks/Rubble/Kit_stones.outputs:chunk>
             string inputs:density_primvar = "rubble"
             bool inputs:Distribution:auto_spacing = 0
-            int inputs:Distribution:max_count = 5000
+            int inputs:Distribution:max_count = 6000
             string inputs:Distribution:sampling = "Tiles"
             int inputs:Distribution:seed = 0
             int inputs:Distribution:seed.connect = </chunks/Rubble.inputs:Scatter_seed>
-            float inputs:Distribution:spacing = 0.03
+            float inputs:Distribution:spacing = 0.035
             float inputs:Distribution:spacing.connect = </chunks/Rubble.inputs:Scatter_spacing>
-            string inputs:inst_path = "@Corners.prim_path@/rubble/stones"
+            string inputs:inst_path = "@Corners.prim_path@/style_rubble"
             string inputs:inst_path.connect = </chunks/Rubble/Corners.inputs:prim_path>
-            string[] inputs:prototypes:proto_path = ["/rubble/stone"]
-            float[] inputs:prototypes:proto_scale = [1]
-            float[] inputs:prototypes:proto_weight = [100]
+            string[] inputs:prototypes:proto_path = ["/style_kit/chunks/Prototypes/*", "/style_kit/stones/namaqualand_stones_01*"]
+            float[] inputs:prototypes:proto_scale = [1, 2]
+            float[] inputs:prototypes:proto_weight = [50, 50]
             string inputs:surface_prim = "/"
-            float inputs:Variation:scale_bias = 2
-            float inputs:Variation:scale_max = 1.6
-            float inputs:Variation:scale_max.connect = </chunks/Rubble.inputs:Scatter_scale_max>
-            float inputs:Variation:scale_min = 0.5
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 0.6
+            float inputs:Variation:scale_min = 0.15
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
         }
 
         def Chunk "Output" (
@@ -139,7 +149,7 @@ Params: Corners_width, how far from a corner the stones spread; Scatter_spacing,
             uniform token info:chunkType = "output"
             token inputs:chunk.connect = </chunks/Rubble/Scatter.outputs:chunk>
             uniform token ui:nodegraph:node:expansionState = "closed"
-            uniform float2 ui:nodegraph:node:pos = (1320, 0)
+            uniform float2 ui:nodegraph:node:pos = (1840, 0)
         }
     }
 }

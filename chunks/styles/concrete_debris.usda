@@ -1,0 +1,160 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "ConcreteDebris" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        custom float inputs:Around_breakup = 0.7
+        custom string inputs:Around_ground = ""
+        custom float inputs:Around_reach = 1.8
+        custom int inputs:Around_seed = 0
+        string inputs:doc = """Broken concrete and stones piled around the object's base.
+Chunks of a broken concrete block and Poly Haven stones, thickest at the walls. Put the object on a ground and set Around_ground to it (or select the object, then the ground, before picking the style); without one the pile sits at the object's lowest point. The assets come from Poly Haven (CC0), downloaded the first time.
+Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it is; Around_seed, another pattern."""
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Around" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "around_field"
+            float inputs:breakup = 0.7
+            float inputs:breakup.connect = </chunks/ConcreteDebris.inputs:Around_breakup>
+            float inputs:breakup_size = 1
+            string inputs:ground = ""
+            string inputs:ground.connect = </chunks/ConcreteDebris.inputs:Around_ground>
+            string inputs:prim_path = "/"
+            string inputs:primpath_location = "@Around.prim_path@/style_ground"
+            string inputs:primpath_location.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
+            float inputs:reach = 1.8
+            float inputs:reach.connect = </chunks/ConcreteDebris.inputs:Around_reach>
+            int inputs:seed = 0
+            int inputs:seed.connect = </chunks/ConcreteDebris.inputs:Around_seed>
+            float inputs:softness = 0.8
+            uniform token outputs:chunk
+            rel ui:gizmo:reach:anchor = </style_ground>
+            uniform token ui:gizmo:reach:anchorSource = "primpath_location"
+            uniform token ui:gizmo:reach:driver.connect = </chunks/ConcreteDebris/Around.inputs:reach>
+            uniform token[] ui:gizmo:reach:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:reach:label = "Reach"
+            uniform token ui:gizmo:reach:type = "cube"
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Concrete" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_material"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Around.outputs:chunk>
+            string inputs:material_path = "/materials/style_concrete"
+            string inputs:texture = "concrete_debris"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Block" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Concrete.outputs:chunk>
+            float inputs:cube:depth = 0.26
+            float inputs:cube:height = 0.18
+            float inputs:cube:width = 0.3
+            bool inputs:grid:grid_checker = 0
+            string inputs:mesh_type = "cube"
+            string inputs:prim_path = "@Around.prim_path@/style_kit/block"
+            string inputs:prim_path.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Break" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "fracture"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Block.outputs:chunk>
+            int inputs:generations = 3
+            float inputs:jaggedness = 0.6
+            string inputs:output_path = "@Around.prim_path@/style_kit/chunks"
+            string inputs:output_path.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
+            string inputs:source_prims = "/style_kit/block"
+            float inputs:Surface:bevel = 0.3
+            string inputs:Surface:inside_material = "/materials/style_concrete"
+            string inputs:Surface:outside_material = "/materials/style_concrete"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "HideBlock" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "property_editor"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Break.outputs:chunk>
+            string inputs:edits_grp:edits = 'visibility = "invisible"'
+            string inputs:prim = "@Around.prim_path@/style_kit/chunks"
+            string inputs:prim.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "Kit_stones" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/HideBlock.outputs:chunk>
+            string inputs:model = "namaqualand_stones_01"
+            string inputs:primpath_location = "/style_kit/stones"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "Debris" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Kit_stones.outputs:chunk>
+            string inputs:density_primvar = "around"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 6000
+            string inputs:Distribution:sampling = "Tiles"
+            float inputs:Distribution:spacing = 0.075
+            string inputs:inst_path = "@Around.prim_path@/style_debris"
+            string inputs:inst_path.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/chunks/Prototypes/*", "/style_kit/stones/namaqualand_stones_01*"]
+            float[] inputs:prototypes:proto_scale = [1, 2]
+            float[] inputs:prototypes:proto_weight = [45, 30]
+            string inputs:surface_prim = "/style_ground"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 1.6
+            float inputs:Variation:scale_min = 0.4
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Debris.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (1840, 0)
+        }
+    }
+}
+

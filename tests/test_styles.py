@@ -13,8 +13,9 @@ import shutil
 
 import numpy as np
 import pytest
-from pxr import Sdf, UsdGeom, UsdShade, Vt
+from pxr import UsdGeom, UsdShade, Vt
 
+from tests.polyhaven_fake import fake_polyhaven  # noqa: F401 -- autouse: no downloads
 from usd_chunks import Scene, chunk_registry, styles
 
 
@@ -41,7 +42,9 @@ def _primvar(stage, path, name):
 def test_the_styles_are_found_with_their_pictures_and_summaries():
     found = {s.name: s for s in styles.find_styles()}
 
-    assert {"worn_paint", "dirty_stone", "rubble", "hanging_vines"} <= set(found)
+    assert {"worn_paint", "dirty_stone", "rubble", "hanging_vines", "concrete_debris", "bushy_nature",
+            "forest_hideout", "scrap_yard", "abandoned_cottage", "overgrown_ruin", "ruins_ground", "forest_floor",
+            "asphalt_lot"} <= set(found)
     worn = found["worn_paint"]
     assert worn.label == "Worn Paint"
     assert worn.thumbnail is not None and worn.thumbnail.name == "worn_paint.png"
@@ -87,9 +90,9 @@ def test_a_style_with_nothing_picked_makes_an_empty_place_of_its_own():
         stage = scene.get_stage()
         scene.create.rubble()
 
-        assert stage.GetPrimAtPath("/rubble").GetTypeName() == "Xform"
+        assert stage.GetPrimAtPath("/rubble").IsValid()
         scatter = next(c for c in scene.get_chunks() if c.name == "Scatter")
-        assert scatter.get_param("inst_path").value == "/rubble/rubble/stones"
+        assert scatter.get_param("inst_path").value == "/rubble/style_rubble"
 
 
 def test_worn_paint_wears_the_mesh_it_is_put_on():
@@ -114,16 +117,16 @@ def test_the_same_style_on_two_objects_does_not_collide():
         scene.create.rubble(first, primpath_location="/b")
 
         for root, low, high in (("/a", 0.0, 2.0), ("/b", 5.0, 7.0)):
-            stones = UsdGeom.PointInstancer(stage.GetPrimAtPath(f"{root}/rubble/stones"))
+            stones = UsdGeom.PointInstancer(stage.GetPrimAtPath(f"{root}/style_rubble"))
             assert stones, f"{root} has its own rubble"
             positions = np.asarray(stones.GetPositionsAttr().Get())
             assert len(positions) > 10
             assert ((positions[:, 0] >= low - 0.1) & (positions[:, 0] <= high + 0.1)).all()
             assert (np.abs(positions[:, 2] - 1.0) < 0.3).all(), "gathered at the foot of the riser"
-            # The stone it copies is the style's own mesh, found under the object: not the cube
-            # Scatter draws when a prototype path names nothing.
-            proto = stage.GetPrimAtPath(stones.GetPrototypesRel().GetTargets()[0])
-            assert proto.GetTypeName() == "Mesh"
+            # What it copies is the style's own kit, found under the object: not the cube Scatter
+            # draws when a prototype path names nothing.
+            for target in stones.GetPrototypesRel().GetTargets():
+                assert stage.GetPrimAtPath(target).GetTypeName() != "Cube"
 
 
 def test_hanging_vines_stay_on_a_moved_object():
@@ -135,7 +138,7 @@ def test_hanging_vines_stay_on_a_moved_object():
 
         cache = UsdGeom.BBoxCache(0, ["default", "render"])
         wall_box = cache.ComputeWorldBound(stage.GetPrimAtPath("/wall")).ComputeAlignedRange()
-        curves = stage.GetPrimAtPath("/wall/vines/Curves")
+        curves = stage.GetPrimAtPath("/wall/style_vines/Curves")
         assert curves and len(UsdGeom.BasisCurves(curves).GetPointsAttr().Get()) > 0
         vine_box = cache.ComputeWorldBound(curves).ComputeAlignedRange()
         assert vine_box.GetMin()[0] > wall_box.GetMin()[0] - 0.3
@@ -179,9 +182,9 @@ def test_list_rows_put_prim_paths_under_the_namespace():
         rows = scatter.get_param("prototypes")
         row = rows.get_indexed_param(rows.get_param("proto_path"), 0)
 
-        assert row.raw_value == "/rubble/stone"
-        assert row.value == "/steps/rubble/stone"
-        assert Sdf.Path(row.value) and stage.GetPrimAtPath(row.value).IsValid()
+        assert row.raw_value == "/style_kit/chunks/Prototypes/*"
+        assert row.value == "/steps/style_kit/chunks/Prototypes/*"
+        assert stage.GetPrimAtPath(row.value.rsplit("/", 1)[0]).IsValid(), "the pieces it copies, under the object"
 
 
 def test_a_style_has_a_handle_on_the_object_for_its_width():
@@ -214,3 +217,75 @@ def test_an_earlier_chunk_folder_wins_on_a_style_name(tmp_path, monkeypatch):
     [mossy] = [s for s in styles.find_styles() if s.name == "mossy"]
 
     assert mossy.path.parent.parent.name == "b_first", "USD_CHUNK_DIRS order, not A-Z"
+
+
+def _ground(stage, size=12.0):
+    mesh = UsdGeom.Mesh.Define(stage, "/ground")
+    h = size / 2
+    mesh.CreatePointsAttr([(-h, 0, -h), (h, 0, -h), (h, 0, h), (-h, 0, h)])
+    mesh.CreateFaceVertexCountsAttr([4])
+    mesh.CreateFaceVertexIndicesAttr([0, 3, 2, 1])
+    return mesh
+
+
+def _positions(stage, path):
+    instancer = UsdGeom.PointInstancer(stage.GetPrimAtPath(path))
+    assert instancer, path
+    return np.asarray(instancer.GetPositionsAttr().Get() or [])
+
+
+def test_concrete_debris_piles_around_the_object_on_its_ground():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _ground(stage)
+        crate = scene.create.cube(prim_path="/crate", width=1.2, height=1.2, depth=1.2)
+        scene.create.concrete_debris(crate, primpath_location="/crate", Around_ground="/ground")
+
+        debris = _positions(stage, "/crate/style_debris")
+        assert len(debris) > 50
+        outside = np.maximum(np.abs(debris[:, 0]), np.abs(debris[:, 2])) - 0.6
+        assert (outside > -0.2).all() and (outside < 1.9).all(), "around the crate, within reach"
+        assert np.allclose(debris[:, 1], 0.0, atol=0.01), "on the ground"
+
+
+def test_the_abandoned_cottage_grows_ivy_on_the_house_and_piles_plants_round_it():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _ground(stage, 20.0)
+        house = scene.create.house(house_path="/House", width=4.0, depth=3.6)
+        scene.create.abandoned_cottage(house, primpath_location="/House", Around_ground="/ground")
+
+        assert len(_positions(stage, "/House/style_vines/leaves")) > 100
+        assert len(_positions(stage, "/House/style_plants")) > 50
+        assert len(_positions(stage, "/House/style_debris")) > 50
+        patches = next(c for c in scene.get_chunks() if c.name == "IvyPatches")
+        meshes = int(patches.get_param("readout").value.split(" on ")[1].split()[0])
+        assert meshes < 40, "the ivy reads the house only, not what the style makes after it"
+
+
+def test_a_ground_biome_textures_the_ground_and_scatters_on_it():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        ground = scene.create.grid(prim_path="/field", width1=6.0, height2=6.0, dimx1=30, dimy1=30,
+                                   grid_checker=False)
+        scene.create.forest_floor(ground, primpath_location="/field")
+
+        material = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath("/field")).ComputeBoundMaterial()[0]
+        assert material.GetPath() == "/materials/style_forest_leaves_02"
+        assert len(_positions(stage, "/field/style_scatter")) > 20
+
+
+def test_a_network_brought_in_with_prims_picked_keeps_what_it_saved():
+    """A chunk loaded from USD has what was saved: a prim param left empty there is not filled
+    from the viewport selection, as a chunk made new is."""
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _ground(stage)
+        crate = scene.create.cube(prim_path="/crate", width=1.2, height=1.2, depth=1.2)
+        scene.get_selected_prims = lambda: [stage.GetPrimAtPath("/crate"), stage.GetPrimAtPath("/ground")]
+        scene.create.concrete_debris(crate, primpath_location="/crate")
+
+        concrete = next(c for c in scene.get_chunks() if c.name == "Concrete")
+        assert concrete.get_param("primpath_location").raw_value == ""
+        bound = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath("/ground")).ComputeBoundMaterial()[0]
+        assert not bound, "the concrete look stays off the ground"

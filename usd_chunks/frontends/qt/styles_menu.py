@@ -42,13 +42,18 @@ def picked_prim() -> str | None:
 class StyleGrid(QtWidgets.QWidget):
     """The styles as a grid of picture buttons, greyed out until a prim is picked."""
 
-    def __init__(self, entries: list, target: str | None, apply: Callable, parent=None):
+    def __init__(self, entries: list, target: str | None, apply: Callable, parent=None, ground: str | None = None):
         super().__init__(parent)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 8)
         layout.setSpacing(6)
-        hint = QtWidgets.QLabel(
-            f"Put a style on <b>{target}</b>" if target else "Select an object in the viewport, then pick a style.")
+        if not target:
+            text = "Select an object in the viewport, then pick a style. Select the ground too (second) for a pile."
+        elif ground:
+            text = f"Put a style on <b>{target}</b>, standing on <b>{ground}</b>"
+        else:
+            text = f"Put a style on <b>{target}</b> (select the ground second, for a pile on it)"
+        hint = QtWidgets.QLabel(text)
         hint.setStyleSheet("color: #c8c8c8;")
         layout.addWidget(hint)
         grid = QtWidgets.QGridLayout()
@@ -91,5 +96,5 @@ def fill_styles_menu(menu: QtWidgets.QMenu, apply: Callable) -> None:
         QtCore.QTimer.singleShot(0, menu, lambda: apply(entry))
 
     action = QtWidgets.QWidgetAction(menu)
-    action.setDefaultWidget(StyleGrid(entries, picked_prim(), chosen, menu))
+    action.setDefaultWidget(StyleGrid(entries, picked_prim(), chosen, menu, ground=styles.picked_ground()))
     menu.addAction(action)

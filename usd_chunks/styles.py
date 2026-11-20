@@ -150,6 +150,21 @@ def selected_root(chunk) -> str | None:
     return f"/{name}" if name and Sdf.Path.IsValidIdentifier(name) else None
 
 
+#: The lofted param a style piles things on: its Around Field's Ground.
+GROUND_PARAM = "Around_ground"
+
+
+def picked_ground() -> str | None:
+    """The second prim selected in the viewport: the ground, for a style that piles things
+    around its object (it has a GROUND_PARAM). None with fewer than two picked."""
+    scene = getattr(chunk_registry.ChunkRegistry(), "scene", None)
+    try:
+        prims = [p for p in (scene.get_selected_prims() if scene is not None else []) if str(p.GetPath()) != "/"]
+    except Exception:  # noqa: BLE001 - a host with no selection to give
+        prims = []
+    return str(prims[1].GetPath()) if len(prims) > 1 else None
+
+
 def menu_variants() -> list[tuple[str, dict]]:
     """The Reference chunk's menu entries for the styles, under Styles.
 

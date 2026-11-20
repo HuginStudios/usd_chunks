@@ -5,6 +5,7 @@ import pytest
 from PySide6 import QtCore, QtWidgets
 from pxr import UsdGeom
 
+from tests.polyhaven_fake import fake_polyhaven  # noqa: F401 -- autouse: no downloads
 from tests.test_copy_paste import _make_nodes, _pump, graph  # noqa: F401 -- graph is a fixture
 from usd_chunks import chunk_stage
 from usd_chunks.frontends.qt import styles_menu, window_state
@@ -81,7 +82,7 @@ def test_rubble_from_the_menu_scatters_its_stones(graph):  # noqa: F811
     _pump(qapp, 4.0)
 
     scatter = next(c for c in scene.get_chunks() if c.name == "Scatter")
-    stones = UsdGeom.PointInstancer(stage.GetPrimAtPath("/steps/rubble/stones"))
+    stones = UsdGeom.PointInstancer(stage.GetPrimAtPath("/steps/style_rubble"))
     assert stones and len(stones.GetPositionsAttr().Get() or []) > 10, scatter.get_param("readout").value
 
 
@@ -106,3 +107,26 @@ def test_a_style_stays_a_node_of_the_graph_it_was_put_in(graph):  # noqa: F811
 
     assert docker.tab_widget.count() == tabs
     assert docker.tab_widget.get_current_graph_view() is view
+
+
+def test_the_second_prim_picked_is_the_ground_a_pile_stands_on(graph):  # noqa: F811
+    qapp = graph[0]
+    scene, view, cube = _crate(graph)
+    stage = scene.get_stage()
+    ground = UsdGeom.Mesh.Define(stage, "/ground")
+    ground.CreatePointsAttr([(-5, -0.5, -5), (5, -0.5, -5), (5, -0.5, 5), (-5, -0.5, 5)])
+    ground.CreateFaceVertexCountsAttr([4])
+    ground.CreateFaceVertexIndicesAttr([0, 3, 2, 1])
+    scene.get_selected_prims = lambda: [stage.GetPrimAtPath("/crate"), stage.GetPrimAtPath("/ground")]
+    before = set(scene.get_chunks())
+
+    grid = _grid(view)
+    {b.text(): b for b in grid.buttons}["Concrete Debris"].click()
+    _pump(qapp, 4.0)
+
+    [style] = [c for c in scene.get_chunks() if c not in before and c.get_param("file_path") is not None]
+    lofted = {p.name for p in style.get_my_params() if getattr(p, "_lofted", False)}
+    assert lofted == {"Around_ground", "Around_reach", "Around_breakup", "Around_seed"}, "every param it offers"
+    assert style.get_param("Around_ground").value == "/ground"
+    debris = UsdGeom.PointInstancer(stage.GetPrimAtPath("/crate/style_debris")).GetPositionsAttr().Get()
+    assert debris and all(abs(p[1] + 0.5) < 0.01 for p in debris), "on the ground, not at the crate's base"

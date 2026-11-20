@@ -1,0 +1,349 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "OvergrownRuin" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        custom float inputs:Around_breakup = 0.7
+        custom string inputs:Around_ground = ""
+        custom float inputs:Around_reach = 2
+        custom int inputs:Around_seed = 0
+        custom float inputs:Corners_width = 0.3
+        string inputs:doc = """A ruin taken back by nature: vines off its edges, weeds in its corners, rubble round its base.
+Vines hang from the top edges, nettles and grass grow out of the inner corners, and broken concrete and stones pile round the base. Needs a mesh with divisions for the corners and edges. Put it on a ground and set Around_ground. The assets come from Poly Haven (CC0).
+Params: Around_reach, how far out the rubble goes; Corners_width, how far weeds spread from a corner; Vines_hang, how many vine tips hang down (%)."""
+        custom float inputs:Vines_hang = 70
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Corners" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "edge_field"
+            string inputs:find = "Inner Corners"
+            string inputs:prim_path = "/"
+            string inputs:primvar = "style_corners"
+            float inputs:width = 0.3
+            float inputs:width.connect = </chunks/OvergrownRuin.inputs:Corners_width>
+            uniform token outputs:chunk
+            rel ui:gizmo:width:anchor = None
+            uniform token ui:gizmo:width:anchorSource = "prim_path"
+            uniform token ui:gizmo:width:axis = "Y"
+            uniform token ui:gizmo:width:driver.connect = </chunks/OvergrownRuin/Corners.inputs:width>
+            uniform token[] ui:gizmo:width:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:width:label = "Corners"
+            uniform token ui:gizmo:width:type = "cube"
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Ledges" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "edge_field"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Corners.outputs:chunk>
+            string inputs:prim_path = "/"
+            string inputs:primvar = "style_ledges"
+            float inputs:width = 0.35
+            uniform token outputs:chunk
+            rel ui:gizmo:width:anchor = None
+            uniform token ui:gizmo:width:anchorSource = "prim_path"
+            uniform token ui:gizmo:width:axis = "Y"
+            uniform token ui:gizmo:width:driver.connect = </chunks/OvergrownRuin/Ledges.inputs:width>
+            uniform token[] ui:gizmo:width:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:width:label = "Ledges"
+            uniform token ui:gizmo:width:type = "cube"
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Kit_nettle" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Ledges.outputs:chunk>
+            string inputs:model = "nettle_plant"
+            string inputs:primpath_location = "/style_kit/nettle"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Kit_weed" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Kit_nettle.outputs:chunk>
+            string inputs:model = "weed_plant_02"
+            string inputs:primpath_location = "/style_kit/weed"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Kit_grass" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Kit_weed.outputs:chunk>
+            string inputs:model = "grass_bermuda_01"
+            string inputs:primpath_location = "/style_kit/grass"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "Weeds" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Kit_grass.outputs:chunk>
+            string inputs:density_primvar = "style_corners"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 3000
+            string inputs:Distribution:sampling = "Tiles"
+            int inputs:Distribution:seed = 11
+            float inputs:Distribution:spacing = 0.12
+            string inputs:inst_path = "@Corners.prim_path@/style_weeds"
+            string inputs:inst_path.connect = </chunks/OvergrownRuin/Corners.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/nettle/nettle_plant*", "/style_kit/weed/weed_plant_02*", "/style_kit/grass/grass_bermuda_01*"]
+            float[] inputs:prototypes:proto_scale = [1.6, 1, 1]
+            float[] inputs:prototypes:proto_weight = [25, 15, 25]
+            string inputs:surface_prim = "/"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_max = 1.4
+            float inputs:Variation:scale_min = 0.6
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "Vines" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "vine"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Weeds.outputs:chunk>
+            string inputs:density_primvar = "style_ledges"
+            float inputs:grow_grp:climb = 0.6
+            float inputs:grow_grp:density = 1
+            int inputs:grow_grp:root_count = 30
+            float inputs:hang_grp:hang = 70
+            float inputs:hang_grp:hang.connect = </chunks/OvergrownRuin.inputs:Vines_hang>
+            float inputs:hang_grp:hang_length = 15
+            float inputs:leaf_grp:leaf_spacing = 0.9
+            float inputs:shape_grp:thickness = 0.5
+            string inputs:surface_prim = "/"
+            string inputs:vine_path = "@Corners.prim_path@/style_vines"
+            string inputs:vine_path.connect = </chunks/OvergrownRuin/Corners.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Stems" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "curves_to_mesh"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Vines.outputs:chunk>
+            string inputs:curves_prim = "@Vines.out_curves@"
+            string inputs:curves_prim.connect = </chunks/OvergrownRuin/Vines.inputs:out_curves>
+            string inputs:primpath_location = "/style_vines/stems"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1820, 0)
+        }
+
+        def Chunk "Bark" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "set_display_color"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Stems.outputs:chunk>
+            float inputs:Color:color_b = 0.1
+            float inputs:Color:color_g = 0.15
+            float inputs:Color:color_r = 0.2
+            string inputs:prim_path = "/style_vines/stems"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2080, 0)
+        }
+
+        def Chunk "Kit_leaf" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Bark.outputs:chunk>
+            string inputs:model = "shrub_sorrel_01"
+            string inputs:primpath_location = "/style_kit/leaf"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2340, 0)
+        }
+
+        def Chunk "Leaves" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Kit_leaf.outputs:chunk>
+            string inputs:Distribution:sampling = "Tiles"
+            string inputs:inst_path = "@Corners.prim_path@/style_vines/leaves"
+            string inputs:inst_path.connect = </chunks/OvergrownRuin/Corners.inputs:prim_path>
+            string inputs:points_prim = "@Vines.out_leaves@"
+            string inputs:points_prim.connect = </chunks/OvergrownRuin/Vines.inputs:out_leaves>
+            string[] inputs:prototypes:proto_path = ["/style_kit/leaf/shrub_sorrel_01*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            string inputs:Variation:align_up = "+Z"
+            float inputs:Variation:rand_amount = 60
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_max = 0.5
+            float inputs:Variation:scale_min = 0.25
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2600, 0)
+        }
+
+        def Chunk "Around" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "around_field"
+            float inputs:breakup = 0.7
+            float inputs:breakup.connect = </chunks/OvergrownRuin.inputs:Around_breakup>
+            float inputs:breakup_size = 1
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Leaves.outputs:chunk>
+            string inputs:ground = ""
+            string inputs:ground.connect = </chunks/OvergrownRuin.inputs:Around_ground>
+            string inputs:prim_path = "/"
+            string inputs:primpath_location = "@Around.prim_path@/style_ground"
+            string inputs:primpath_location.connect = </chunks/OvergrownRuin/Around.inputs:prim_path>
+            float inputs:reach = 2
+            float inputs:reach.connect = </chunks/OvergrownRuin.inputs:Around_reach>
+            int inputs:seed = 0
+            int inputs:seed.connect = </chunks/OvergrownRuin.inputs:Around_seed>
+            float inputs:softness = 0.8
+            uniform token outputs:chunk
+            rel ui:gizmo:reach:anchor = </style_ground>
+            uniform token ui:gizmo:reach:anchorSource = "primpath_location"
+            uniform token ui:gizmo:reach:driver.connect = </chunks/OvergrownRuin/Around.inputs:reach>
+            uniform token[] ui:gizmo:reach:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:reach:label = "Reach"
+            uniform token ui:gizmo:reach:type = "cube"
+            uniform float2 ui:nodegraph:node:pos = (2860, 0)
+        }
+
+        def Chunk "Concrete" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_material"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Around.outputs:chunk>
+            string inputs:material_path = "/materials/style_concrete"
+            string inputs:texture = "concrete_debris"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3120, 0)
+        }
+
+        def Chunk "Block" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Concrete.outputs:chunk>
+            float inputs:cube:depth = 0.26
+            float inputs:cube:height = 0.18
+            float inputs:cube:width = 0.3
+            bool inputs:grid:grid_checker = 0
+            string inputs:mesh_type = "cube"
+            string inputs:prim_path = "@Around.prim_path@/style_kit/block"
+            string inputs:prim_path.connect = </chunks/OvergrownRuin/Around.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3380, 0)
+        }
+
+        def Chunk "Break" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "fracture"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Block.outputs:chunk>
+            int inputs:generations = 3
+            float inputs:jaggedness = 0.6
+            string inputs:output_path = "@Around.prim_path@/style_kit/chunks"
+            string inputs:output_path.connect = </chunks/OvergrownRuin/Around.inputs:prim_path>
+            string inputs:source_prims = "/style_kit/block"
+            float inputs:Surface:bevel = 0.3
+            string inputs:Surface:inside_material = "/materials/style_concrete"
+            string inputs:Surface:outside_material = "/materials/style_concrete"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3640, 0)
+        }
+
+        def Chunk "HideBlock" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "property_editor"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Break.outputs:chunk>
+            string inputs:edits_grp:edits = 'visibility = "invisible"'
+            string inputs:prim = "@Around.prim_path@/style_kit/chunks"
+            string inputs:prim.connect = </chunks/OvergrownRuin/Around.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3900, 0)
+        }
+
+        def Chunk "Kit_stones" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/HideBlock.outputs:chunk>
+            string inputs:model = "namaqualand_stones_01"
+            string inputs:primpath_location = "/style_kit/stones"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (4160, 0)
+        }
+
+        def Chunk "Debris" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Kit_stones.outputs:chunk>
+            string inputs:density_primvar = "around"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 6000
+            string inputs:Distribution:sampling = "Tiles"
+            float inputs:Distribution:spacing = 0.07
+            string inputs:inst_path = "@Around.prim_path@/style_debris"
+            string inputs:inst_path.connect = </chunks/OvergrownRuin/Around.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/chunks/Prototypes/*", "/style_kit/stones/namaqualand_stones_01*"]
+            float[] inputs:prototypes:proto_scale = [1, 2]
+            float[] inputs:prototypes:proto_weight = [55, 30]
+            string inputs:surface_prim = "/style_ground"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 1.8
+            float inputs:Variation:scale_min = 0.4
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (4420, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/OvergrownRuin/Debris.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (4700, 0)
+        }
+    }
+}
+
