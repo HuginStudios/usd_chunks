@@ -171,3 +171,24 @@ def test_list_rows_put_prim_paths_under_the_namespace():
         assert row.raw_value == "/rubble/stone"
         assert row.value == "/steps/rubble/stone"
         assert Sdf.Path(row.value) and stage.GetPrimAtPath(row.value).IsValid()
+
+
+def test_a_style_has_a_handle_on_the_object_for_its_width():
+    """Picked in the viewport, the object shows a handle per Edge Field of its styles, named
+    for what it marks; dragging it widens the band, as an override in the scene."""
+    from usd_chunks.gizmo import runtime as chunk_gizmo
+
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _grid_steps(stage, "/steps")
+        scene.create.dirty_stone(primpath_location="/steps")
+        prim = stage.GetPrimAtPath("/steps")
+        before = (_primvar(stage, "/steps", "dirt") > 0).mean()
+
+        handles = {h.label: h for h in chunk_gizmo.resolve_gizmos(prim) if h.type == "cube"}
+        assert {"Dirt", "Chips"} <= set(handles)
+        dirt = next(c for c in scene.get_chunks() if c.name == "Dirt")
+        chunk_gizmo.apply_bindings(dirt, handles["Dirt"].name, 0.5)
+
+        assert dirt.get_param("width").value == pytest.approx(0.5)
+        assert (_primvar(stage, "/steps", "dirt") > 0).mean() > before

@@ -763,6 +763,31 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
     return True
 
 
+def blocked_hosts() -> list:
+    """The network hosts (Reference or Payload chunks of a saved network) with a blocked chunk
+    inside.
+
+    Made, cooked, then wired -- a script's chunk, or one added to a graph with no view -- a
+    hosted network cooked with nothing above it, and its chunks were blocked. The wire reaches
+    only the host, which skips its cook when its own inputs did not change; recook_for_view
+    asks this to cook those networks again (chunk_stage.recook_network).
+
+    Returns:
+        The hosts, each once.
+    """
+    hosts: list = []
+    for chunk in list(_blocked):
+        owner = chunk.get_owner() if callable(getattr(chunk, "get_owner", None)) else None
+        while owner is not None:
+            # chunk_stage.host_networks sets _network_namespace on a host ("" for none).
+            if getattr(owner, "_network_namespace", None) is not None:
+                if all(owner is not h for h in hosts):
+                    hosts.append(owner)
+                break
+            owner = owner.get_owner() if callable(getattr(owner, "get_owner", None)) else None
+    return hosts
+
+
 def _block_below(chunk) -> None:
     """Mark every chunk below a blocked one as not cooked: red, and stale for when it is fixed.
 

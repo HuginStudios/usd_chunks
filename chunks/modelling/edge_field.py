@@ -319,6 +319,9 @@ def main() -> chunk.Chunk:
 
 def config() -> chunk.DefaultConfig:
     return chunk.DefaultConfig(
+        # Width as a handle on the meshes: pick one in the viewport and drag up to widen the
+        # band. Each Edge Field gets its own, named after it (a style's Dirt, Chips, ...).
+        gizmos=[chunk.Gizmo("width", type="cube", axis="Y", driver="width")],
         category=chunk.StandardCategory.MODELLING,
         icon="ruler",
         description="""
@@ -326,10 +329,10 @@ def config() -> chunk.DefaultConfig:
 
         Paints a 0..1 primvar from how sharply each edge bends: Outer Edges for wear and
         chips, Inner Corners for dirt, or Both. Angle and Softness set how sharp an edge must
-        be, Width how far the field spreads across the faces. Put it in a Scatter Points'
-        Density Field to scatter rubble along the edges, or read it in a material to wear the
-        paint there. Multiply With another field breaks it into patches. Show Field tints the
-        meshes so you can see it.
+        be, Width how far the field spreads across the faces (a handle in the viewport too).
+        Put it in a Scatter Points' Density Field to scatter rubble along the edges, or read
+        it in a material to wear the paint there. Multiply With another field breaks it into
+        patches. Show Field tints the meshes so you can see it.
         """,
         requirements=["numpy>=2,<3", "scipy>=1.11,<2"],
     )

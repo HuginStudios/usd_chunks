@@ -31,6 +31,13 @@ Params: Ledges_width, how far from an edge the vines may grow; Vines_growth, how
             float inputs:width = 0.3
             float inputs:width.connect = </chunks/HangingVines.inputs:Ledges_width>
             uniform token outputs:chunk
+            rel ui:gizmo:width:anchor = None
+            uniform token ui:gizmo:width:anchorSource = "prim_path"
+            uniform token ui:gizmo:width:axis = "Y"
+            uniform token ui:gizmo:width:driver.connect = </chunks/HangingVines/Ledges.inputs:width>
+            uniform token[] ui:gizmo:width:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:width:label = "Ledges"
+            uniform token ui:gizmo:width:type = "cube"
             uniform float2 ui:nodegraph:node:pos = (0, 0)
         }
 

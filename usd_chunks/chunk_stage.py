@@ -6270,6 +6270,11 @@ def recook_for_view(
     errors: list = []
     with chunk_cook.cook_pass():
         _recook_pass(stage, scene, context, view_chunk, _synthetic_tail, _force, _hidden, errors)
+    # A saved network (a style) hosted before its host was wired found nothing above it; the
+    # wire just made reaches the host, not the chunks inside it.
+    for host in chunk_cook.blocked_hosts():
+        if not host.is_blocked():
+            recook_network(host, "wired")
     if errors:
         raise errors[0]
 

@@ -31,7 +31,8 @@ def execute(node):
             for target_path in chunk_utils.author_in_variant_contexts(stage, node.get_param("primpath_location")):
                 # A namespace on a prim that is already there -- a style put on a mesh -- is
                 # left as it is: defining it as an Xform turned the mesh into one.
-                if not stage.GetPrimAtPath(target_path).IsDefined():
+                existing = stage.GetPrimAtPath(target_path)
+                if not (existing and existing.IsDefined()):
                     _define(stage, target_path, node.get_param("prim_type").value or "Xform")
         return
     chunk_stage.unhost_network(node)

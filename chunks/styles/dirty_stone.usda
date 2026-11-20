@@ -29,6 +29,13 @@ Params: Dirt_width, how far the dirt reaches from a corner; Chips_width, how wid
             float inputs:width = 0.06
             float inputs:width.connect = </chunks/DirtyStone.inputs:Chips_width>
             uniform token outputs:chunk
+            rel ui:gizmo:width:anchor = None
+            uniform token ui:gizmo:width:anchorSource = "prim_path"
+            uniform token ui:gizmo:width:axis = "Y"
+            uniform token ui:gizmo:width:driver.connect = </chunks/DirtyStone/Chips.inputs:width>
+            uniform token[] ui:gizmo:width:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:width:label = "Chips"
+            uniform token ui:gizmo:width:type = "cube"
             uniform float2 ui:nodegraph:node:pos = (0, 0)
         }
 
@@ -45,6 +52,13 @@ Params: Dirt_width, how far the dirt reaches from a corner; Chips_width, how wid
             float inputs:width = 0.2
             float inputs:width.connect = </chunks/DirtyStone.inputs:Dirt_width>
             uniform token outputs:chunk
+            rel ui:gizmo:width:anchor = None
+            uniform token ui:gizmo:width:anchorSource = "prim_path"
+            uniform token ui:gizmo:width:axis = "Y"
+            uniform token ui:gizmo:width:driver.connect = </chunks/DirtyStone/Dirt.inputs:width>
+            uniform token[] ui:gizmo:width:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:width:label = "Dirt"
+            uniform token ui:gizmo:width:type = "cube"
             uniform float2 ui:nodegraph:node:pos = (260, 0)
         }
 

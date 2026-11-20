@@ -34,7 +34,7 @@ from usd_chunks import chunk_stage
 from usd_chunks import chunk_trace
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.frontends.qt import node_theme, prim_trace, window_state
+from usd_chunks.frontends.qt import node_theme, prim_trace, styles_menu, window_state
 from usd_chunks.frontends.qt.backdrop_item import BackdropItem, BackdropTextPopup
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, GraphItemEntry, LabeledWidget, NODE_GRAPH_ITEMS, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
@@ -4425,6 +4425,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._param_edge_action.setCheckable(True)
         self._param_edge_action.setChecked(True)
         self._param_edge_action.triggered.connect(self._on_toggle_param_edges)
+        # Styles: looks put on the object picked in the viewport, as pictures (styles_menu).
+        self._styles_menu = self._menubar.addMenu("Styles")
+        self._styles_menu.aboutToShow.connect(
+            lambda: styles_menu.fill_styles_menu(self._styles_menu, self.apply_style))
         self._menubar.setFixedWidth(self.width())
         mh = self._menubar.sizeHint().height()
         self.setViewportMargins(0, mh, 0, 0)
@@ -7392,6 +7396,33 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
 
         QtCore.QTimer.singleShot(60, self, lambda ctx=context: self._ensure_default_view(ctx))
+
+    def apply_style(self, entry) -> None:
+        """Put a style on the prim picked in the viewport, from the Styles menu.
+
+        The entry makes a Reference to the style's network with that prim as its Location
+        (usd_chunks/styles.py). It is wired onto the end of the chain whatever Auto-connect
+        says: a look put on an object that the graph does not deliver would show nothing.
+        """
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        context = self._graph_context()
+        tail = self._chain_tail()  # read before the add, which can change the selection
+        view_exists = self._context_has_view(scene, context)
+        chunks = entry.create()
+        if not chunks:
+            return
+        centre = self.mapToScene(self.viewport().rect().center())
+        chunk_graph.start_collapsed(chunks)
+        with chunk_stage.creating_at((centre.x(), -centre.y()), loft=False),                 scene.creating_in(self._nest_target(context)):
+            for c in chunks:
+                if view_exists:
+                    c.set_blocked(True)  # held until wired, as a node made from the menu is
+                scene.add_chunk(c)
+        new_path = chunk_stage.get_chunk_prim_path(chunks[0])
+        # Deferred like create_chunk_from_entry: the new node's ports come with the rebuild.
+        QtCore.QTimer.singleShot(80, self, lambda: self._chain_after(tail, new_path, context))
 
     def _chain_tail(self) -> str | None:
         """The node a new chunk goes after when Auto-connect is on, as a prim path.

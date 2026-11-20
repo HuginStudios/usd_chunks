@@ -51,6 +51,13 @@ Params: Wear_width, how far the wear reaches from an edge; Wear_angle, how sharp
             float inputs:width = 0.15
             float inputs:width.connect = </chunks/WornPaint.inputs:Wear_width>
             uniform token outputs:chunk
+            rel ui:gizmo:width:anchor = None
+            uniform token ui:gizmo:width:anchorSource = "prim_path"
+            uniform token ui:gizmo:width:axis = "Y"
+            uniform token ui:gizmo:width:driver.connect = </chunks/WornPaint/Wear.inputs:width>
+            uniform token[] ui:gizmo:width:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:width:label = "Wear"
+            uniform token ui:gizmo:width:type = "cube"
             uniform float2 ui:nodegraph:node:pos = (260, 0)
         }
 
