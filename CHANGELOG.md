@@ -9,11 +9,30 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- Bind Material has a Strength: Weaker than Descendants lets what is bound below the target
+  win. Bind a tree's mesh to bark, and its leaf face subset keeps its own material. Stronger
+  than Descendants stays the default.
+
 ### Changed
 
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
   leaved like the wall, they hung like a fringe cut straight, in clumps.
+
+### Fixed
+
+- Prim offers the scene-level prims no other chunk makes: PhysicsScene, a Physics joint
+  (Fixed, Revolute, Prismatic, Spherical), RenderSettings and RenderProduct. A script that
+  asked for one got an Xform.
+- Render in Command mode finds files the network names relative to its folder, for a
+  network built with `Scene.new(path=...)`. The stage it hands usdrecord went to the temp
+  folder, and the render came out without them.
+- Reset Transform resets every prim its Prim names, by paths or a pattern. It reset only
+  the first.
+- Property Editor makes a relationship the prim doesn't have yet with a `rel` edit:
+  `rel physics:body1 = "/World/robot/base"`. The edit was skipped as an unknown type.
 
 ## [1.0.0-rc.2] - 2026-11-19
 
