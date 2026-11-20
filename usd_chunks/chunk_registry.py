@@ -1847,7 +1847,10 @@ def _category_order(entry: MenuEntry) -> tuple:
 
     Examples come first, the rest A-Z, and chunks with no category after every category.
     """
-    category = tuple(part.lower() for part in entry.module.get_menu_path()[:-1])
+    path = tuple(entry.module.get_menu_path()[:-1])
+    if tuple(entry.namespace[:len(path)]) != path:
+        path = tuple(entry.namespace[:-1])  # a variant placed from the top of the menu
+    category = tuple(part.lower() for part in path)
     if not category:
         return (2,)
     return (0 if category[0] == _FIRST_CATEGORY else 1, category)
@@ -1871,7 +1874,9 @@ class MenuEntry:
         module (ChunkModule): The module this entry creates from
         namespace (Tuple[str, ...]): Menu path, outermost first; the last element is the label
         tooltip (str): Cleaned description, '' when the chunk is undocumented
-        presets (Optional[Dict[str, Any]]): Param values to apply on create; None for a base entry
+        presets (Optional[Dict[str, Any]]): Param values to apply on create; None for a base entry.
+            A value may be a callable, called with the new chunk at create time: what to
+            set, or None to leave the param alone (a style takes the prim selected now).
     """
 
     module: ChunkModule
@@ -1916,6 +1921,10 @@ class MenuEntry:
                 c._executing = True
                 try:
                     for param_name, value in presets.items():
+                        if callable(value):
+                            value = value(c)
+                            if value is None:
+                                continue
                         if param := c.get_param(param_name):
                             param.value = value
                 finally:
@@ -2251,10 +2260,13 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                 sub = tuple(p for p in str(label).split("/") if p)
                 if not sub:
                     continue
+                # A label that starts with "/" is placed from the top of the menu, not
+                # under its module's category: the styles a Reference offers are a menu of
+                # their own.
                 entries.append(
                     MenuEntry(
                         module=mod,
-                        namespace=parent + sub,
+                        namespace=sub if str(label).startswith("/") else parent + sub,
                         tooltip=tooltip,
                         presets=dict(presets),
                     )

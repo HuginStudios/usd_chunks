@@ -1,0 +1,122 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "WornPaint" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        string inputs:doc = """Paint worn off the edges and corners, in patches.
+Paints the object blue, with the paint rubbed back to a pale undercoat where its edges bend sharply. Needs a mesh with divisions: the wear is per point.
+Params: Wear_width, how far the wear reaches from an edge; Wear_angle, how sharp an edge must be; Patches_size and Patches_threshold, the size and amount of the patches the wear breaks into."""
+        custom float inputs:Patches_size = 0.3
+        custom float inputs:Patches_threshold = 0.45
+        custom float inputs:Wear_angle = 40
+        custom float inputs:Wear_width = 0.15
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Patches" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "noise_field"
+            string inputs:prim_path = "/"
+            string inputs:primvar = "style_patches"
+            float inputs:size = 0.3
+            float inputs:size.connect = </chunks/WornPaint.inputs:Patches_size>
+            float inputs:softness = 0.3
+            float inputs:threshold = 0.45
+            float inputs:threshold.connect = </chunks/WornPaint.inputs:Patches_threshold>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Wear" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "edge_field"
+            float inputs:angle = 40
+            float inputs:angle.connect = </chunks/WornPaint.inputs:Wear_angle>
+            string inputs:base_primvar = "style_patches"
+            token inputs:chunk.connect = </chunks/WornPaint/Patches.outputs:chunk>
+            string inputs:prim_path = "/"
+            string inputs:primvar = "wear"
+            float inputs:width = 0.15
+            float inputs:width.connect = </chunks/WornPaint.inputs:Wear_width>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Look" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "inline_usd"
+            token inputs:chunk.connect = </chunks/WornPaint/Wear.outputs:chunk>
+            string inputs:code = '''#usda 1.0
+def Scope "materials" {
+    def Material "worn_paint" {
+        token outputs:mtlx:surface.connect = </materials/worn_paint/surface.outputs:out>
+        def Shader "wear" {
+            uniform token info:id = "ND_geompropvalue_float"
+            string inputs:geomprop = "wear"
+            float outputs:out
+        }
+        def Shader "colour" {
+            uniform token info:id = "ND_mix_color3"
+            color3f inputs:bg = (0.05, 0.22, 0.45)
+            color3f inputs:fg = (0.74, 0.7, 0.62)
+            float inputs:mix.connect = </materials/worn_paint/wear.outputs:out>
+            color3f outputs:out
+        }
+        def Shader "rough" {
+            uniform token info:id = "ND_mix_float"
+            float inputs:bg = 0.55
+            float inputs:fg = 0.3
+            float inputs:mix.connect = </materials/worn_paint/wear.outputs:out>
+            float outputs:out
+        }
+        def Shader "surface" {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            color3f inputs:base_color.connect = </materials/worn_paint/colour.outputs:out>
+            float inputs:specular_roughness.connect = </materials/worn_paint/rough.outputs:out>
+            token outputs:out
+        }
+    }
+}
+'''
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Paint" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "bind_material"
+            token inputs:chunk.connect = </chunks/WornPaint/Look.outputs:chunk>
+            string inputs:material_path = "/materials/worn_paint"
+            string inputs:primpath_location = "/"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/WornPaint/Paint.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (1060, 0)
+        }
+    }
+}
+

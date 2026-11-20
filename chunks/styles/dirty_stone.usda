@@ -1,0 +1,121 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "DirtyStone" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        custom float inputs:Chips_width = 0.06
+        custom float inputs:Dirt_width = 0.2
+        string inputs:doc = """Grey stone with dirt in the corners and pale chips on the edges.
+Dark dirt collects where faces meet inward (the foot of a step, the inside of a box), and the outer edges are chipped lighter. Needs a mesh with divisions.
+Params: Dirt_width, how far the dirt reaches from a corner; Chips_width, how wide the chipped edges are."""
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Chips" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "edge_field"
+            string inputs:prim_path = "/"
+            string inputs:primvar = "chips"
+            float inputs:width = 0.06
+            float inputs:width.connect = </chunks/DirtyStone.inputs:Chips_width>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Dirt" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "edge_field"
+            token inputs:chunk.connect = </chunks/DirtyStone/Chips.outputs:chunk>
+            string inputs:find = "Inner Corners"
+            string inputs:prim_path = "/"
+            string inputs:primvar = "dirt"
+            float inputs:softness = 0
+            float inputs:width = 0.2
+            float inputs:width.connect = </chunks/DirtyStone.inputs:Dirt_width>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Look" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "inline_usd"
+            token inputs:chunk.connect = </chunks/DirtyStone/Dirt.outputs:chunk>
+            string inputs:code = '''#usda 1.0
+def Scope "materials" {
+    def Material "dirty_stone" {
+        token outputs:mtlx:surface.connect = </materials/dirty_stone/surface.outputs:out>
+        def Shader "chips" {
+            uniform token info:id = "ND_geompropvalue_float"
+            string inputs:geomprop = "chips"
+            float outputs:out
+        }
+        def Shader "dirt" {
+            uniform token info:id = "ND_geompropvalue_float"
+            string inputs:geomprop = "dirt"
+            float outputs:out
+        }
+        def Shader "chipped" {
+            uniform token info:id = "ND_mix_color3"
+            color3f inputs:bg = (0.42, 0.41, 0.38)
+            color3f inputs:fg = (0.78, 0.76, 0.7)
+            float inputs:mix.connect = </materials/dirty_stone/chips.outputs:out>
+            color3f outputs:out
+        }
+        def Shader "colour" {
+            uniform token info:id = "ND_mix_color3"
+            color3f inputs:bg.connect = </materials/dirty_stone/chipped.outputs:out>
+            color3f inputs:fg = (0.2, 0.12, 0.05)
+            float inputs:mix.connect = </materials/dirty_stone/dirt.outputs:out>
+            color3f outputs:out
+        }
+        def Shader "surface" {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            color3f inputs:base_color.connect = </materials/dirty_stone/colour.outputs:out>
+            float inputs:specular_roughness = 0.8
+            token outputs:out
+        }
+    }
+}
+'''
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Stone" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "bind_material"
+            token inputs:chunk.connect = </chunks/DirtyStone/Look.outputs:chunk>
+            string inputs:material_path = "/materials/dirty_stone"
+            string inputs:primpath_location = "/"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/DirtyStone/Stone.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (1060, 0)
+        }
+    }
+}
+

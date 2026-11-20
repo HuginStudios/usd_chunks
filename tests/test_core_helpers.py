@@ -126,6 +126,14 @@ def test_the_namespace_itself_strips_to_the_root():
     assert chunk_utils.strip_namespace("/Shot/", "/Shot") == "/"
 
 
+def test_the_root_applies_to_the_namespace_itself():
+    """A network that names "/" means the namespace's own prim: a style applied to /crate
+    works on /crate, not on "/crate/", which names no prim."""
+    assert chunk_utils.apply_namespace("/crate", "/") == "/crate"
+    assert chunk_utils.apply_namespace("/crate", "/, /a") == "/crate, /crate/a"
+    assert chunk_utils.strip_namespace("/crate", chunk_utils.apply_namespace("/crate", "/")) == "/"
+
+
 def test_a_path_outside_the_namespace_is_left_alone():
     assert chunk_utils.strip_namespace("/Shot", "/Other/X") == "/Other/X"
 

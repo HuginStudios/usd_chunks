@@ -3955,19 +3955,7 @@ def host_networks(chunk: core.ChunkBase, targets: list[tuple[str, str]],
         if namespace_changed:
             # Same network, new root: every prim path inside resolves somewhere else now,
             # and the content authored under the old root is only cleared by a re-cook.
-            scene = _active_scene()
-            inside = [c for c in (scene.get_chunks() if scene else [])
-                      if get_chunk_prim_path(c).startswith(own_path + "/")]
-            cooked = 0
-            for c in sorted(inside, key=lambda c: get_chunk_prim_path(c).count("/")):
-                if not c.is_blocked() and not is_group_chunk(c):
-                    c.execute()
-                    cooked += 1
-            logger.info(
-                "%s: network now under %r; re-cooked %d of %d inner chunks (%d blocked)",
-                own_path, namespace or "/", cooked, len(inside),
-                sum(1 for c in inside if c.is_blocked()),
-            )
+            recook_network(chunk, f"network now under {namespace or '/'!r}")
         return
     logger.info("%s hosts %s under %r", own_path, [asset for asset, _ in targets], namespace or "/")
     sync = ChunkStageSync()
@@ -5201,6 +5189,37 @@ def get_view_exec_sources(
         c for conn in exec_in.GetConnections()
         if (c := prim_to_chunk.get(str(conn.GetPrimPath()))) is not None
     ]
+
+
+def recook_network(host: core.ChunkBase, why: str = "") -> int:
+    """Cook again every chunk of the network a Reference or Payload chunk hosts.
+
+    For when what the whole network sees has changed, and its chunks' own params have not:
+    the root its paths resolve under (host_networks), or the wire into the host. A script
+    makes a chunk, cooks it, then wires it (chunk_scene.place), so a hosted network -- a
+    style -- first cooked with nothing above it; the wire reaches only the host, which skips
+    its cook when its own inputs did not change, and the network's chunks kept that result.
+
+    Args:
+        host: The hosting chunk; one hosting nothing has nothing to cook.
+        why: Said in the log line.
+
+    Returns:
+        How many chunks were cooked.
+    """
+    scene = _active_scene()
+    own_path = get_chunk_prim_path(host)
+    inside = [c for c in (scene.get_chunks() if scene else [])
+              if own_path and get_chunk_prim_path(c).startswith(own_path + "/")]
+    cooked = 0
+    for c in sorted(inside, key=lambda c: get_chunk_prim_path(c).count("/")):
+        if not c.is_blocked() and not is_group_chunk(c):
+            c.execute()
+            cooked += 1
+    if inside:
+        logger.info("%s: %s; re-cooked %d of %d inner chunks (%d blocked)", own_path, why or "re-cook",
+                    cooked, len(inside), sum(1 for c in inside if c.is_blocked()))
+    return cooked
 
 
 def get_upstream_stage(stage: Usd.Stage, scene: chunk_scene.SceneSender, chunk: core.ChunkBase) -> Usd.Stage:

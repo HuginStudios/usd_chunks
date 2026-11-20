@@ -41,7 +41,7 @@ def apply_namespace(namespace: str, paths: str) -> str:
     """Put every absolute prim path in `paths` under `namespace`.
 
     A path already under it, or a relative one, is left alone, and so is the separators'
-    spelling.
+    spelling. The root itself, "/", is the namespace: the inverse of strip_namespace.
 
     Args:
         namespace: The prim path to put paths under; "" returns `paths` unchanged.
@@ -55,7 +55,9 @@ def apply_namespace(namespace: str, paths: str) -> str:
     root = namespace.rstrip("/")
     out = []
     for token in _PATH_LIST_SPLIT.split(paths):
-        if token.startswith("/") and not (token == root or token.startswith(root + "/")):
+        if token == "/":
+            token = root
+        elif token.startswith("/") and not (token == root or token.startswith(root + "/")):
             token = root + token
         out.append(token)
     return "".join(out)

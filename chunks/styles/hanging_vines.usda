@@ -1,0 +1,152 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "HangingVines" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        string inputs:doc = """Leafy vines that grow along the outer edges and hang down over the sides.
+Writes <object>/vines (the stems as a mesh and as curves, and the leaves as a PointInstancer) and <object>/vine_leaf, the leaf they copy. Needs a mesh with divisions.
+Params: Ledges_width, how far from an edge the vines may grow; Vines_growth, how far they have grown (0-100); Vines_hang, how many tips hang down (%); Vines_seed, other vines."""
+        custom float inputs:Ledges_width = 0.3
+        custom float inputs:Vines_growth = 100
+        custom float inputs:Vines_hang = 40
+        custom int inputs:Vines_seed = 0
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Ledges" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "edge_field"
+            string inputs:prim_path = "/"
+            string inputs:primvar = "ledges"
+            float inputs:width = 0.3
+            float inputs:width.connect = </chunks/HangingVines.inputs:Ledges_width>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Vines" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "vine"
+            token inputs:chunk.connect = </chunks/HangingVines/Ledges.outputs:chunk>
+            string inputs:density_primvar = "ledges"
+            float inputs:grow_grp:density = 0.5
+            float inputs:grow_grp:growth = 100
+            float inputs:grow_grp:growth.connect = </chunks/HangingVines.inputs:Vines_growth>
+            int inputs:grow_grp:seed = 0
+            int inputs:grow_grp:seed.connect = </chunks/HangingVines.inputs:Vines_seed>
+            float inputs:hang_grp:hang = 40
+            float inputs:hang_grp:hang.connect = </chunks/HangingVines.inputs:Vines_hang>
+            float inputs:hang_grp:hang_length = 15
+            float inputs:leaf_grp:leaf_spacing = 2.5
+            float inputs:leaf_grp:leaf_spread = 0.4
+            string inputs:surface_prim = "/"
+            string inputs:vine_path = "@Ledges.prim_path@/vines"
+            string inputs:vine_path.connect = </chunks/HangingVines/Ledges.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Stems" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "curves_to_mesh"
+            token inputs:chunk.connect = </chunks/HangingVines/Vines.outputs:chunk>
+            string inputs:curves_prim = "@Vines.out_curves@"
+            string inputs:curves_prim.connect = </chunks/HangingVines/Vines.inputs:out_curves>
+            string inputs:primpath_location = "/vines/stems"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Bark" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "set_display_color"
+            token inputs:chunk.connect = </chunks/HangingVines/Stems.outputs:chunk>
+            float inputs:Color:color_b = 0.1
+            float inputs:Color:color_g = 0.16
+            float inputs:Color:color_r = 0.22
+            string inputs:prim_path = "/vines"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Leaf" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/HangingVines/Bark.outputs:chunk>
+            int inputs:grid:dimx1 = 2
+            int inputs:grid:dimy1 = 2
+            bool inputs:grid:grid_checker = 0
+            float inputs:grid:height2 = 0.07
+            float inputs:grid:width1 = 0.05
+            string inputs:mesh_type = "grid"
+            string inputs:prim_path = "@Ledges.prim_path@/vine_leaf"
+            string inputs:prim_path.connect = </chunks/HangingVines/Ledges.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "Green" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "set_display_color"
+            token inputs:chunk.connect = </chunks/HangingVines/Leaf.outputs:chunk>
+            float inputs:Color:color_b = 0.07
+            float inputs:Color:color_g = 0.32
+            float inputs:Color:color_r = 0.1
+            string inputs:prim_path = "/vine_leaf"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "Foliage" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/HangingVines/Green.outputs:chunk>
+            string inputs:Distribution:sampling = "Tiles"
+            string inputs:inst_path = "@Ledges.prim_path@/vines/leaves"
+            string inputs:inst_path.connect = </chunks/HangingVines/Ledges.inputs:prim_path>
+            string inputs:points_prim = "@Vines.out_leaves@"
+            string inputs:points_prim.connect = </chunks/HangingVines/Vines.inputs:out_leaves>
+            string[] inputs:prototypes:proto_path = ["/vine_leaf"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            string inputs:Variation:align_up = "+Z"
+            float inputs:Variation:scale_max = 1.3
+            float inputs:Variation:scale_min = 0.8
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/HangingVines/Foliage.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (1840, 0)
+        }
+    }
+}
+

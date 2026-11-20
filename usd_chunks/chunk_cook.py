@@ -737,7 +737,7 @@ def cook(chunk, layer_of: Callable, stamp: Callable) -> bool:
         # wires a chunk after its first cook -- it cooks again in the same pass.
         # A script's chunk not wired yet (chunk_scene.place) keeps quiet, and is not marked
         # as having said so: if it is still blocked once wired, that cook says it.
-        pending = getattr(chunk, "_wiring_pending", False)
+        pending = skip_cook.wiring_pending(chunk)
         if not pending and (chunk not in _blocked or getattr(chunk, "_cook_problem", None) != str(e)):
             logger.warning("%s is blocked: %s", chunk.name, e)
         _blocked.add(chunk)

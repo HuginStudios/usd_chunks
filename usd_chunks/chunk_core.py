@@ -739,10 +739,23 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         self.__value_sender.execute()
 
     def _resolved_value(self) -> Any:
-        """The row's value, with an expression resolved the way the template resolves its own."""
+        """The row's value, resolved the way the template resolves its own: an expression
+        worked out, and a prim path put under the namespace of a network host it sits in."""
         raw = self._value
-        if isinstance(raw, str) and chunk_utils.has_expression(raw):
-            return self._param_ref._resolve_expression_string(raw)
+        if not isinstance(raw, str) or not raw:
+            return raw
+        try:
+            template = self._param_ref
+        except ReferenceError:  # the row outlived its list
+            return raw
+        if chunk_utils.has_expression(raw):
+            raw = template._resolve_expression_string(raw)
+        # A Scatter's prototype rows inside a style: /rubble/stone in the file is
+        # /steps/rubble/stone on the object the style is on, as for a plain prim path param.
+        if isinstance(raw, str) and raw and template._is_prim_path_param():
+            namespace = template.network_namespace()
+            if namespace:
+                raw = chunk_utils.apply_namespace(namespace, raw)
         return raw
 
     def _ref_child_removed(self, notice, sender):
