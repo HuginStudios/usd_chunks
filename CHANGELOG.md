@@ -9,7 +9,22 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
+  Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
+  tints the band so you can see it.
+- Bind Material has a Strength. Weaker than Descendants lets a face subset keep its own
+  material: bind a tree to bark, and its leaves stay leaves.
+- The build-network skill has a chunks-by-task page: every chunk by the job it does, with
+  when to pick it over its neighbours. Agents now look for a chunk that builds an object (Fence,
+  House) before they model it from boxes.
+
 ### Changed
+
+- `usdchunks list <words>` finds chunks by task words, best first: whole words only ("rain"
+  no longer lists every fence for "terrain"), every word of the query, the name counting most.
+  Scatter Points is found for rocks, trees and grass, Inline USD for keyframes.
 
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
   the shortest, and carry two leaves in three at 80% of the size. All the same length and
@@ -27,6 +42,25 @@ This file starts with the first release; development before that is in the commi
   local LayerStack`.
 - URDF Import writes each link's whole inertia, scaled with Scale. It wrote only part of it,
   and usdchecker rejected every link.
+- Prim can make a PhysicsScene, a physics joint, RenderSettings or RenderProduct. Asking for
+  one gave an Xform.
+- Render in Command mode finds files next to a network made with `Scene.new(path=...)`.
+  They were missing from the render.
+- Reset Transform resets every prim you give it, not just the first.
+- Property Editor can make a new relationship: `rel physics:body1 = "/World/robot/base"`.
+  The edit was skipped.
+- A reopened Vine hides what its saved values make useless again: Start/End Frame with Animate
+  off, Step with Auto Step on. A test now reopens every chunk with the open cache on and checks
+  it shows the same params as before.
+- A menu value in another case or with underscores now picks its item:
+  `light(light_type="distant_light")` makes a DistantLight. It made a DiskLight without a word,
+  and the build skill showed that call. A value that names no item still falls back to the
+  first one, now with a warning.
+- A reopened Shape chunk (USD Cube, Sphere ...) shows its own params again. A USD Cube showed
+  Axis and hid its Size: with the open cache on, the reopened chunk never cooked, and nothing else
+  put its params back.
+- `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
+  what it needs, instead of listing no params as if it took none.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

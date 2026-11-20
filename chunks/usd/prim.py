@@ -37,7 +37,10 @@ def main():
     prim_type = chunk.Menu(
         "prim_type",
         "Prim type",
-        menu_items=["Xform", "Scope", "Class"],
+        # Xform and Scope for grouping; the scene-level and physics prims a network often
+        # needs, which no other chunk makes; Class for Inherit and Specialize.
+        menu_items=["Xform", "Scope", "Class", "PhysicsScene", "PhysicsFixedJoint", "PhysicsRevoluteJoint",
+                    "PhysicsPrismaticJoint", "PhysicsSphericalJoint", "RenderSettings", "RenderProduct"],
     )
     chunk_api.add_param(prim_type)
 
@@ -56,9 +59,11 @@ def config():
             to a unique /prim path on load. If the path is already taken (and no
             variant selection is embedded), a unique suffix is chosen and the field
             is updated to reflect the actual path.
-          - Prim Type: Xform or Scope defines a prim of that type. Class makes an
-            abstract `class` prim (no type, not rendered or traversed) for Inherit and
-            Specialize chunks to point at.
+          - Prim Type: Xform or Scope defines a prim of that type, and so do the
+            physics and render types: PhysicsScene, a Physics joint (Fixed, Revolute,
+            Prismatic, Spherical), RenderSettings, RenderProduct. Class makes an abstract
+            `class` prim (no type, not rendered or traversed) for Inherit and Specialize
+            chunks to point at.
 
         When the path contains an embedded variant selection (e.g. /root{var=val}/child),
         uniqueness is not enforced and the prim is authored directly inside that
