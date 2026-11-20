@@ -9,6 +9,14 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- Height Field chunk: paints a height band on meshes as a 0..1 primvar, 1 between Min
+  Height and Max Height and fading out over Softness. Wire it into a Scatter Points'
+  Density Field to keep trees below a tree line, and Multiply With a Noise Field to combine
+  them. Face Subset also puts the band's faces in a GeomSubset, so Bind Material can give a
+  shore sand or the peaks rock.
+
 ### Changed
 
 - Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
