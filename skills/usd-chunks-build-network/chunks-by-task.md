@@ -10,8 +10,8 @@ modelling it from boxes: look here before you model anything.
 
 - `shape`: USD's own Cube, Sphere, Cylinder, Cone, Capsule, Plane prims, centred on the prim. Pick it for simple stand-ins and colliders.
 - `mesh`: polygon meshes with UVs (cube, sphere, torus, cone, tube, grid, ground). Pick it when the object needs a textured material, a scatter surface or a deformer; the ground and grid entries make terrain bases.
-- `fence`: a whole fence (posts, rails, pickets) along a line or a curve, following the terrain, from new-built to derelict (`picket_fence`, `ranch_fence`, `board_fence`, `derelict_fence` presets). Use it rather than posts made of boxes.
-- `house`: a cottage with real window openings, floors, a chimney and a tiled roof; width re-tiles the bays. Use it for any house or cottage before you model one.
+- `fence`: a whole fence (posts, rails, pickets) along a line or a curve, following the terrain, from new-built to derelict (`picket_fence`, `ranch_fence`, `board_fence`, `derelict_fence` presets). Use it rather than posts made of boxes. A straight one runs `length` along +X from its origin.
+- `house`: a cottage with real window openings, floors, a chimney and a tiled roof; width re-tiles the bays. Its footprint runs from its origin to `width` (+X) and `depth` (+Z). Use it for any house or cottage before you model one.
 - `prim`: an empty prim of any type (Xform, Scope ...), for grouping or a typed prim no other chunk makes.
 - `inline_usd`: any USD you can type as `.usda`: an `over`, a typed prim, time samples (keyframes). The fallback when no chunk makes it.
 - `cad_import`: a STEP or IGES CAD assembly, keeping its hierarchy, instancing and colours.
