@@ -27,6 +27,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A reopened Vine hides what its saved values make useless again: Start/End Frame with Animate
+  off, Step with Auto Step on. A test now reopens every chunk with the open cache on and checks
+  it shows the same params as before.
 - A menu value in another case or with underscores now picks its item:
   `light(light_type="distant_light")` makes a DistantLight. It made a DiskLight without a word,
   and the build skill showed that call. A value that names no item still falls back to the
