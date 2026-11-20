@@ -13,7 +13,7 @@ from the command line.
 | [Batch an asset library](#batch-an-asset-library) | `batch_library.py` | `usdchunks batch` over a folder, Poly Reduce |
 | [Scatter a forest](#scatter-a-forest) | `forest.py` | Scatter Points in layers, with Poly Haven firs, logs, shrubs and grass |
 | [Scatter a biome by height](#scatter-a-biome-by-height) | `valley.py` | Height Field, Keep Away From, face subsets: a village, forest and lake in a valley |
-| [Buildings and water](#buildings-and-water) | `houses_and_water.py` | House, Particle Solver |
+| [A street of houses](#a-street-of-houses) | `street.py` | House, Fence, Transform: eight houses from one chunk type |
 
 For a network packed into one file you can reference anywhere, see
 `examples/scripts/use_groups.py` and [Output, View and ChunkGroup](core-chunks.md).
@@ -33,12 +33,12 @@ argument: `python examples/scripts/valley.py C:/tmp/valley`.
 
 - **The usd-core wheel** (`pip install -e ".[dev]"`). It builds every network and writes
   every USD file, but it can't render, and it has no MaterialX shader definitions. The
-  URDF, batch, forest, valley and water scripts work with it. They skip the image and log
+  URDF, batch, forest, valley and street scripts work with it. They skip the image and log
   `Render: 'usdrecord' not found on PATH`.
 - **A full USD build:** usdview's, Houdini's or Blender's Python. It renders, and it has
   MaterialX. Use it for the CAD and configurator scripts, and for the images.
 
-**Assets.** The URDF, forest, valley and houses scripts use free assets: models, textures and
+**Assets.** The URDF, forest, valley and street scripts use free assets: models, textures and
 an HDRI from [Poly Haven](https://polyhaven.com) (CC0) and the SO-101 arm from
 [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) (Apache 2.0). Each script fetches
 what it needs the first time it runs, into `examples/assets/downloads/`. To fetch all of it
@@ -66,8 +66,7 @@ these materials need their colour, roughness and leaf cut-out maps. `texture_loo
 same for a ground texture.
 
 **Optional libraries.** Some chunks need a library the first time they cook: CAD Import
-needs `cadquery-ocp`, Particle Solver
-`taichi` and Poly Reduce `fast-simplification`. The chunk asks before it installs. Set
+needs `cadquery-ocp` and Poly Reduce `fast-simplification`. The chunk asks before it installs. Set
 `USD_CHUNK_AUTO_INSTALL=1` to install without asking (see [Install](install.md)).
 
 **Rendering from a script.** The Render chunk renders when the network is committed:
@@ -76,7 +75,7 @@ That runs USD's `usdrecord` in its own process, which makes its own OpenGL conte
 Storm works from a terminal too. Use an absolute `output_image`: a relative one is taken from
 the working directory, not from the network's folder.
 
-The URDF, forest, valley and houses scripts render with **Aurora**, the path tracer in the
+The URDF, forest, valley and street scripts render with **Aurora**, the path tracer in the
 2026-11 USD bundle, when it is installed, and with Storm otherwise. Aurora gives soft shadows
 and light that bounces. Three things to know:
 
@@ -339,29 +338,31 @@ The grass and the trees are 60 and 40 million triangles once instanced, past wha
 Points warns about. Aurora renders it; lower the counts, or put a Poly Reduce on a
 prototype, for a smaller GPU.
 
-## Buildings and water
+## A street of houses
 
-![Three cottages, red, yellow and blue, on a lawn, with water spreading in front of them](assets/examples/houses_and_water.jpg)
-
-```
-python examples/scripts/houses_and_water.py
-```
-
-Three **House** chunks, each with its own width, roof style, floors and colour. Then a
-block of water thrown sideways onto the ground by the **Particle Solver** (MLS-MPM in
-Taichi, on the GPU when there is one), baked as points over 48 frames.
-
-- Without a Container, the sim's box is the source block grown by Margin, and it reaches
-  down to the colliders under it (here the ground). Its walls are solid but invisible, so
-  give the water room: the example uses `margin=2.5`.
-- A Container gives the box from a prim's bounds instead. The box is always made a cube,
-  and a hidden prim has no bounds, so keep the container visible while the sim reads it.
-- Give `material_prim` a material, or a renderer draws the points in their display colour.
-- Aurora draws meshes and instancers, not points, so the example sets Render As to
-  Instanced Spheres. The water is still a cloud of small balls: there is no chunk yet that
-  turns particles into a surface. Dark and glossy reads best, as water is mostly what it
-  reflects.
+![A village street with eight houses, red, yellow, blue, white and green, behind picket fences](assets/examples/street.jpg)
 
 ```
-usdchunks run examples/scripts/out/houses_network.usda Cottage1.roof_style=Hip Cottage1.floors=2
+python examples/scripts/street.py
+```
+
+```
+Stage Settings → Mesh (lawn) → material → Mesh (street) → material
+  → House × 8 → Transform × 8 → Fence × 2 → lights → Camera → Render
+```
+
+One chunk type, eight houses. Each **House** is its own node with its own width, roof
+style (Gable, Hip, Gambrel, Saltbox, Mono), floors and colours, and rebuilds its windows,
+roof tiles and chimney to fit. A **Transform** places each one along the street.
+
+- A House is built from its front-left corner, with its door facing −Y. The far row is
+  turned 180° to face the street, so it is placed from its right-hand corner instead.
+- A **Fence** runs along each row of front gardens: posts, rails and pickets in one mesh.
+- The lawn and the street are textured grids, built half size and scaled up, so their
+  textures repeat every 2 m.
+
+Change a house without opening anything:
+
+```
+usdchunks run examples/scripts/out/street_network.usda House3.roof_style=Hip House3.floors=2
 ```

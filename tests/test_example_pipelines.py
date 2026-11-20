@@ -31,7 +31,6 @@ _spec.loader.exec_module(assets)
 
 cad = importlib.import_module("chunks.modelling.cad_import")
 reduce = importlib.import_module("chunks.modelling.poly_reduce")
-particles = importlib.import_module("chunks.dynamics.particle_solver")
 
 # CAD and the configurator shade with MaterialX Standard Surface, whose definition the
 # usd-core wheel does not ship: the shader chunk has no entry for it there.
@@ -217,7 +216,7 @@ def test_batch_makes_a_lighter_proxy_of_every_asset(tmp_path_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The valley biome, and houses with water
+# The valley biome, and a street of houses
 # ---------------------------------------------------------------------------
 
 
@@ -252,15 +251,18 @@ def test_valley_scatters_by_height_and_keeps_away_from_the_houses(tmp_path_facto
     _reopens_as_chunks(out / "valley_network.usda", "TreeLine", "ValleyFloor", "Shore", "Houses", "Trees")
 
 
-@pytest.mark.skipif(not particles._HAS_TAICHI, reason="needs taichi")
-@_downloaded(textures=("grass_path_2",))
-def test_houses_stand_and_the_water_lands_on_the_ground(tmp_path_factory) -> None:
-    out = _run("houses_and_water", tmp_path_factory)
-    stage = Usd.Stage.Open(str(out / "houses_and_water.usda"))
-    for i in (1, 2, 3):
-        house = _bound(stage, f"/World/houses/cottage{i}")
-        assert house.GetMin()[1] == pytest.approx(0.0, abs=0.1)
-    assert _bound(stage, "/World/houses/cottage2").GetMax()[1] > _bound(stage, "/World/houses/cottage1").GetMax()[1]
-    points = UsdGeom.Points(stage.GetPrimAtPath("/World/fx/sim/Particles")).GetPointsAttr().Get(48)
-    assert len(points) > 1000
-    assert min(p[1] for p in points) > -0.05, "no water sank through the ground"
+@_downloaded(textures=("grass_path_2", "concrete_floor_02"))
+def test_street_houses_stand_on_both_sides_facing_it(tmp_path_factory) -> None:
+    out = _run("street", tmp_path_factory)
+    stage = Usd.Stage.Open(str(out / "street.usda"))
+    for i in range(1, 9):
+        house = _bound(stage, f"/World/houses/house{i}")
+        assert house.GetMin()[2] == pytest.approx(0.0, abs=0.1), f"house{i} stands on the ground"
+        if i <= 4:
+            assert house.GetMin()[1] >= 5.9, f"house{i} is on the north side, behind its front garden"
+        else:
+            assert house.GetMax()[1] <= -5.9, f"house{i} is on the south side, behind its front garden"
+    two_floors = _bound(stage, "/World/houses/house2").GetMax()[2]
+    assert two_floors > _bound(stage, "/World/houses/house1").GetMax()[2], "two floors stand taller than one"
+    assert _bound_material(stage, "/World/street") == "/World/looks/street"
+    _reopens_as_chunks(out / "street_network.usda", "House1", "House8", "FenceNorth", "FenceSouth")
