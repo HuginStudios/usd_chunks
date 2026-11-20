@@ -9,6 +9,12 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Changed
+
+- Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
+  the shortest, and carry two leaves in three at 80% of the size. All the same length and
+  leaved like the wall, they hung like a fringe cut straight, in clumps.
+
 ### Fixed
 
 - CAD Import instances a part placed more than once even when the part has a colour, as
