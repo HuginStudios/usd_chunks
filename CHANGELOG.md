@@ -54,6 +54,10 @@ This file starts with the first release; development before that is in the commi
   Reference's Location.
 - Vine keeps the vines on the surface when its Vine Path is under a moved prim.
 - Scatter Points fed Painted Points reopens with its distribution controls hidden again.
+- A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
+  and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
+  Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
+  that id, so on a Vine's leaves the mix is a share, not an exact quota.
 - Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
   its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
   of that ground. A fence covers no ground from above, so a fenced yard still fills.

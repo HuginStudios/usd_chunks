@@ -1505,6 +1505,41 @@ def _painted_points(stage, points_path, up=None):
     return positions, facing[:len(positions)]
 
 
+def _painted_ids(stage, points_path, count):
+    """A painted cloud's ids, (count,) int64, or None when it has none to match its points.
+
+    A Vine gives each leaf the same id at every Growth %, so what a leaf looks like can be
+    tied to the leaf rather than to where it falls in a list that grows.
+    """
+    if not count or not points_path or stage is None:
+        return None
+    prim = stage.GetPrimAtPath(points_path)
+    if not prim or not prim.IsA(UsdGeom.Points):
+        return None
+    ids = UsdGeom.Points(prim).GetIdsAttr().Get()
+    if ids is None or len(ids) != count:
+        return None
+    return np.asarray(ids, dtype=np.int64)
+
+
+def _pick_by_id(weights, ids, seed):
+    """A prototype index per id, drawn by weight from a hash of (seed, id): the same id picks
+    the same prototype however many other points there are."""
+    weights = np.maximum(np.asarray(weights, dtype=np.float64), 0.0)
+    if not len(weights) or weights.sum() <= 0.0:
+        return np.zeros(len(ids), dtype=np.int64)
+    with np.errstate(over="ignore"):
+        x = np.asarray(ids, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15) + np.uint64(seed & 0xFFFFFFFF)
+        x ^= x >> np.uint64(30)
+        x *= np.uint64(0xBF58476D1CE4E5B9)
+        x ^= x >> np.uint64(27)
+        x *= np.uint64(0x94D049BB133111EB)
+        x ^= x >> np.uint64(31)
+    u = (x >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+    edges = np.cumsum(weights) / weights.sum()
+    return np.minimum(np.searchsorted(edges, u, side="right"), len(weights) - 1).astype(np.int64)
+
+
 #: Per-point primvars a painted cloud may carry. Vine writes both on its leaf points.
 #: direction: which way the Up Along Surface axis points on that instance, instead of up the
 #: surface -- the way a leaf leaves its stem. scale: multiplies that instance's scale.
@@ -3192,6 +3227,7 @@ def execute(node):
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
     placed, placed_normals = _painted_points(scratch_stage, points_input, world_up)
+    placed_ids = _painted_ids(scratch_stage, points_input, len(placed))
     placed_toward, placed_scale = _painted_extras(scratch_stage, points_input, len(placed))
     sizes = None  # scales the sampler already drew, when spacing follows scale
 
@@ -3351,10 +3387,21 @@ def execute(node):
         # Exact mix: quota per prototype, then shuffled so the shares are spread over the
         # scatter instead of arriving in blocks.
         # A numpy shuffle: random.shuffle, an element at a time, was a sixth of a big cook.
-        quota = _quota([p.weight for p in protos], count)
-        assignment = np.zeros(count, dtype=np.int64)
-        assignment[:sum(quota)] = np.repeat(np.arange(len(quota)), quota)
-        np.random.default_rng(seed + 31).shuffle(assignment)
+        #
+        # Not for points that carry ids (a Vine's leaves): each one draws its own prototype
+        # from its id. A shuffle over the count gave every leaf a new one whenever the vine
+        # grew a leaf, and a growing vine flickered.
+        keys = placed_ids if placed and placed_ids is not None else None
+        if keys is not None:
+            assignment = _pick_by_id([p.weight for p in protos], keys, seed + 31)
+            quota = np.bincount(assignment, minlength=len(protos)).tolist()
+        else:
+            quota = _quota([p.weight for p in protos], count)
+            assignment = np.zeros(count, dtype=np.int64)
+            assignment[:sum(quota)] = np.repeat(np.arange(len(quota)), quota)
+            np.random.default_rng(seed + 31).shuffle(assignment)
+        # What a placed point's own draws are seeded by: its id, or its place in the list.
+        point_keys = [int(k) for k in keys] if keys is not None else range(count)
 
         scale_rng = random.Random(seed + 13)
         orient_rng = random.Random(seed + 7)
@@ -3390,8 +3437,8 @@ def execute(node):
         if arrays:
             if placed:
                 # Seeded per point, as the loop does: see there.
-                scale_rngs = [random.Random(seed + 13 + i) for i in range(count)]
-                orient_rng = [random.Random(seed + 7 + i) for i in range(count)]
+                scale_rngs = [random.Random(seed + 13 + k) for k in point_keys]
+                orient_rng = [random.Random(seed + 7 + k) for k in point_keys]
             else:
                 scale_rngs = itertools.repeat(scale_rng, count)
             s_all = sizes if sizes else [_draw_scale(r, scale_min, scale_max, scale_bias) for r in scale_rngs]
@@ -3419,7 +3466,7 @@ def execute(node):
         # orient generator is only drawn from for the turn here, so the draws are the loop's.
         loop_quats = None
         if count and not (fast or arrays) and scatter_mode != "Stack" and orient_mode == "Align to Normal":
-            loop_rngs = [random.Random(seed + 7 + i) for i in range(count)] if placed else orient_rng
+            loop_rngs = [random.Random(seed + 7 + k) for k in point_keys] if placed else orient_rng
             loop_quats = _orientations(count, orient_mode, _vectors(normals, count), protos, assignment,
                                        world_up, rand_axis, rand_amount, loop_rngs, align_up,
                                        placed_toward if placed else None)
@@ -3437,8 +3484,8 @@ def execute(node):
                 # a point from the middle, or reorder them, and every point after it silently
                 # changes scale and rotation. Painting is an editing workflow, so the look is
                 # pinned to the index.
-                scale_rng = random.Random(seed + 13 + i)
-                orient_rng = random.Random(seed + 7 + i)
+                scale_rng = random.Random(seed + 13 + point_keys[i])
+                orient_rng = random.Random(seed + 7 + point_keys[i])
             s = sizes[i] if sizes else _draw_scale(scale_rng, scale_min, scale_max, scale_bias)
             if placed and placed_scale is not None:
                 s *= float(placed_scale[i])
@@ -4254,7 +4301,8 @@ def config():
             "as a percentage, and its own scale multiplier. A variant selection can be written\n"
             "into the path -- /props/crayon{color=red} -- and {color=*} expands to one\n"
             "prototype per variant in that set, splitting the row's share between them. Mix\n"
-            "percentages are exact quotas, not probabilities.\n"
+            "percentages are exact quotas, not probabilities -- except on points with ids (a\n"
+            "Vine's leaves), where each point keeps its own pick as the cloud grows.\n"
             "\n"
             "Modes:\n"
             "  Surface  area-weighted sampling on the faces, Poisson-disk spacing.\n"
