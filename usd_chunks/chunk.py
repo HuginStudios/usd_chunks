@@ -49,6 +49,7 @@ See [example](../example.md) for a more extensive example.
 from __future__ import annotations
 
 import logging
+import re
 
 from attr import Attribute as Attribute
 from attrs import field, validators
@@ -320,8 +321,22 @@ class Spinbox(ChunkParamBase[float | int]):
         return param
 
 
+def _same_menu_item(value: Any, items: Sequence[str]) -> str | None:
+    """The item value names when case, spaces and underscores are ignored: "distant_light" and
+    "Distant Light" both name "DistantLight". None when no item, or more than one, matches."""
+    if not isinstance(value, str):
+        return None
+    key = re.sub(r"[\W_]", "", value).lower()
+    found = [item for item in items if re.sub(r"[\W_]", "", str(item)).lower() == key]
+    return found[0] if len(found) == 1 else None
+
+
 class Menu(ChunkParamBase[str]):
     """A menu param: one choice out of menu_items.
+
+    A value is taken as the item it names whatever its case, spaces and underscores
+    ("distant_light" is "DistantLight"). Any other value falls back to the first item, with a
+    warning.
 
     Attributes:
         menu_items: A list of items to display in the menu
@@ -369,6 +384,10 @@ class Menu(ChunkParamBase[str]):
                     # None right when the connection is first being authored -- the one
                     # moment this check actually needs to succeed.
                     return val
+                if (match := _same_menu_item(val, self.menu_items)) is not None:
+                    return match
+                logger.warning("%s: %r is not one of %s; using %r", self.name, val, list(self.menu_items),
+                               self.menu_items[0])
                 return self.menu_items[0]
 
         return super().convert_attr(attr, val)
