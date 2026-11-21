@@ -1312,29 +1312,47 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
             layout.label(text=view.status)
 
 
-def _register_delegates(_prefs=None, _context=None) -> list[str]:
+def _register_delegates() -> list[str]:
     """Make the delegates in USD_CHUNKS_HYDRA_DELEGATES and the preference available.
 
-    Also the preference's update callback. A folder typed in is registered at once, but USD
+    Also run when the preference changes (_on_folders_changed). A folder typed in is registered at once, but USD
     lists its renderers only once per session (the first time anything asks, which the
     viewport does at start), so one added later shows in the Renderer menu after a restart.
     """
     folders = delegates.split_folders(os.environ.get(delegates.ENV_VAR, ""))
-    addon_entry = bpy.context.preferences.addons.get(__package__)
-    if addon_entry is not None:
-        folders += delegates.split_folders(addon_entry.preferences.hydra_delegate_folders)
+    prefs = _addon_prefs()
+    if prefs is not None:
+        folders += delegates.split_folders(prefs.hydra_delegate_folders)
     return delegates.register_folders(folders)
 
 
+#: The extension's id in blender_manifest.toml.
+_EXTENSION_ID = "usd_chunks"
+
+
+def addon_package(modules=None) -> str:
+    """The name Blender knows this add-on by: what its preferences are filed under.
+
+    Installed from the release zip, the add-on is the extension ``bl_ext.<repo>.usd_chunks``,
+    a shim that calls register() here; Blender has imported it by then. Registered any other
+    way (a startup script, a junctioned add-on), it is this package.
+    """
+    modules = sys.modules if modules is None else modules
+    for name in modules:
+        if name.startswith("bl_ext.") and name.endswith("." + _EXTENSION_ID)                 and name.count(".") == 2:
+            return name
+    return __package__
+
+
 def _addon_prefs():
-    entry = bpy.context.preferences.addons.get(__package__)
+    entry = bpy.context.preferences.addons.get(USDCHUNKS_AP_preferences.bl_idname)
     return entry.preferences if entry is not None else None
 
 
-def _register_chunk_folders(_prefs=None, _context=None) -> list[str]:
+def _register_chunk_folders() -> list[str]:
     """Put the Chunk Folders preference on USD_CHUNK_DIRS, and their chunks in the Add menu.
 
-    Also the preference's update callback. Removing a folder from the preference takes
+    Also run when the preference changes (_on_folders_changed). Removing a folder from the preference takes
     effect on the next start: a chunk module already registered stays for this session.
     """
     prefs = _addon_prefs()
@@ -1350,6 +1368,12 @@ def _add_chunk_folders(folders) -> list[str]:
         if view is not None:
             view.missing_types = bg.missing_chunk_types(view.stage)
     return added
+
+
+def _on_folders_changed(_prefs, _context) -> None:
+    """Update callback of the two folder preferences: Blender wants it to return None."""
+    _register_chunk_folders()
+    _register_delegates()
 
 
 #: Said when the add-on runs without its preferences: registered by a startup script
@@ -1449,6 +1473,8 @@ class USDCHUNKS_OT_add_renderer(_FolderBrowser, bpy.types.Operator):
 
 
 class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
+    # Set again in register(), to the extension's name when installed as one (addon_package):
+    # Blender draws and keeps only the preferences filed under the enabled add-on's name.
     bl_idname = __package__
 
     chunk_folders: bpy.props.StringProperty(
@@ -1457,7 +1483,7 @@ class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
             "Folders of chunk modules, added to USD_CHUNK_DIRS for this session; their chunks "
             "join the Add menu. Separate several with ';'. A removed folder goes on restart"),
         default="",
-        update=_register_chunk_folders,
+        update=_on_folders_changed,
     )
 
     hydra_delegate_folders: bpy.props.StringProperty(
@@ -1466,7 +1492,7 @@ class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
             "Render delegates for the live view, built against Blender's USD: each folder "
             "holds plugInfo.json or a resources folder with one. Separate several with ';'"),
         default="",
-        update=_register_delegates,
+        update=_on_folders_changed,
     )
 
     def draw(self, _context):
@@ -1639,6 +1665,7 @@ def register() -> None:
     if exit_pre is not None and forget_unloaded_modules not in exit_pre:
         exit_pre.append(forget_unloaded_modules)
     bg.register()
+    USDCHUNKS_AP_preferences.bl_idname = addon_package()
     for cls in dependencies.CLASSES + _CLASSES:
         bg._register_once(cls)
     # On the tree, not in a global: two trees can edit two networks, and the path has to
