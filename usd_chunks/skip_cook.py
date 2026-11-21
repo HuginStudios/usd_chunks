@@ -1731,6 +1731,24 @@ def run(chunk, main: Usd.Stage, layer: Sdf.Layer, execute, layer_of: Callable | 
         _warn_unwired(chunk, unwired)
 
 
+def wiring_pending(chunk) -> bool:
+    """Whether chunk is a script's chunk cooked before its wire is made (chunk_scene.place), or
+    sits in a network host (a Reference of a saved network) that is.
+
+    What it reads is above it in a moment, so a cook now says nothing about what it misses.
+
+    Args:
+        chunk: The chunk that cooked.
+    """
+    owner = chunk
+    while owner is not None:
+        if getattr(owner, "_wiring_pending", False):
+            return True
+        get_owner = getattr(owner, "get_owner", None)
+        owner = get_owner() if callable(get_owner) else None
+    return False
+
+
 def _warn_unwired(chunk, siblings: list) -> None:
     """Warn, once per set of siblings until rewired, that chunk read them without a wire.
 
@@ -1738,9 +1756,8 @@ def _warn_unwired(chunk, siblings: list) -> None:
         chunk: The chunk that cooked.
         siblings: The chunks whose hidden layers author something its cook read.
     """
-    if getattr(chunk, "_wiring_pending", False):
-        # A script's chunk cooked before its wire is made (chunk_scene.place): what it
-        # reads is above it in a moment, so nothing is said, or recorded as said.
+    if wiring_pending(chunk):
+        # What it reads is above it in a moment, so nothing is said, or recorded as said.
         return
     rec = record(chunk)
     names = frozenset(s.name for s in siblings)

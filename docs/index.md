@@ -22,15 +22,17 @@ screen.
 6. [Pipeline examples](pipeline-examples.md): CAD to render, a product configurator,
    URDF for Isaac Sim, batch jobs, scatter, breakage, buildings and water, each a script
    you can run.
-7. [Chunks, params and groups](chunk-basics.md): what a Chunk is, an example, and a list of
+7. [Styles](styles.md): put a ready-made look on an object in one go (worn paint, dirt,
+   rubble, hanging vines), and make your own.
+8. [Chunks, params and groups](chunk-basics.md): what a Chunk is, an example, and a list of
    params and flags.
-8. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
+9. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
    `execute()` and `commit()`.
-9. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
-   interpreter before making it a module.
-10. [Making a chunk fast](fast-chunks.md): author specs in one change block, do the maths
+10. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
+    interpreter before making it a module.
+11. [Making a chunk fast](fast-chunks.md): author specs in one change block, do the maths
     in numpy, and what doesn't help (threads).
-11. [Undo and redo](undo.md): what Ctrl+Z covers (chunk edits only, by design), on which
+12. [Undo and redo](undo.md): what Ctrl+Z covers (chunk edits only, by design), on which
     hosts, and what to use for the rest.
 
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does

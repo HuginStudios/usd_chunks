@@ -1,0 +1,340 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "ScrapYard" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        custom float inputs:Around_breakup = 0.8
+        custom string inputs:Around_ground = ""
+        custom float inputs:Around_reach = 2.4
+        custom int inputs:Around_seed = 0
+        string inputs:doc = """Boxes, bins, bags, barrels and crates dumped around the object, with planks and stones.
+Props sparse, with smaller junk between them. Put the object on a ground and set Around_ground to it (or select the object, then the ground, before picking the style); without one the pile sits at the object's lowest point. Bring your own assets: Props_files / Props_prims: your own props (boxes, barrels, bins), a folder of USD files or prims in the scene; Props_fit, the size they are fitted to (0 keeps theirs); Props_spacing, how close they go, in sizes of the assets. Junk_files / Junk_prims: your own small junk (planks, stones, cans), a folder of USD files or prims in the scene; Junk_fit, the size they are fitted to (0 keeps theirs); Junk_spacing, how close they go, in sizes of the assets. Empty, the style uses its built-in kit (Poly Haven's, CC0, downloaded the first time).
+Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it is; Around_seed, another pattern."""
+        custom string inputs:Junk_files = ""
+        custom float inputs:Junk_fit = 0.3
+        custom string inputs:Junk_prims = ""
+        custom float inputs:Junk_spacing = 0.5
+        custom string inputs:Props_files = ""
+        custom float inputs:Props_fit = 0
+        custom string inputs:Props_prims = ""
+        custom float inputs:Props_spacing = 1
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Around" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "around_field"
+            float inputs:breakup = 0.8
+            float inputs:breakup.connect = </chunks/ScrapYard.inputs:Around_breakup>
+            float inputs:breakup_size = 1
+            string inputs:ground = ""
+            string inputs:ground.connect = </chunks/ScrapYard.inputs:Around_ground>
+            string inputs:prim_path = "/"
+            string inputs:primpath_location = "@Around.prim_path@/style_ground"
+            string inputs:primpath_location.connect = </chunks/ScrapYard/Around.inputs:prim_path>
+            float inputs:reach = 2.4
+            float inputs:reach.connect = </chunks/ScrapYard.inputs:Around_reach>
+            int inputs:seed = 0
+            int inputs:seed.connect = </chunks/ScrapYard.inputs:Around_seed>
+            float inputs:softness = 0.8
+            uniform token outputs:chunk
+            rel ui:gizmo:reach:anchor = None
+            uniform token ui:gizmo:reach:anchorSource = "primpath_location"
+            uniform token ui:gizmo:reach:driver.connect = </chunks/ScrapYard/Around.inputs:reach>
+            uniform token[] ui:gizmo:reach:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:reach:label = "Reach"
+            uniform token ui:gizmo:reach:type = "cube"
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Kit_box" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ScrapYard/Around.outputs:chunk>
+            string inputs:model = "cardboard_box_01"
+            string inputs:primpath_location = "/style_kit/builtin/box"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Kit_can" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ScrapYard/Kit_box.outputs:chunk>
+            string inputs:model = "metal_trash_can"
+            string inputs:primpath_location = "/style_kit/builtin/can"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Kit_bag" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ScrapYard/Kit_can.outputs:chunk>
+            string inputs:model = "trashbag"
+            string inputs:primpath_location = "/style_kit/builtin/bag"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Kit_barrel" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ScrapYard/Kit_bag.outputs:chunk>
+            string inputs:model = "barrel_03"
+            string inputs:primpath_location = "/style_kit/builtin/barrel"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "Kit_crate" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ScrapYard/Kit_barrel.outputs:chunk>
+            string inputs:model = "wooden_crate_01"
+            string inputs:primpath_location = "/style_kit/builtin/crate"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "Props" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "asset_kit"
+            token inputs:chunk.connect = </chunks/ScrapYard/Kit_crate.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/box/cardboard_box_01* /style_kit/builtin/can/metal_trash_can* /style_kit/builtin/bag/trashbag* /style_kit/builtin/barrel/barrel_03* /style_kit/builtin/crate/wooden_crate_01*"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/ScrapYard.inputs:Props_files>
+            float inputs:fit = 0
+            float inputs:fit.connect = </chunks/ScrapYard.inputs:Props_fit>
+            string inputs:primpath_location = "/style_kit/props"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/ScrapYard.inputs:Props_prims>
+            float inputs:spacing = 1
+            float inputs:spacing.connect = </chunks/ScrapYard.inputs:Props_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Concrete" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_material"
+            token inputs:chunk.connect = </chunks/ScrapYard/Props.outputs:chunk>
+            string inputs:material_path = "/materials/style_concrete"
+            string inputs:texture = "concrete_debris"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1820, 0)
+        }
+
+        def Chunk "Block" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/ScrapYard/Concrete.outputs:chunk>
+            float inputs:cube:depth = 0.26
+            float inputs:cube:height = 0.18
+            float inputs:cube:width = 0.3
+            bool inputs:grid:grid_checker = 0
+            string inputs:mesh_type = "cube"
+            string inputs:prim_path = "@Around.prim_path@/style_kit/builtin/block"
+            string inputs:prim_path.connect = </chunks/ScrapYard/Around.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2080, 0)
+        }
+
+        def Chunk "Break" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "fracture"
+            token inputs:chunk.connect = </chunks/ScrapYard/Block.outputs:chunk>
+            int inputs:generations = 3
+            float inputs:jaggedness = 0.6
+            string inputs:output_path = "@Around.prim_path@/style_kit/builtin/chunks"
+            string inputs:output_path.connect = </chunks/ScrapYard/Around.inputs:prim_path>
+            string inputs:source_prims = "/style_kit/builtin/block"
+            float inputs:Surface:bevel = 0.3
+            string inputs:Surface:inside_material = "/materials/style_concrete"
+            string inputs:Surface:outside_material = "/materials/style_concrete"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2340, 0)
+        }
+
+        def Chunk "HideBlock" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "property_editor"
+            token inputs:chunk.connect = </chunks/ScrapYard/Break.outputs:chunk>
+            string inputs:edits_grp:edits = 'visibility = "invisible"'
+            string inputs:prim = "@Around.prim_path@/style_kit/builtin/chunks"
+            string inputs:prim.connect = </chunks/ScrapYard/Around.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2600, 0)
+        }
+
+        def Chunk "Kit_stones" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ScrapYard/HideBlock.outputs:chunk>
+            string inputs:model = "namaqualand_stones_01"
+            string inputs:primpath_location = "/style_kit/builtin/stones"
+            float inputs:scale = 2
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2860, 0)
+        }
+
+        def Chunk "Plank" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/ScrapYard/Kit_stones.outputs:chunk>
+            float inputs:cube:depth = 0.13
+            float inputs:cube:height = 0.025
+            float inputs:cube:width = 1.2
+            bool inputs:grid:grid_checker = 0
+            string inputs:mesh_type = "cube"
+            string inputs:prim_path = "@Around.prim_path@/style_kit/builtin/plank"
+            string inputs:prim_path.connect = </chunks/ScrapYard/Around.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3120, 0)
+        }
+
+        def Chunk "PlankWood" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_material"
+            token inputs:chunk.connect = </chunks/ScrapYard/Plank.outputs:chunk>
+            string inputs:material_path = "/materials/style_planks"
+            string inputs:primpath_location = "/style_kit/builtin/plank"
+            string inputs:texture = "brown_planks_05"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3380, 0)
+        }
+
+        def Chunk "Junk" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "asset_kit"
+            token inputs:chunk.connect = </chunks/ScrapYard/PlankWood.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/chunks/Prototypes/* /style_kit/builtin/stones/namaqualand_stones_01* /style_kit/builtin/plank"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/ScrapYard.inputs:Junk_files>
+            float inputs:fit = 0.3
+            float inputs:fit.connect = </chunks/ScrapYard.inputs:Junk_fit>
+            string inputs:primpath_location = "/style_kit/junk"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/ScrapYard.inputs:Junk_prims>
+            float inputs:spacing = 0.5
+            float inputs:spacing.connect = </chunks/ScrapYard.inputs:Junk_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3640, 0)
+        }
+
+        def Chunk "PropScatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/ScrapYard/Junk.outputs:chunk>
+            string inputs:density_primvar = "around"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 400
+            string inputs:Distribution:sampling = "Tiles"
+            int inputs:Distribution:seed = 5
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Props.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/ScrapYard/Props.inputs:out_spacing>
+            string inputs:inst_path = "@Around.prim_path@/style_props"
+            string inputs:inst_path.connect = </chunks/ScrapYard/Around.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/props/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            string inputs:surface_prim = "/style_ground"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 1.2
+            float inputs:Variation:scale_min = 0.8
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3900, 0)
+        }
+
+        def Chunk "JunkScatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/ScrapYard/PropScatter.outputs:chunk>
+            string inputs:density_primvar = "around"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 6000
+            string inputs:Distribution:sampling = "Tiles"
+            int inputs:Distribution:seed = 6
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Junk.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/ScrapYard/Junk.inputs:out_spacing>
+            string inputs:inst_path = "@Around.prim_path@/style_junk"
+            string inputs:inst_path.connect = </chunks/ScrapYard/Around.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/junk/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            string inputs:surface_prim = "/style_ground"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 1.3
+            float inputs:Variation:scale_min = 0.4
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (4160, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/ScrapYard/JunkScatter.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (4440, 0)
+        }
+    }
+}
+

@@ -84,7 +84,7 @@ from usd_chunks.chunk_core import (
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
-from usd_chunks import asset_paths, chunk_cook, chunk_utils
+from usd_chunks import asset_paths, chunk_cook, chunk_notice, chunk_utils
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -524,7 +524,13 @@ class LineEdit(ChunkParamBase[str]):
         a param with: a Render Settings camera of "/" names no camera, and reads as a chunk
         that depends on the whole stage, cooking on every edit anywhere. Without a prim
         selected the param keeps its default.
+
+        Only a chunk made new: one loaded from USD (a file opened, a network a Reference
+        brings in) has what was saved, and a param left empty there is meant empty. Seeded,
+        a style brought in with a mesh picked bound its concrete look to that mesh.
         """
+        if chunk_notice._loading_stage is not None:
+            return
         prims = [p for p in self.get_scene().get_selected_prims() if str(p.GetPath()) != "/"]
         if prims:
             self.set_prims(prims)

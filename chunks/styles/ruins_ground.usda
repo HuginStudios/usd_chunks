@@ -1,0 +1,219 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "RuinsGround" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        custom string inputs:Assets_files = ""
+        custom float inputs:Assets_fit = 0.5
+        custom string inputs:Assets_prims = ""
+        custom float inputs:Assets_spacing = 0.78
+        string inputs:doc = """Ground of a ruined town: rubble underfoot, broken concrete and weeds in patches.
+Put it on a ground mesh (with UVs). The texture is Poly Haven's rubble; the built-in kit a broken concrete block, stones and weeds. Bring your own assets: Assets_files / Assets_prims: your own assets, a folder of USD files or prims in the scene; Assets_fit, the size they are fitted to (0 keeps theirs); Assets_spacing, how close they go, in sizes of the assets. Empty, the style uses its built-in kit (Poly Haven's, CC0, downloaded the first time).
+Params: Patches_size and Patches_threshold, how big and how many the patches are; Scatter_seed, another pattern."""
+        custom float inputs:Patches_size = 2.5
+        custom float inputs:Patches_threshold = 0.5
+        custom int inputs:Scatter_seed = 0
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Patches" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "noise_field"
+            string inputs:prim_path = "/"
+            string inputs:primvar = "style_patches"
+            float inputs:size = 2.5
+            float inputs:size.connect = </chunks/RuinsGround.inputs:Patches_size>
+            float inputs:softness = 0.4
+            float inputs:threshold = 0.5
+            float inputs:threshold.connect = </chunks/RuinsGround.inputs:Patches_threshold>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Ground" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_material"
+            token inputs:chunk.connect = </chunks/RuinsGround/Patches.outputs:chunk>
+            string inputs:material_path = "/materials/style_rubble"
+            string inputs:primpath_location = "/"
+            string inputs:texture = "rubble"
+            float inputs:tiling = 6
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Concrete" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_material"
+            token inputs:chunk.connect = </chunks/RuinsGround/Ground.outputs:chunk>
+            string inputs:material_path = "/materials/style_concrete"
+            string inputs:texture = "concrete_debris"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Block" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/RuinsGround/Concrete.outputs:chunk>
+            float inputs:cube:depth = 0.26
+            float inputs:cube:height = 0.18
+            float inputs:cube:width = 0.3
+            bool inputs:grid:grid_checker = 0
+            string inputs:mesh_type = "cube"
+            string inputs:prim_path = "@Patches.prim_path@/style_kit/builtin/block"
+            string inputs:prim_path.connect = </chunks/RuinsGround/Patches.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Break" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "fracture"
+            token inputs:chunk.connect = </chunks/RuinsGround/Block.outputs:chunk>
+            int inputs:generations = 3
+            float inputs:jaggedness = 0.6
+            string inputs:output_path = "@Patches.prim_path@/style_kit/builtin/chunks"
+            string inputs:output_path.connect = </chunks/RuinsGround/Patches.inputs:prim_path>
+            string inputs:source_prims = "/style_kit/builtin/block"
+            float inputs:Surface:bevel = 0.3
+            string inputs:Surface:inside_material = "/materials/style_concrete"
+            string inputs:Surface:outside_material = "/materials/style_concrete"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "HideBlock" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "property_editor"
+            token inputs:chunk.connect = </chunks/RuinsGround/Break.outputs:chunk>
+            string inputs:edits_grp:edits = 'visibility = "invisible"'
+            string inputs:prim = "@Patches.prim_path@/style_kit/builtin/chunks"
+            string inputs:prim.connect = </chunks/RuinsGround/Patches.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "Kit_stones" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/RuinsGround/HideBlock.outputs:chunk>
+            string inputs:model = "namaqualand_stones_01"
+            string inputs:primpath_location = "/style_kit/builtin/stones"
+            float inputs:scale = 2
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Kit_weed" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/RuinsGround/Kit_stones.outputs:chunk>
+            string inputs:model = "weed_plant_02"
+            string inputs:primpath_location = "/style_kit/builtin/weed"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1820, 0)
+        }
+
+        def Chunk "Kit_grass" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/RuinsGround/Kit_weed.outputs:chunk>
+            string inputs:model = "grass_bermuda_01"
+            string inputs:primpath_location = "/style_kit/builtin/grass"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2080, 0)
+        }
+
+        def Chunk "Assets" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "asset_kit"
+            token inputs:chunk.connect = </chunks/RuinsGround/Kit_grass.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/chunks/Prototypes/* /style_kit/builtin/stones/namaqualand_stones_01* /style_kit/builtin/weed/weed_plant_02* /style_kit/builtin/grass/grass_bermuda_01*"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/RuinsGround.inputs:Assets_files>
+            float inputs:fit = 0.5
+            float inputs:fit.connect = </chunks/RuinsGround.inputs:Assets_fit>
+            string inputs:primpath_location = "/style_kit/assets"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/RuinsGround.inputs:Assets_prims>
+            float inputs:spacing = 0.78
+            float inputs:spacing.connect = </chunks/RuinsGround.inputs:Assets_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2340, 0)
+        }
+
+        def Chunk "Scatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/RuinsGround/Assets.outputs:chunk>
+            string inputs:density_primvar = "style_patches"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 12000
+            string inputs:Distribution:sampling = "Tiles"
+            int inputs:Distribution:seed = 0
+            int inputs:Distribution:seed.connect = </chunks/RuinsGround.inputs:Scatter_seed>
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Assets.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/RuinsGround/Assets.inputs:out_spacing>
+            string inputs:inst_path = "@Patches.prim_path@/style_scatter"
+            string inputs:inst_path.connect = </chunks/RuinsGround/Patches.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/assets/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            string inputs:surface_prim = "/"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 1.6
+            float inputs:Variation:scale_min = 0.5
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (2600, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/RuinsGround/Scatter.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (2880, 0)
+        }
+    }
+}
+

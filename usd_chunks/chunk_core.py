@@ -739,10 +739,23 @@ class ProxyParam(chunk_notice.ChunkNoticePropagator):
         self.__value_sender.execute()
 
     def _resolved_value(self) -> Any:
-        """The row's value, with an expression resolved the way the template resolves its own."""
+        """The row's value, resolved the way the template resolves its own: an expression
+        worked out, and a prim path put under the namespace of a network host it sits in."""
         raw = self._value
-        if isinstance(raw, str) and chunk_utils.has_expression(raw):
-            return self._param_ref._resolve_expression_string(raw)
+        if not isinstance(raw, str) or not raw:
+            return raw
+        try:
+            template = self._param_ref
+        except ReferenceError:  # the row outlived its list
+            return raw
+        if chunk_utils.has_expression(raw):
+            raw = template._resolve_expression_string(raw)
+        # A Scatter's prototype rows inside a style: /rubble/stone in the file is
+        # /steps/rubble/stone on the object the style is on, as for a plain prim path param.
+        if isinstance(raw, str) and raw and template._is_prim_path_param():
+            namespace = template.network_namespace()
+            if namespace:
+                raw = chunk_utils.apply_namespace(namespace, raw)
         return raw
 
     def _ref_child_removed(self, notice, sender):
@@ -2287,14 +2300,27 @@ class ChunkUsdAttributeSupport(AttributesBase):
                 # @Container.attr@ from it makes an unresolvable sibling ref (the "Expression ref
                 # not found" spam) and would overwrite the forwarded value with the expression text.
                 my_prim = Sdf.Path(path).GetPrimPath()
-                sibling_conns = []
+                sibling_conns, loft_conns = [], []
                 for c in connections:
                     target_prim = Sdf.Path(str(c)).GetPrimPath()
                     if my_prim != target_prim and my_prim.HasPrefix(target_prim):
-                        continue  # ancestor target == loft (upward) connection
+                        loft_conns.append(c)  # ancestor target == loft (upward) connection
+                        continue
                     sibling_conns.append(c)
                 if expr := self._expression_from_connections(sibling_conns):
                     self.value = expr
+                elif loft_conns:
+                    # Lofted: the value is the group's, on the interface attr this one points
+                    # at -- with the scene's override of it, if it has one. Left to the loft
+                    # forwarding alone, a network hosted into a graph that already had chunks
+                    # (a style, a referenced ChunkGroup) kept every lofted param at its
+                    # module default: a Scatter at Spacing 10 placed nothing.
+                    source = attr.GetStage().GetAttributeAtPath(Sdf.Path(str(loft_conns[0])))
+                    lofted = source.Get(0) if source else None
+                    if lofted is None:
+                        lofted = val
+                    if lofted is not None and not chunk_utils.values_match(self.__dict__.get("value"), lofted):
+                        self.value = lofted
 
     @staticmethod
     def _expression_from_connections(connections) -> str | None:
@@ -2900,7 +2926,13 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
         for node_name, param_name in tokens:
             ref = self._resolve_expression_ref(node_name, param_name)
             val = str(ref.value) if ref is not None and ref.value is not None else ""
-            result = result.replace(f"@{node_name}.{param_name}@", val)
+            token = f"@{node_name}.{param_name}@"
+            if val == "/":
+                # The root and a path after it join to that path: "@A.prim_path@/rubble" is
+                # /rubble while A names the root (a style before its object is known), not
+                # //rubble, which names no prim and makes a chunk authoring there raise.
+                result = result.replace(token + "/", "/")
+            result = result.replace(token, val)
 
         # On a numeric param the substituted string is meant as a sum, not as text:
         # "@a.x@ * @b.y@" becomes "20.0 * 3.0" above and has to come back as 60.0, or the

@@ -20,6 +20,24 @@ This file starts with the first release; development before that is in the commi
 - Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
   Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
   tints the band so you can see it.
+- Styles: ready-made looks you put on an object in one go. Select a mesh (and the ground it
+  stands on), open the node graph's Styles menu and click a picture, or pick one under Styles
+  in the Tab menu. Fourteen come with usd_chunks, from piles of concrete debris and bushes
+  round an object to a whole Abandoned Cottage and ground biomes. A style places your own
+  assets: each kind of thing it places (Debris, Plants, Leaves...) takes a folder of USD files
+  or prims in the scene, fitted to a size. Left empty, it uses its built-in kit, made of free
+  Poly Haven assets downloaded the first time. Each style is a saved network in a `styles`
+  folder, so you can make your own; see [Styles](docs/styles.md).
+- Poly Haven Model and Poly Haven Material chunks: free Poly Haven models and textures (CC0)
+  from a picture menu, downloaded once into your cache, with looks Storm and Aurora draw.
+- Around Field chunk: the ground round an object's base, marked for a Scatter Points to pile
+  rubble or plants there.
+- Asset Kit chunk: your own assets laid out for a scatter, from a folder of USD files or prims
+  in the scene. Each is stood on the ground, in the scene's units and up axis, and fitted to
+  a size.
+- Facing Field chunk: marks where meshes face up, sideways or down, or are under cover, for a
+  Scatter Points to place things there.
+- Edge Field's Width is a handle in the viewport: pick the mesh and drag it.
 - Edge Field chunk: marks the sharp edges or the inner corners of meshes. Use it as a Scatter
   Points' Density Field to drop rubble along edges, or read it in a material for worn paint
   or dirt in corners. Multiply With a Noise Field breaks it into patches; Show Field tints it.
@@ -41,6 +59,18 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A ChunkGroup file referenced into a graph that already had chunks kept its lofted params
+  at their defaults in usdview (Scatter On Terrain came in at Density 0).
+- A Reference with a Location that hosts a network no longer turns the prim at that
+  Location into an Xform, and no longer opens the network as a tab of its own.
+- A Scatter's prototype rows inside a referenced network now find their prims under the
+  Reference's Location.
+- Vine keeps the vines on the surface when its Vine Path is under a moved prim.
+- A chunk loaded from a file or a referenced network no longer fills its empty prim params
+  from what is selected in the viewport; only a new chunk does.
+- A Reference of a saved network shows all of the network's lofted params in usdview, not
+  just the first.
+- Scatter Points fed Painted Points reopens with its distribution controls hidden again.
 - A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
   and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
   Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from

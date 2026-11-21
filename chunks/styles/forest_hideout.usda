@@ -1,0 +1,183 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "ForestHideout" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        custom float inputs:Around_breakup = 0.75
+        custom string inputs:Around_ground = ""
+        custom float inputs:Around_reach = 2.2
+        custom int inputs:Around_seed = 0
+        string inputs:doc = """Ferns, dry branches and mossy rocks around the object, like a forest floor.
+Built in: ferns, branches, mossy rocks, dandelions and grass. Put the object on a ground and set Around_ground to it (or select the object, then the ground, before picking the style); without one the pile sits at the object's lowest point. Bring your own assets: Plants_files / Plants_prims: your own forest plants and rocks, a folder of USD files or prims in the scene; Plants_fit, the size they are fitted to (0 keeps theirs); Plants_spacing, how close they go, in sizes of the assets. Empty, the style uses its built-in kit (Poly Haven's, CC0, downloaded the first time).
+Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it is; Around_seed, another pattern."""
+        custom string inputs:Plants_files = ""
+        custom float inputs:Plants_fit = 0.8
+        custom string inputs:Plants_prims = ""
+        custom float inputs:Plants_spacing = 0.83
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Around" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "around_field"
+            float inputs:breakup = 0.75
+            float inputs:breakup.connect = </chunks/ForestHideout.inputs:Around_breakup>
+            float inputs:breakup_size = 1
+            string inputs:ground = ""
+            string inputs:ground.connect = </chunks/ForestHideout.inputs:Around_ground>
+            string inputs:prim_path = "/"
+            string inputs:primpath_location = "@Around.prim_path@/style_ground"
+            string inputs:primpath_location.connect = </chunks/ForestHideout/Around.inputs:prim_path>
+            float inputs:reach = 2.2
+            float inputs:reach.connect = </chunks/ForestHideout.inputs:Around_reach>
+            int inputs:seed = 0
+            int inputs:seed.connect = </chunks/ForestHideout.inputs:Around_seed>
+            float inputs:softness = 0.8
+            uniform token outputs:chunk
+            rel ui:gizmo:reach:anchor = None
+            uniform token ui:gizmo:reach:anchorSource = "primpath_location"
+            uniform token ui:gizmo:reach:driver.connect = </chunks/ForestHideout/Around.inputs:reach>
+            uniform token[] ui:gizmo:reach:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:reach:label = "Reach"
+            uniform token ui:gizmo:reach:type = "cube"
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Kit_fern" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ForestHideout/Around.outputs:chunk>
+            string inputs:model = "fern_02"
+            string inputs:primpath_location = "/style_kit/builtin/fern"
+            float inputs:scale = 1.2
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Kit_branches" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ForestHideout/Kit_fern.outputs:chunk>
+            string inputs:model = "dry_branches_medium_01"
+            string inputs:primpath_location = "/style_kit/builtin/branches"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Kit_mossy" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ForestHideout/Kit_branches.outputs:chunk>
+            string inputs:model = "rock_moss_set_01"
+            string inputs:primpath_location = "/style_kit/builtin/mossy"
+            float inputs:scale = 0.25
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "Kit_dandelion" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ForestHideout/Kit_mossy.outputs:chunk>
+            string inputs:model = "dandelion_01"
+            string inputs:primpath_location = "/style_kit/builtin/dandelion"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "Kit_grass" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/ForestHideout/Kit_dandelion.outputs:chunk>
+            string inputs:model = "grass_bermuda_01"
+            string inputs:primpath_location = "/style_kit/builtin/grass"
+            float inputs:scale = 0.8
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "Plants" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "asset_kit"
+            token inputs:chunk.connect = </chunks/ForestHideout/Kit_grass.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/fern/fern_02* /style_kit/builtin/branches/dry_branches_medium_01* /style_kit/builtin/mossy/rock_moss_set_01* /style_kit/builtin/dandelion/dandelion_01* /style_kit/builtin/grass/grass_bermuda_01*"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/ForestHideout.inputs:Plants_files>
+            float inputs:fit = 0.8
+            float inputs:fit.connect = </chunks/ForestHideout.inputs:Plants_fit>
+            string inputs:primpath_location = "/style_kit/plants"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/ForestHideout.inputs:Plants_prims>
+            float inputs:spacing = 0.83
+            float inputs:spacing.connect = </chunks/ForestHideout.inputs:Plants_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Scatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/ForestHideout/Plants.outputs:chunk>
+            string inputs:density_primvar = "around"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 6000
+            string inputs:Distribution:sampling = "Tiles"
+            int inputs:Distribution:seed = 3
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Plants.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/ForestHideout/Plants.inputs:out_spacing>
+            string inputs:inst_path = "@Around.prim_path@/style_forest"
+            string inputs:inst_path.connect = </chunks/ForestHideout/Around.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/plants/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            string inputs:surface_prim = "/style_ground"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 1.8
+            float inputs:Variation:scale_min = 0.8
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1820, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/ForestHideout/Scatter.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (2100, 0)
+        }
+    }
+}
+

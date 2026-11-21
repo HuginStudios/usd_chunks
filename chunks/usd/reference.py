@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pxr import Sdf
-from usd_chunks import chunk, chunk_stage, chunk_utils, sdf_authoring
+from usd_chunks import chunk, chunk_stage, chunk_utils, sdf_authoring, styles
 
 
 def file_changed(owner, notice, sender):
@@ -29,7 +29,11 @@ def execute(node):
         chunk_stage.host_network(node, reference_path, network, namespace=raw_path or "")
         if raw_path:  # the namespace root, else only an untyped parent of the network's prims
             for target_path in chunk_utils.author_in_variant_contexts(stage, node.get_param("primpath_location")):
-                _define(stage, target_path, node.get_param("prim_type").value or "Xform")
+                # A namespace on a prim that is already there -- a style put on a mesh -- is
+                # left as it is: defining it as an Xform turned the mesh into one.
+                existing = stage.GetPrimAtPath(target_path)
+                if not (existing and existing.IsDefined()):
+                    _define(stage, target_path, node.get_param("prim_type").value or "Xform")
         return
     chunk_stage.unhost_network(node)
 
@@ -145,4 +149,10 @@ def config():
 
         Import is also variant-context-aware via author_in_variant_contexts, so the
         reference is authored inside any active variant selection on the stage.
-        """)
+
+        The Styles menu is this chunk too: each style is a network file whose prim paths
+        stand for the object it is put on, and its entry references it with the prim
+        selected in the viewport as the Location (see usd_chunks/styles.py).
+        """,
+        # Built when a menu is first drawn: it lists the style folders.
+        variants=styles.menu_variants)

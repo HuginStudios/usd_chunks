@@ -1,0 +1,186 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Scope "chunks"
+{
+    def Chunk "Rubble" (
+        prepend apiSchemas = ["NodeGraphNodeAPI"]
+    )
+    {
+        uniform token info:chunkType = "chunkgroup"
+        custom float inputs:Corners_width = 0.18
+        custom string inputs:Debris_files = ""
+        custom float inputs:Debris_fit = 0.3
+        custom string inputs:Debris_prims = ""
+        custom float inputs:Debris_spacing = 0.15
+        string inputs:doc = """Broken concrete and stones gathered in the inner corners: the foot of a wall, the back of a step.
+Needs a mesh with divisions. Bring your own assets: Debris_files / Debris_prims: your own debris, a folder of USD files or prims in the scene; Debris_fit, the size they are fitted to (0 keeps theirs); Debris_spacing, how close they go, in sizes of the assets. Empty, the style uses its built-in kit (Poly Haven's, CC0, downloaded the first time).
+Params: Corners_width, how far from a corner the stones spread; Scatter_seed, another pattern."""
+        custom int inputs:Scatter_seed = 0
+        uniform token outputs:chunk
+        uniform float2 ui:nodegraph:node:pos = (0, 0)
+
+        def Chunk "Corners" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "edge_field"
+            string inputs:find = "Inner Corners"
+            string inputs:prim_path = "/"
+            string inputs:primvar = "rubble"
+            float inputs:softness = 0
+            float inputs:width = 0.18
+            float inputs:width.connect = </chunks/Rubble.inputs:Corners_width>
+            uniform token outputs:chunk
+            rel ui:gizmo:width:anchor = None
+            uniform token ui:gizmo:width:anchorSource = "prim_path"
+            uniform token ui:gizmo:width:axis = "Y"
+            uniform token ui:gizmo:width:driver.connect = </chunks/Rubble/Corners.inputs:width>
+            uniform token[] ui:gizmo:width:editmode = ["onPrimSelection"]
+            uniform token ui:gizmo:width:label = "Corners"
+            uniform token ui:gizmo:width:type = "cube"
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def Chunk "Concrete" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_material"
+            token inputs:chunk.connect = </chunks/Rubble/Corners.outputs:chunk>
+            string inputs:material_path = "/materials/style_concrete"
+            string inputs:texture = "concrete_debris"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (260, 0)
+        }
+
+        def Chunk "Block" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "mesh"
+            token inputs:chunk.connect = </chunks/Rubble/Concrete.outputs:chunk>
+            float inputs:cube:depth = 0.26
+            float inputs:cube:height = 0.18
+            float inputs:cube:width = 0.3
+            bool inputs:grid:grid_checker = 0
+            string inputs:mesh_type = "cube"
+            string inputs:prim_path = "@Corners.prim_path@/style_kit/builtin/block"
+            string inputs:prim_path.connect = </chunks/Rubble/Corners.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (520, 0)
+        }
+
+        def Chunk "Break" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "fracture"
+            token inputs:chunk.connect = </chunks/Rubble/Block.outputs:chunk>
+            int inputs:generations = 3
+            float inputs:jaggedness = 0.6
+            string inputs:output_path = "@Corners.prim_path@/style_kit/builtin/chunks"
+            string inputs:output_path.connect = </chunks/Rubble/Corners.inputs:prim_path>
+            string inputs:source_prims = "/style_kit/builtin/block"
+            float inputs:Surface:bevel = 0.3
+            string inputs:Surface:inside_material = "/materials/style_concrete"
+            string inputs:Surface:outside_material = "/materials/style_concrete"
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (780, 0)
+        }
+
+        def Chunk "HideBlock" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "property_editor"
+            token inputs:chunk.connect = </chunks/Rubble/Break.outputs:chunk>
+            string inputs:edits_grp:edits = 'visibility = "invisible"'
+            string inputs:prim = "@Corners.prim_path@/style_kit/builtin/chunks"
+            string inputs:prim.connect = </chunks/Rubble/Corners.inputs:prim_path>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1040, 0)
+        }
+
+        def Chunk "Kit_stones" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "polyhaven_model"
+            token inputs:chunk.connect = </chunks/Rubble/HideBlock.outputs:chunk>
+            string inputs:model = "namaqualand_stones_01"
+            string inputs:primpath_location = "/style_kit/builtin/stones"
+            float inputs:scale = 2
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "Debris" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "asset_kit"
+            token inputs:chunk.connect = </chunks/Rubble/Kit_stones.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/chunks/Prototypes/* /style_kit/builtin/stones/namaqualand_stones_01*"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/Rubble.inputs:Debris_files>
+            float inputs:fit = 0.3
+            float inputs:fit.connect = </chunks/Rubble.inputs:Debris_fit>
+            string inputs:primpath_location = "/style_kit/debris"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/Rubble.inputs:Debris_prims>
+            float inputs:spacing = 0.15
+            float inputs:spacing.connect = </chunks/Rubble.inputs:Debris_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Scatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/Rubble/Debris.outputs:chunk>
+            string inputs:density_primvar = "rubble"
+            bool inputs:Distribution:auto_spacing = 0
+            int inputs:Distribution:max_count = 6000
+            string inputs:Distribution:sampling = "Tiles"
+            int inputs:Distribution:seed = 0
+            int inputs:Distribution:seed.connect = </chunks/Rubble.inputs:Scatter_seed>
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Debris.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/Rubble/Debris.inputs:out_spacing>
+            string inputs:inst_path = "@Corners.prim_path@/style_rubble"
+            string inputs:inst_path.connect = </chunks/Rubble/Corners.inputs:prim_path>
+            string[] inputs:prototypes:proto_path = ["/style_kit/debris/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
+            string inputs:surface_prim = "/"
+            string inputs:Variation:rand_axis = "Y"
+            float inputs:Variation:scale_bias = 2.5
+            float inputs:Variation:scale_max = 0.6
+            float inputs:Variation:scale_min = 0.15
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1820, 0)
+        }
+
+        def Chunk "Output" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "output"
+            token inputs:chunk.connect = </chunks/Rubble/Scatter.outputs:chunk>
+            uniform token ui:nodegraph:node:expansionState = "closed"
+            uniform float2 ui:nodegraph:node:pos = (2100, 0)
+        }
+    }
+}
+

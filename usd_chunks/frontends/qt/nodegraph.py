@@ -32,9 +32,10 @@ from usd_chunks.graph import layout as chunk_graph_layout
 from usd_chunks import chunk_utils
 from usd_chunks import chunk_stage
 from usd_chunks import chunk_trace
+from usd_chunks import styles
 from usd_chunks.chunk_flags import ChunkFlags
 from usd_chunks.chunk_notice import ChunkNoticeAlias, NoticeConnection
-from usd_chunks.frontends.qt import node_theme, prim_trace, window_state
+from usd_chunks.frontends.qt import node_theme, prim_trace, styles_menu, window_state
 from usd_chunks.frontends.qt.backdrop_item import BackdropItem, BackdropTextPopup
 from usd_chunks.frontends.qt.widgets import ChunkContextBreadcrumb, ContainerWidget, ChunkWidget, FilterableChunkMenu, GraphItemEntry, LabeledWidget, NODE_GRAPH_ITEMS, apply_chunk_stylesheet, disconnect_when_destroyed, ViewSlotState, pre_delete_hooks, slot_for_key
 
@@ -4425,6 +4426,10 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
         self._param_edge_action.setCheckable(True)
         self._param_edge_action.setChecked(True)
         self._param_edge_action.triggered.connect(self._on_toggle_param_edges)
+        # Styles: looks put on the object picked in the viewport, as pictures (styles_menu).
+        self._styles_menu = self._menubar.addMenu("Styles")
+        self._styles_menu.aboutToShow.connect(
+            lambda: styles_menu.fill_styles_menu(self._styles_menu, self.apply_style))
         self._menubar.setFixedWidth(self.width())
         mh = self._menubar.sizeHint().height()
         self.setViewportMargins(0, mh, 0, 0)
@@ -7392,6 +7397,76 @@ class ChunkGraphView(QtWidgets.QGraphicsView):
             return
 
         QtCore.QTimer.singleShot(60, self, lambda ctx=context: self._ensure_default_view(ctx))
+
+    def apply_style(self, entry) -> None:
+        """Put a style on the prim picked in the viewport, from the Styles menu.
+
+        The entry makes a Reference to the style's network with that prim as its Location
+        (usd_chunks/styles.py). It is wired onto the end of the chain whatever Auto-connect
+        says: a look put on an object that the graph does not deliver would show nothing.
+        """
+        scene = _chunk.get_scene()
+        if not scene:
+            return
+        context = self._graph_context()
+        ground = styles.picked_ground()  # read before the add too
+        tail = self._chain_tail()  # read before the add, which can change the selection
+        if tail is None:
+            # No node picked and none the view or Output shows (picking prims in the viewport
+            # changes what is selected in the graph): the end of the chain, so the style
+            # still goes after whatever makes its object.
+            end = chunk_stage.ChunkStageSync()._find_dag_tail(context)
+            tail = chunk_stage.get_chunk_prim_path(end) if end is not None else None
+        view_exists = self._context_has_view(scene, context)
+        chunks = entry.create()
+        if not chunks:
+            return
+        centre = self.mapToScene(self.viewport().rect().center())
+        chunk_graph.start_collapsed(chunks)
+        with chunk_stage.creating_at((centre.x(), -centre.y()), loft=False),                 scene.creating_in(self._nest_target(context)):
+            for c in chunks:
+                if view_exists:
+                    c.set_blocked(True)  # held until wired, as a node made from the menu is
+                scene.add_chunk(c)
+        new_path = chunk_stage.get_chunk_prim_path(chunks[0])
+        self._chain_when_shown(tail, new_path, context)
+        if ground:
+            self._set_style_ground(chunks[0], ground)
+
+    def _set_style_ground(self, host, ground: str, tries: int = 80) -> None:
+        """Give the style its ground (the second prim picked) once its network is in.
+
+        Its Ground param is lofted from the network the Reference hosts, which is there only
+        after the Reference has cooked, and a node held until it is wired does not react to a
+        change: until it is both, try again.
+        """
+        param = host.get_param(styles.GROUND_PARAM) if not getattr(host, "_deleting", False) else None
+        if param is None or host.is_blocked():
+            if tries > 0:
+                QtCore.QTimer.singleShot(50, self, lambda: self._set_style_ground(host, ground, tries - 1))
+            return
+        param.value = ground
+
+    def _chain_when_shown(self, tail: str | None, new_path: str, context, tries: int = 60) -> None:
+        """_chain_after once the new node is in the graph.
+
+        Its node comes with the rebuild the add queued, and a style's only after its network
+        has loaded: a fixed wait wired some and left the rest held, unwired, showing nothing.
+        """
+        graph_scene = self.scene()
+        if isinstance(graph_scene, ChunkGraphScene) and new_path not in graph_scene._nodes and tries > 0:
+            QtCore.QTimer.singleShot(50, self, lambda: self._chain_when_shown(tail, new_path, context, tries - 1))
+            return
+        self._chain_after(tail, new_path, context)
+        # The Output onto the new end, read off the stage: _chain_after moves what the drawn
+        # wires show, and the Output a style before this one was given may not be drawn yet
+        # -- the style was wired and left outside what the graph delivers, held, showing
+        # nothing.
+        nodes = graph_scene._nodes if isinstance(graph_scene, ChunkGraphScene) else {}
+        if tail in nodes and new_path in nodes:
+            chunk_stage.ChunkStageSync()._rewire_views_from_source(nodes[tail].chunk, nodes[new_path].chunk,
+                                                                   outputs=True)
+            self._recook_active_view()
 
     def _chain_tail(self) -> str | None:
         """The node a new chunk goes after when Auto-connect is on, as a prim path.

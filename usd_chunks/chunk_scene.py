@@ -1237,6 +1237,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # them. A block cooks it at its end; elsewhere, now.
         if inputs and not chunk_cook.is_deferring():
             chunk_cook.dispatch(new, new.get_dag_node(), [], None)
+            # A saved network it hosts (a style) cooked before the wire too, and is not below it.
+            if getattr(new, "_network_namespace", None) is not None:
+                chunk_stage.recook_network(new, "wired")
         if not chunk_cook.is_batching():
             chunk_cook.flush()
         self._last_placed = weakref.ref(new)

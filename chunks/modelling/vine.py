@@ -1779,7 +1779,7 @@ def execute(node):
 
     frames = _frames(settings)
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
-        UsdGeom.Scope.Define(stage, where[0])
+        _define_root(stage, where[0])
         # The default value is the vine at Growth %, for anything that reads without a time.
         _author_curves(stage, where[1], drawn, settings, node)
         _author_leaves(stage, where[2], grown_leaves, settings, node, grown_to=settings["growth"])
@@ -1854,6 +1854,23 @@ def _frames(settings):
     return [(start + i, settings["growth"] * i / (count - 1)) for i in range(count)]
 
 
+def _define_root(stage, path):
+    """The prim the vines go under, at path.
+
+    The vines are grown in world space. Under a parent that is moved -- a style puts them
+    under the object they grow on -- the root carries the parent's transform back out, so they
+    stay on the surface instead of being moved twice. Anywhere else it is a Scope, as it was.
+    """
+    parent = stage.GetPrimAtPath(Sdf.Path(path).GetParentPath())
+    to_world = Gf.Matrix4d(1.0)
+    if parent and not parent.IsPseudoRoot():
+        to_world = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(parent)
+    if to_world == Gf.Matrix4d(1.0):
+        UsdGeom.Scope.Define(stage, path)
+        return
+    UsdGeom.Xform.Define(stage, path).MakeMatrixXform().Set(to_world.GetInverse())
+
+
 def _bail(node, stage, layer, where, message):
     """Say why nothing grew, and leave the two output prims standing.
 
@@ -1863,7 +1880,7 @@ def _bail(node, stage, layer, where, message):
     graph below it rather than emptying it.
     """
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
-        UsdGeom.Scope.Define(stage, where[0])
+        _define_root(stage, where[0])
         curves = UsdGeom.BasisCurves.Define(stage, where[1])
         curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray())
         curves.CreatePointsAttr().Set(Vt.Vec3fArray())

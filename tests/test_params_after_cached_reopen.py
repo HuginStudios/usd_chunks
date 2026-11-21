@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from usd_chunks import Scene, chunk_catalog, chunk_registry, cook_cache, open_cache
+from usd_chunks import Scene, chunk_catalog, chunk_registry, cook_cache, open_cache, styles
 from usd_chunks.chunk_flags import ChunkFlags
 
 #: Not made from a bare create: they need inputs, files or optional libraries to build at all.
@@ -30,7 +30,11 @@ def _visible(owner, prefix="") -> set[str]:
 def _names() -> list[str]:
     with Scene():
         entries = chunk_catalog.entries(chunk_registry.ChunkRegistry())
-    return [e.name for e in entries if e.category != "Examples" and e.module not in _SKIP_MODULES]
+        # A style is a Reference to a saved network, not a chunk module, and it would download
+        # its assets: tests/test_styles.py covers them.
+        style_names = {s.name for s in styles.find_styles()}
+    return [e.name for e in entries if e.category != "Examples" and e.module not in _SKIP_MODULES
+            and e.name not in style_names]
 
 
 @pytest.fixture
