@@ -42,7 +42,7 @@ This file starts with the first release; development before that is in the commi
 ### Fixed
 
 - Blender: a file param a chunk makes while it cooks, like a Dome Light's texture file, has
-  a browse button again instead of a bare text field. A path Blender writes relative to the
+  a browse button instead of a bare text field. A path Blender writes relative to the
   .blend (`//sky.exr`, with the Relative Paths preference on) now reaches the param absolute,
   since USD cannot resolve it.
 
