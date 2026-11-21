@@ -85,6 +85,9 @@ This file starts with the first release; development before that is in the commi
   put its params back.
 - `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
   what it needs, instead of listing no params as if it took none.
+- RBD Solver moves an animated collider (a sweeping paddle, a door swinging shut) when it
+  simulates a jointed asset. The collider stayed where it started, and one whose rest pose
+  overlapped the asset never touched it at all.
 
 ## [1.0.0-rc.2] - 2026-11-19
 
