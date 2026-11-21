@@ -11,6 +11,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- Blender: **Add Chunk Folder** in the USDChunks sidebar adds a folder of chunks (your own
+  library, say) to `USD_CHUNK_DIRS` from inside Blender. Its chunks join the Add menu at once
+  and the folder is kept in the add-on's new **Chunk Folders** preference. **Add
+  Renderer...** in the viewport's Renderer menu does the same for a Hydra render delegate
+  (Aurora, ...) built against Blender's USD; it is listed after a restart.
+
 - Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
   [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
   street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product

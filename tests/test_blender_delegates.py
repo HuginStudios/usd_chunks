@@ -83,6 +83,26 @@ def test_a_folder_without_plug_info_is_skipped_with_a_warning(tmp_path, caplog):
     assert "no plugInfo.json" in caplog.text
 
 
+def test_the_renderers_a_folder_declares_come_from_its_plug_info(tmp_path):
+    # Read from the file, not from USD: USD lists renderers once per session, so the Add
+    # Renderer button has to know what a folder holds without USD's help.
+    info = tmp_path / "hdAurora" / "resources"
+    info.mkdir(parents=True)
+    (info / "plugInfo.json").write_text("""# a comment, as plugInfo.json allows
+{"Plugins": [{"Info": {"Types": {
+    "HdAuroraRendererPlugin": {"bases": ["HdRendererPlugin"], "displayName": "Aurora"},
+    "HdAuroraSceneIndexPlugin": {"bases": ["HdSceneIndexPlugin"], "displayName": "Fields"},
+    "HdBareRendererPlugin": {"bases": ["HdRendererPlugin"]}}}}]}""")
+    assert delegates.renderer_types(str(tmp_path / "hdAurora")) == {
+        "HdAuroraRendererPlugin": "Aurora", "HdBareRendererPlugin": "HdBareRendererPlugin"}
+
+
+def test_a_folder_without_a_readable_plug_info_declares_no_renderer(tmp_path):
+    assert delegates.renderer_types(str(tmp_path)) == {}
+    (tmp_path / "plugInfo.json").write_text("{not json")
+    assert delegates.renderer_types(str(tmp_path)) == {}
+
+
 def test_folders_split_on_semicolons_and_the_path_separator():
     text = 'C:\\a;  "C:\\b" ;' + os.pathsep + "C:\\c;;"
     assert delegates.split_folders(text) == ["C:\\a", "C:\\b", "C:\\c"]
