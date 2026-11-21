@@ -8,7 +8,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from usd_chunks.frontends.blender import chunk_dirs
+
+
+@pytest.fixture(autouse=True)
+def _fresh(monkeypatch):
+    monkeypatch.setattr(chunk_dirs, "_added", set())
 
 
 class _Registry:
@@ -60,3 +67,14 @@ def test_join_folder_appends_once(tmp_path):
     assert chunk_dirs.join_folder("", a) == a
     assert chunk_dirs.join_folder(a, b) == f"{a};{b}"
     assert chunk_dirs.join_folder(f"{a};{b}", a + os.sep) == f"{a};{b}"
+
+
+def test_the_environments_folders_are_told_apart_from_the_added_ones(tmp_path):
+    studio, added = tmp_path / "studio", tmp_path / "chunk_bank"
+    studio.mkdir()
+    added.mkdir()
+    env = {chunk_dirs.ENV_VAR: str(studio)}
+    chunk_dirs.add_folders([str(added)], _Registry(), env)
+    # The preferences show these beside the field: the add-on's own folders are in it already.
+    assert chunk_dirs.environment_folders(env) == [str(studio)]
+    assert chunk_dirs.environment_folders({}) == []

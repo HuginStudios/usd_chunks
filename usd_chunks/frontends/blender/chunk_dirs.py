@@ -20,9 +20,23 @@ logger = logging.getLogger(__name__)
 
 ENV_VAR = chunk_registry.USD_CHUNK_DIRS.key
 
+#: The folders add_folders put on USD_CHUNK_DIRS, normalised: what is left is the environment's.
+_added: set[str] = set()
+
 
 def _key(folder: str) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(folder)))
+
+
+def environment_folders(environ=None) -> list[str]:
+    """The folders on USD_CHUNK_DIRS that the environment set, not add_folders.
+
+    What the preferences show beside the Chunk Folders field: these load first, and a
+    folder among them is never added again.
+    """
+    environ = os.environ if environ is None else environ
+    return [p for p in environ.get(ENV_VAR, "").split(os.pathsep)
+            if p and _key(p) not in _added]
 
 
 def join_folder(text: str, folder: str) -> str:
@@ -61,6 +75,7 @@ def add_folders(folders, registry=None, environ=None) -> list[str]:
             logger.warning("chunk folder %s not found; skipped", path)
             continue
         known.add(_key(path))
+        _added.add(_key(path))
         current.append(path)
         added.append(path)
     if not added:

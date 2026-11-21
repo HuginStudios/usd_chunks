@@ -1472,6 +1472,23 @@ class USDCHUNKS_OT_add_renderer(_FolderBrowser, bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _draw_environment_folders(layout, env_var: str, folders) -> None:
+    """Greyed out under a folder field: the folders the environment already gives, read first.
+
+    They are not in the field, so without this a folder that loads looks like it came from
+    nowhere, and adding it again looks like it did nothing.
+    """
+    if not folders:
+        return
+    col = layout.column(align=True)
+    col.enabled = False
+    split = col.split(factor=0.25)
+    split.label(text=f"From {env_var}:")
+    names = split.column(align=True)
+    for folder in folders:
+        names.label(text=folder)
+
+
 class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
     # Set again in register(), to the extension's name when installed as one (addon_package):
     # Blender draws and keeps only the preferences filed under the enabled add-on's name.
@@ -1500,9 +1517,12 @@ class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
         row = layout.row(align=True)
         row.prop(self, "chunk_folders")
         row.operator(USDCHUNKS_OT_add_chunk_folder.bl_idname, text="", icon="NEWFOLDER")
+        _draw_environment_folders(layout, chunk_dirs.ENV_VAR, chunk_dirs.environment_folders())
         row = layout.row(align=True)
         row.prop(self, "hydra_delegate_folders")
         row.operator(USDCHUNKS_OT_add_renderer.bl_idname, text="", icon="NEWFOLDER")
+        _draw_environment_folders(layout, delegates.ENV_VAR,
+                                  delegates.split_folders(os.environ.get(delegates.ENV_VAR, "")))
         layout.label(text="Pick a renderer in the 3D viewport: N panel > USDChunks > Renderer",
                      icon="INFO")
 
