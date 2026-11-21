@@ -35,8 +35,10 @@ modelling it from boxes: look here before you model anything.
 - `height_field`: a density from height: trees below a tree line, nothing on the peaks. Its `subset` gives the band its own material (a sandy shore, rocky tops).
 - `edge_field`: a density from sharp edges (`find` Outer Edges) or inner corners (Inner Corners): chips and rubble along a building's edges, dirt in its corners, worn paint read in a material. Needs a mesh with divisions.
 - `around_field`: the ground round an object's base, for a `scatter_points` to pile rubble or plants round it (its `ground` param follows a terrain).
+- `asset_kit`: the user's own assets (a folder of USD files, or prims) laid out for a `scatter_points` row of `<loc>/*`: on the ground, in scene units, fitted to a size; its out_spacing param is a spacing for the scatter.
+- `facing_field`: where meshes face up (ledges), sideways (walls), down, or are sheltered (under eaves), as a density field.
 - `polyhaven_model` / `polyhaven_material`: free Poly Haven models (rocks, plants, props) and textures, downloaded once; a model's parts at the origin for a scatter row of `<loc>/<model>*`.
-- Styles (`concrete_debris`, `bushy_nature`, `abandoned_cottage`, `forest_floor`, `worn_paint`, ...): a whole look on one object, made with `scene.create.<style>(primpath_location="/obj")`. Reach for one before building edge wear, dirt or vines by hand; see docs/styles.md.
+- Styles (`concrete_debris`, `bushy_nature`, `abandoned_cottage`, `mossy_ledges`, `forest_floor`, `worn_paint`, ...): a whole look on one object, with slots for the user's own assets (`Debris_files=...`), made with `scene.create.<style>(primpath_location="/obj")`. Reach for one before building edge wear, dirt or vines by hand; see docs/styles.md.
 - `scatter_brush`: paint where `scatter_points` (or `vine`) may place, by hand.
 - `merge_instancers`: join PointInstancers that share assets, so a renderer builds each asset once.
 - `points_to_instancer`: animated Points (dust, sparks, a particle bake) as instanced meshes, for renderers that draw no Points.

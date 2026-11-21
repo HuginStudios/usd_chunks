@@ -15,10 +15,22 @@ def Scope "chunks"
         custom string inputs:Around_ground = ""
         custom float inputs:Around_reach = 2.2
         custom int inputs:Around_seed = 0
+        custom string inputs:Debris_files = ""
+        custom float inputs:Debris_fit = 0.3
+        custom string inputs:Debris_prims = ""
+        custom float inputs:Debris_spacing = 0.34
         string inputs:doc = """A whole building gone to seed: ivy up the walls, bushes and rubble round its base.
-Ivy climbs the walls in patches; bushes, ferns, nettles and grass crowd the walls; broken concrete, stones and planks lie between them. Put the building on a ground and set Around_ground to it (or select the building, then the ground, before picking the style). The assets come from Poly Haven (CC0), downloaded the first time.
+Ivy climbs the walls in patches; plants crowd the walls; debris lies between them. Put the building on a ground and set Around_ground to it (or select the building, then the ground, before picking the style). Bring your own assets: Debris_files / Debris_prims: your own debris, a folder of USD files or prims in the scene; Debris_fit, the size they are fitted to (0 keeps theirs); Debris_spacing, how close they go, in sizes of the assets. Plants_files / Plants_prims: your own plants, a folder of USD files or prims in the scene; Plants_fit, the size they are fitted to (0 keeps theirs); Plants_spacing, how close they go, in sizes of the assets. Leaves_files / Leaves_prims: your own ivy leaves, a folder of USD files or prims in the scene; Leaves_fit, the size they are fitted to (0 keeps theirs); Leaves_spacing, how close they go, in sizes of the assets. Empty, the style uses its built-in kit (Poly Haven's, CC0, downloaded the first time).
 Params: Around_reach, how far out the plants and rubble go; Around_breakup, how patchy; IvyPatches_threshold, how much of the walls the ivy may cover; Vines_growth, how far it has grown."""
         custom float inputs:IvyPatches_threshold = 0.42
+        custom string inputs:Leaves_files = ""
+        custom float inputs:Leaves_fit = 0.15
+        custom string inputs:Leaves_prims = ""
+        custom float inputs:Leaves_spacing = 1
+        custom string inputs:Plants_files = ""
+        custom float inputs:Plants_fit = 0.8
+        custom string inputs:Plants_prims = ""
+        custom float inputs:Plants_spacing = 0.63
         custom float inputs:Vines_growth = 100
         uniform token outputs:chunk
         uniform float2 ui:nodegraph:node:pos = (0, 0)
@@ -95,7 +107,7 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "polyhaven_model"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Bark.outputs:chunk>
             string inputs:model = "shrub_sorrel_01"
-            string inputs:primpath_location = "/style_kit/leaf"
+            string inputs:primpath_location = "/style_kit/builtin/leaf"
             uniform token outputs:chunk
             uniform float2 ui:nodegraph:node:pos = (1040, 0)
         }
@@ -104,14 +116,34 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
         {
-            uniform token info:chunkType = "scatter_points"
+            uniform token info:chunkType = "asset_kit"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Kit_leaf.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/leaf/shrub_sorrel_01*"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/AbandonedCottage.inputs:Leaves_files>
+            float inputs:fit = 0.15
+            float inputs:fit.connect = </chunks/AbandonedCottage.inputs:Leaves_fit>
+            string inputs:primpath_location = "/style_kit/leaves"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/AbandonedCottage.inputs:Leaves_prims>
+            float inputs:spacing = 1
+            float inputs:spacing.connect = </chunks/AbandonedCottage.inputs:Leaves_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+        }
+
+        def Chunk "LeafScatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/AbandonedCottage/Leaves.outputs:chunk>
             string inputs:Distribution:sampling = "Tiles"
             string inputs:inst_path = "@IvyPatches.prim_path@/style_vines/leaves"
             string inputs:inst_path.connect = </chunks/AbandonedCottage/IvyPatches.inputs:prim_path>
             string inputs:points_prim = "@Vines.out_leaves@"
             string inputs:points_prim.connect = </chunks/AbandonedCottage/Vines.inputs:out_leaves>
-            string[] inputs:prototypes:proto_path = ["/style_kit/leaf/shrub_sorrel_01*"]
+            string[] inputs:prototypes:proto_path = ["/style_kit/leaves/*"]
             float[] inputs:prototypes:proto_scale = [1]
             float[] inputs:prototypes:proto_weight = [100]
             string inputs:Variation:align_up = "+Z"
@@ -120,7 +152,7 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             float inputs:Variation:scale_max = 0.5
             float inputs:Variation:scale_min = 0.25
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (1300, 0)
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
         }
 
         def Chunk "Around" (
@@ -131,7 +163,7 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             float inputs:breakup = 0.75
             float inputs:breakup.connect = </chunks/AbandonedCottage.inputs:Around_breakup>
             float inputs:breakup_size = 1
-            token inputs:chunk.connect = </chunks/AbandonedCottage/Leaves.outputs:chunk>
+            token inputs:chunk.connect = </chunks/AbandonedCottage/LeafScatter.outputs:chunk>
             string inputs:ground = ""
             string inputs:ground.connect = </chunks/AbandonedCottage.inputs:Around_ground>
             string inputs:prim_path = "/"
@@ -143,13 +175,13 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             int inputs:seed.connect = </chunks/AbandonedCottage.inputs:Around_seed>
             float inputs:softness = 0.8
             uniform token outputs:chunk
-            rel ui:gizmo:reach:anchor = </style_ground>
+            rel ui:gizmo:reach:anchor = None
             uniform token ui:gizmo:reach:anchorSource = "primpath_location"
             uniform token ui:gizmo:reach:driver.connect = </chunks/AbandonedCottage/Around.inputs:reach>
             uniform token[] ui:gizmo:reach:editmode = ["onPrimSelection"]
             uniform token ui:gizmo:reach:label = "Reach"
             uniform token ui:gizmo:reach:type = "cube"
-            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+            uniform float2 ui:nodegraph:node:pos = (1820, 0)
         }
 
         def Chunk "Concrete" (
@@ -161,7 +193,7 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             string inputs:material_path = "/materials/style_concrete"
             string inputs:texture = "concrete_debris"
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (1820, 0)
+            uniform float2 ui:nodegraph:node:pos = (2080, 0)
         }
 
         def Chunk "Block" (
@@ -175,10 +207,10 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             float inputs:cube:width = 0.3
             bool inputs:grid:grid_checker = 0
             string inputs:mesh_type = "cube"
-            string inputs:prim_path = "@Around.prim_path@/style_kit/block"
+            string inputs:prim_path = "@Around.prim_path@/style_kit/builtin/block"
             string inputs:prim_path.connect = </chunks/AbandonedCottage/Around.inputs:prim_path>
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (2080, 0)
+            uniform float2 ui:nodegraph:node:pos = (2340, 0)
         }
 
         def Chunk "Break" (
@@ -189,14 +221,14 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             token inputs:chunk.connect = </chunks/AbandonedCottage/Block.outputs:chunk>
             int inputs:generations = 3
             float inputs:jaggedness = 0.6
-            string inputs:output_path = "@Around.prim_path@/style_kit/chunks"
+            string inputs:output_path = "@Around.prim_path@/style_kit/builtin/chunks"
             string inputs:output_path.connect = </chunks/AbandonedCottage/Around.inputs:prim_path>
-            string inputs:source_prims = "/style_kit/block"
+            string inputs:source_prims = "/style_kit/builtin/block"
             float inputs:Surface:bevel = 0.3
             string inputs:Surface:inside_material = "/materials/style_concrete"
             string inputs:Surface:outside_material = "/materials/style_concrete"
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (2340, 0)
+            uniform float2 ui:nodegraph:node:pos = (2600, 0)
         }
 
         def Chunk "HideBlock" (
@@ -206,10 +238,10 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "property_editor"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Break.outputs:chunk>
             string inputs:edits_grp:edits = 'visibility = "invisible"'
-            string inputs:prim = "@Around.prim_path@/style_kit/chunks"
+            string inputs:prim = "@Around.prim_path@/style_kit/builtin/chunks"
             string inputs:prim.connect = </chunks/AbandonedCottage/Around.inputs:prim_path>
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (2600, 0)
+            uniform float2 ui:nodegraph:node:pos = (2860, 0)
         }
 
         def Chunk "Kit_stones" (
@@ -219,9 +251,10 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "polyhaven_model"
             token inputs:chunk.connect = </chunks/AbandonedCottage/HideBlock.outputs:chunk>
             string inputs:model = "namaqualand_stones_01"
-            string inputs:primpath_location = "/style_kit/stones"
+            string inputs:primpath_location = "/style_kit/builtin/stones"
+            float inputs:scale = 2
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (2860, 0)
+            uniform float2 ui:nodegraph:node:pos = (3120, 0)
         }
 
         def Chunk "Plank" (
@@ -235,10 +268,10 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             float inputs:cube:width = 1.2
             bool inputs:grid:grid_checker = 0
             string inputs:mesh_type = "cube"
-            string inputs:prim_path = "@Around.prim_path@/style_kit/plank"
+            string inputs:prim_path = "@Around.prim_path@/style_kit/builtin/plank"
             string inputs:prim_path.connect = </chunks/AbandonedCottage/Around.inputs:prim_path>
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (3120, 0)
+            uniform float2 ui:nodegraph:node:pos = (3380, 0)
         }
 
         def Chunk "PlankWood" (
@@ -248,35 +281,62 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "polyhaven_material"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Plank.outputs:chunk>
             string inputs:material_path = "/materials/style_planks"
-            string inputs:primpath_location = "/style_kit/plank"
+            string inputs:primpath_location = "/style_kit/builtin/plank"
             string inputs:texture = "brown_planks_05"
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (3380, 0)
+            uniform float2 ui:nodegraph:node:pos = (3640, 0)
         }
 
         def Chunk "Debris" (
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
         {
-            uniform token info:chunkType = "scatter_points"
+            uniform token info:chunkType = "asset_kit"
             token inputs:chunk.connect = </chunks/AbandonedCottage/PlankWood.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/chunks/Prototypes/* /style_kit/builtin/stones/namaqualand_stones_01* /style_kit/builtin/plank"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/AbandonedCottage.inputs:Debris_files>
+            float inputs:fit = 0.3
+            float inputs:fit.connect = </chunks/AbandonedCottage.inputs:Debris_fit>
+            string inputs:primpath_location = "/style_kit/debris"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/AbandonedCottage.inputs:Debris_prims>
+            float inputs:spacing = 0.34
+            float inputs:spacing.connect = </chunks/AbandonedCottage.inputs:Debris_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (3900, 0)
+        }
+
+        def Chunk "DebrisScatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/AbandonedCottage/Debris.outputs:chunk>
             string inputs:density_primvar = "around"
             bool inputs:Distribution:auto_spacing = 0
             int inputs:Distribution:max_count = 6000
             string inputs:Distribution:sampling = "Tiles"
-            float inputs:Distribution:spacing = 0.08
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Debris.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/AbandonedCottage/Debris.inputs:out_spacing>
             string inputs:inst_path = "@Around.prim_path@/style_debris"
             string inputs:inst_path.connect = </chunks/AbandonedCottage/Around.inputs:prim_path>
-            string[] inputs:prototypes:proto_path = ["/style_kit/chunks/Prototypes/*", "/style_kit/stones/namaqualand_stones_01*", "/style_kit/plank"]
-            float[] inputs:prototypes:proto_scale = [1, 2, 1]
-            float[] inputs:prototypes:proto_weight = [40, 30, 10]
+            string[] inputs:prototypes:proto_path = ["/style_kit/debris/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
             string inputs:surface_prim = "/style_ground"
             string inputs:Variation:rand_axis = "Y"
             float inputs:Variation:scale_bias = 2.5
             float inputs:Variation:scale_max = 1.6
             float inputs:Variation:scale_min = 0.4
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (3640, 0)
+            uniform float2 ui:nodegraph:node:pos = (4160, 0)
         }
 
         def Chunk "Kit_shrub" (
@@ -284,11 +344,12 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
         )
         {
             uniform token info:chunkType = "polyhaven_model"
-            token inputs:chunk.connect = </chunks/AbandonedCottage/Debris.outputs:chunk>
+            token inputs:chunk.connect = </chunks/AbandonedCottage/DebrisScatter.outputs:chunk>
             string inputs:model = "shrub_04"
-            string inputs:primpath_location = "/style_kit/shrub"
+            string inputs:primpath_location = "/style_kit/builtin/shrub"
+            float inputs:scale = 1.5
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (3900, 0)
+            uniform float2 ui:nodegraph:node:pos = (4420, 0)
         }
 
         def Chunk "Kit_fern" (
@@ -298,9 +359,9 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "polyhaven_model"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Kit_shrub.outputs:chunk>
             string inputs:model = "fern_02"
-            string inputs:primpath_location = "/style_kit/fern"
+            string inputs:primpath_location = "/style_kit/builtin/fern"
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (4160, 0)
+            uniform float2 ui:nodegraph:node:pos = (4680, 0)
         }
 
         def Chunk "Kit_nettle" (
@@ -310,9 +371,10 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "polyhaven_model"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Kit_fern.outputs:chunk>
             string inputs:model = "nettle_plant"
-            string inputs:primpath_location = "/style_kit/nettle"
+            string inputs:primpath_location = "/style_kit/builtin/nettle"
+            float inputs:scale = 1.6
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (4420, 0)
+            uniform float2 ui:nodegraph:node:pos = (4940, 0)
         }
 
         def Chunk "Kit_weed" (
@@ -322,9 +384,9 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "polyhaven_model"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Kit_nettle.outputs:chunk>
             string inputs:model = "weed_plant_02"
-            string inputs:primpath_location = "/style_kit/weed"
+            string inputs:primpath_location = "/style_kit/builtin/weed"
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (4680, 0)
+            uniform float2 ui:nodegraph:node:pos = (5200, 0)
         }
 
         def Chunk "Kit_grass" (
@@ -334,35 +396,62 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
             uniform token info:chunkType = "polyhaven_model"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Kit_weed.outputs:chunk>
             string inputs:model = "grass_bermuda_01"
-            string inputs:primpath_location = "/style_kit/grass"
+            string inputs:primpath_location = "/style_kit/builtin/grass"
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (4940, 0)
+            uniform float2 ui:nodegraph:node:pos = (5460, 0)
         }
 
         def Chunk "Plants" (
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
         {
-            uniform token info:chunkType = "scatter_points"
+            uniform token info:chunkType = "asset_kit"
             token inputs:chunk.connect = </chunks/AbandonedCottage/Kit_grass.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/shrub/shrub_04* /style_kit/builtin/fern/fern_02* /style_kit/builtin/nettle/nettle_plant* /style_kit/builtin/weed/weed_plant_02* /style_kit/builtin/grass/grass_bermuda_01*"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/AbandonedCottage.inputs:Plants_files>
+            float inputs:fit = 0.8
+            float inputs:fit.connect = </chunks/AbandonedCottage.inputs:Plants_fit>
+            string inputs:primpath_location = "/style_kit/plants"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/AbandonedCottage.inputs:Plants_prims>
+            float inputs:spacing = 0.63
+            float inputs:spacing.connect = </chunks/AbandonedCottage.inputs:Plants_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (5720, 0)
+        }
+
+        def Chunk "PlantScatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/AbandonedCottage/Plants.outputs:chunk>
             string inputs:density_primvar = "around"
             bool inputs:Distribution:auto_spacing = 0
             int inputs:Distribution:max_count = 6000
             string inputs:Distribution:sampling = "Tiles"
             int inputs:Distribution:seed = 7
-            float inputs:Distribution:spacing = 0.09
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Plants.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/AbandonedCottage/Plants.inputs:out_spacing>
             string inputs:inst_path = "@Around.prim_path@/style_plants"
             string inputs:inst_path.connect = </chunks/AbandonedCottage/Around.inputs:prim_path>
-            string[] inputs:prototypes:proto_path = ["/style_kit/shrub/shrub_04*", "/style_kit/fern/fern_02*", "/style_kit/nettle/nettle_plant*", "/style_kit/weed/weed_plant_02*", "/style_kit/grass/grass_bermuda_01*"]
-            float[] inputs:prototypes:proto_scale = [1.5, 1, 1.6, 1, 1]
-            float[] inputs:prototypes:proto_weight = [25, 20, 25, 15, 25]
+            string[] inputs:prototypes:proto_path = ["/style_kit/plants/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
             string inputs:surface_prim = "/style_ground"
             string inputs:Variation:rand_axis = "Y"
             float inputs:Variation:scale_bias = 2.5
             float inputs:Variation:scale_max = 2
             float inputs:Variation:scale_min = 0.9
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (5200, 0)
+            uniform float2 ui:nodegraph:node:pos = (5980, 0)
         }
 
         def Chunk "Output" (
@@ -370,9 +459,9 @@ Params: Around_reach, how far out the plants and rubble go; Around_breakup, how 
         )
         {
             uniform token info:chunkType = "output"
-            token inputs:chunk.connect = </chunks/AbandonedCottage/Plants.outputs:chunk>
+            token inputs:chunk.connect = </chunks/AbandonedCottage/PlantScatter.outputs:chunk>
             uniform token ui:nodegraph:node:expansionState = "closed"
-            uniform float2 ui:nodegraph:node:pos = (5480, 0)
+            uniform float2 ui:nodegraph:node:pos = (6260, 0)
         }
     }
 }

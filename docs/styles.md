@@ -3,8 +3,13 @@
 A style is a ready-made look you put on an object in one go: worn paint, dirt in the
 corners, rubble piled round its base, bushes, ivy up the walls, a whole abandoned cottage.
 Pick the object, pick the style, and the network that makes the look is added to your graph,
-aimed at that object. Most styles use real assets: free [Poly Haven](https://polyhaven.com)
-models and textures (CC0), downloaded the first time a style needs them.
+aimed at that object.
+
+A style is the placing, not the assets. It works out where things go: round the object's
+base, in its inner corners, along its edges, on everything facing up. Then it puts assets
+there. Give it your own assets (a folder of USD files, or prims in your scene) and it places
+those. Give it nothing and it uses its built-in kit: pieces it makes itself (broken concrete,
+planks) and free [Poly Haven](https://polyhaven.com) models (CC0), downloaded the first time.
 
 ## Putting a style on an object
 
@@ -37,6 +42,29 @@ The first time a style is used it downloads its assets from Poly Haven, a few MB
 your usd_chunks cache (set `USD_CHUNK_POLYHAVEN_DIR` to put it elsewhere). In usdview that
 happens in the background and the style fills in when they arrive; after that it is instant.
 
+### Your own assets
+
+Each kind of thing a style places is a **slot**: Debris, Plants, Props, Leaves, and so on.
+Each slot is four params on the style's node:
+
+| Param | What it does |
+| --- | --- |
+| `Debris_files` | A folder of USD files (its subfolders too), files, or globs, separated by `;`. A folder whose assets come in detail levels (`rock_low.usdz`, `rock_mid.usdz`, `rock_high.usdz`) gives one of each |
+| `Debris_prims` | Prims in your scene to use instead: `/Library/rocks/*`, or `%rocks` for a collection. The prims are hidden, so only the copies are seen |
+| `Debris_fit` | The size each asset is scaled to (its largest side), so the style's piles suit them whatever size they were made at. 0 keeps their own size |
+| `Debris_spacing` | How close the copies go, in sizes of the assets: 1 side by side, 0.3 piled up. Bigger assets spread out by themselves |
+
+```python
+scene.create.abandoned_cottage(
+    house, primpath_location="/House", Around_ground="/ground",
+    Debris_files="C:/assets/rubble", Plants_files="C:/assets/plants;C:/assets/ferns",
+    Leaves_files="C:/assets/ivy/leaf_*.usd")
+```
+
+Every asset is stood on the ground at the origin, in your scene's units and up axis: a
+centimetre asset in a metre scene comes in at the right size, and a Z-up asset stands up.
+Leave a slot empty to keep the built-in kit for it.
+
 ### Handles in the viewport
 
 With the object picked, each edge field in its styles shows a handle, named for what it marks:
@@ -47,8 +75,8 @@ wear, dirt further from the corner, rubble spread wider. A pile round the object
 
 ### The params on the node
 
-A style's node shows the few params its author picked, such as `Dirt_width` or
-`Scatter_spacing`. Everything else is inside it.
+A style's node shows the few params its author picked, such as `Dirt_width`, and its slots.
+Everything else is inside it.
 
 ## The styles that come with usd_chunks
 
@@ -60,16 +88,17 @@ A style's node shows the few params its author picked, such as `Dirt_width` or
 | Scrap Yard | an object on a ground | Boxes, bins, bags, barrels and crates dumped round it, with planks |
 | Abandoned Cottage | a building on a ground | Ivy up the walls in patches, bushes, rubble and planks round the base |
 | Overgrown Ruin | a ruin (with divisions) on a ground | Vines off the top edges, weeds in the corners, rubble round the base |
-| Ruins Ground | a ground (with UVs) | Rubble texture, broken concrete and weeds in patches |
-| Forest Floor | a ground (with UVs) | Leaf-litter texture, ferns, branches and mossy rocks in patches |
-| Asphalt Lot | a ground (with UVs) | Asphalt texture, litter and weeds in patches |
+| Mossy Ledges | any mesh | Grass and small plants in patches on everything facing up: ledges, sills, wall tops |
+| Ruins Ground | a ground (with divisions and UVs) | Rubble texture, broken concrete and weeds in patches |
+| Forest Floor | a ground (with divisions and UVs) | Leaf-litter texture, ferns, branches and mossy rocks in patches |
+| Asphalt Lot | a ground (with divisions and UVs) | Asphalt texture, litter and weeds in patches |
 | Rubble | an object with divisions | Broken concrete and stones gathered in its inner corners |
 | Hanging Vines | an object with divisions | Leafy vines along its outer edges, hanging down the sides |
 | Worn Paint | an object with divisions | Blue paint rubbed back to a pale undercoat on the edges, in patches |
 | Dirty Stone | an object with divisions | Grey stone, brown dirt in the inner corners, pale chips on the edges |
 
-Everything a style makes goes under the object, in prims named `style_...`: its kit of assets,
-the copies it scatters, its vines.
+Everything a style makes goes under the object, in prims named `style_...`: the assets laid
+out for its slots (`style_kit`), the copies it scatters, its vines.
 
 They are in `chunks/styles`, built by `examples/styles/build_styles.py`, with pictures made by
 `examples/styles/render_thumbnails.py`.
@@ -83,8 +112,15 @@ You can use these on their own too:
   Points to copy (a row of `<Location>/<model>*`). Its looks are made UsdPreviewSurface, which
   Storm and Aurora draw.
 - **Poly Haven Material**: a Poly Haven texture as a material on prims, with tiling.
+- **Asset Kit**: your assets laid out for a scatter. A folder of USD files or prims in the
+  scene, each stood on the ground at the origin, in the scene's units, and fitted to a size. A
+  Scatter Points row of `<Location>/*` copies them; its Spacing can read the kit's
+  `out_spacing`. A style's slot is one of these.
 - **Around Field**: the ground round an object's base, as a hidden patch with a field that
   fades out from the object. Scatter Points on the patch piles things round the object.
+- **Edge Field**: the sharp edges or inner corners of meshes, as a field.
+- **Facing Field**: where meshes face up (ledges, roofs), sideways (walls) or down, or are under
+  cover (under the eaves), as a field.
 
 ## Making your own
 
@@ -93,6 +129,8 @@ A style is a [ChunkGroup saved to its own file](core-chunks.md#chunkgroup), with
 - **"/" is the object.** Write every prim path as if the object were the root: `/` for the
   object itself, `/rubble` for a prim under it. The Reference's Location is put in front of
   them when the style is used.
+- **Give it slots.** Scatter an Asset Kit's `<Location>/*` and set its Fallback to the
+  built-in assets the style makes, then loft its `files`, `prims`, `fit` and `spacing`.
 - **Only prim path params are moved.** A param that picks prims (a Meshes or Prim Path field)
   is put under the object for you. Any other path, like a Scatter's Instancer Path or a
   Mesh's Prim Path, reads the object's path from the first chunk instead:

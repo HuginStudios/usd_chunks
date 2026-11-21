@@ -17,7 +17,7 @@ import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 
-from pxr import Sdf, UsdGeom, UsdShade
+from pxr import Gf, Sdf, UsdGeom, UsdShade
 
 from usd_chunks import chunk, polyhaven
 
@@ -149,6 +149,9 @@ def execute(node) -> None:
         # there, so a Scatter row of <Location>/<model>* copies each one as its own prototype.
         for target in ([prim] if part != ALL else [stage.OverridePrim(f"{location}/{p}") for p in info.parts]):
             UsdGeom.Xformable(target).ClearXformOpOrder()
+    # After clearing, so a part at the origin keeps it.
+    if (scale := float(node.get_param("scale", chunk.is_param_t(float)).value or 1.0)) != 1.0:
+        UsdGeom.Xformable(stage.OverridePrim(location)).AddScaleOp(opSuffix="model").Set(Gf.Vec3f(scale))
 
     prefix = "" if part == ALL else part
     looks = 0
@@ -198,6 +201,10 @@ def main() -> chunk.Chunk:
         "at_origin", "Part at the Origin", default_value=True, flags=labeled,
         tooltip="Each part without the place Poly Haven gave it in the set: at the origin, ready to be "
         "copied. With All, every part is there: a Scatter row of <Location>/<model>* copies each one.",
+    ))
+    chunk_api.add_param(chunk.Slider(
+        "scale", "Scale", min_value=0.01, max_value=10.0, default_value=1.0, flags=labeled,
+        tooltip="The model's size: 1 is its real size.",
     ))
     chunk_api.add_param(chunk.Label("readout", "pick a model", default_value="pick a model"))
     chunk_api.add_callback(_on_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)

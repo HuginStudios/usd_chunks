@@ -22,14 +22,21 @@ This file starts with the first release; development before that is in the commi
   tints the band so you can see it.
 - Styles: ready-made looks you put on an object in one go. Select a mesh (and the ground it
   stands on), open the node graph's Styles menu and click a picture, or pick one under Styles
-  in the Tab menu. Thirteen come with usd_chunks, from piles of concrete debris and bushes
-  round an object to a whole Abandoned Cottage and ground biomes, made of free Poly Haven
-  assets downloaded the first time. Each is a saved network in a `styles` folder, so you can
-  make your own; see [Styles](docs/styles.md).
+  in the Tab menu. Fourteen come with usd_chunks, from piles of concrete debris and bushes
+  round an object to a whole Abandoned Cottage and ground biomes. A style places your own
+  assets: each kind of thing it places (Debris, Plants, Leaves...) takes a folder of USD files
+  or prims in the scene, fitted to a size. Left empty, it uses its built-in kit, made of free
+  Poly Haven assets downloaded the first time. Each style is a saved network in a `styles`
+  folder, so you can make your own; see [Styles](docs/styles.md).
 - Poly Haven Model and Poly Haven Material chunks: free Poly Haven models and textures (CC0)
   from a picture menu, downloaded once into your cache, with looks Storm and Aurora draw.
 - Around Field chunk: the ground round an object's base, marked for a Scatter Points to pile
   rubble or plants there.
+- Asset Kit chunk: your own assets laid out for a scatter, from a folder of USD files or prims
+  in the scene. Each is stood on the ground, in the scene's units and up axis, and fitted to
+  a size.
+- Facing Field chunk: marks where meshes face up, sideways or down, or are under cover, for a
+  Scatter Points to place things there.
 - Edge Field's Width is a handle in the viewport: pick the mesh and drag it.
 - Edge Field chunk: marks the sharp edges or the inner corners of meshes. Use it as a Scatter
   Points' Density Field to drop rubble along edges, or read it in a material for worn paint

@@ -26,17 +26,22 @@ from usd_chunks import Scene, polyhaven, styles
 SIZE = 256
 
 
-def _ground(stage, size=6.0, tile=1.0):
-    """A flat grey ground at height 0, its UVs repeating every tile units (Aurora ignores a UV
-    transform, so the repeat is in the UVs)."""
-    h = size / 2
+def _ground(stage, size=6.0, tile=1.0, n=1):
+    """A flat grey ground at height 0, n x n quads, its UVs repeating every tile units (Aurora
+    ignores a UV transform, so the repeat is in the UVs). A biome's patches are per point, so
+    a ground it goes on needs divisions."""
+    xs = np.linspace(-size / 2, size / 2, n + 1)
+    gx, gz = np.meshgrid(xs, xs, indexing="ij")
+    pts = np.stack([gx.ravel(), np.zeros(gx.size), gz.ravel()], axis=1)
+    m = n + 1
+    idx = [v for i in range(n) for j in range(n) for v in (i * m + j, i * m + j + 1, (i + 1) * m + j + 1, (i + 1) * m + j)]
     mesh = UsdGeom.Mesh.Define(stage, "/ground")
-    mesh.CreatePointsAttr([(-h, 0, -h), (h, 0, -h), (h, 0, h), (-h, 0, h)])
-    mesh.CreateFaceVertexCountsAttr([4])
-    mesh.CreateFaceVertexIndicesAttr([0, 3, 2, 1])
-    uv = size / tile
+    mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(pts.astype(np.float32)))
+    mesh.CreateFaceVertexCountsAttr([4] * (n * n))
+    mesh.CreateFaceVertexIndicesAttr(idx)
+    uv = (pts[:, [0, 2]] + size / 2) / tile
     UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex).Set(
-        [(0, 0), (0, uv), (uv, uv), (uv, 0)])
+        Vt.Vec2fArray.FromNumpy(uv.astype(np.float32)))
     mesh.CreateDisplayColorAttr([(0.42, 0.41, 0.4)])
     return "/ground"
 
@@ -67,7 +72,7 @@ def _object(scene, kind):
         return scene.create.cube(prim_path="/wall", dimx=33, dimy=25, dimz=5, width=2.0, height=1.5,
                                  depth=0.3), "/wall", None, "/wall"
     if kind == "ground":
-        return None, _ground(stage, size=5.0, tile=2.5), None, "/ground"
+        return None, _ground(stage, size=5.0, tile=2.5, n=80), None, "/ground"
     if kind == "house":
         ground = _ground(stage, size=14.0)
         house = scene.create.house(house_path="/House", width=4.0, depth=3.6)
@@ -80,7 +85,7 @@ def _object(scene, kind):
 
 #: The sample object each style is shown on; anything else goes on a crate on the ground.
 SAMPLES = {"worn_paint": "crate_only", "dirty_stone": "steps", "rubble": "steps", "hanging_vines": "wall",
-           "abandoned_cottage": "house", "overgrown_ruin": "steps", "ruins_ground": "ground",
+           "abandoned_cottage": "house", "overgrown_ruin": "steps", "mossy_ledges": "steps", "ruins_ground": "ground",
            "forest_floor": "ground", "asphalt_lot": "ground"}
 
 #: How far the camera stands from what it frames, in the frame's sizes, and how much bigger

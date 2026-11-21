@@ -15,8 +15,12 @@ def Scope "chunks"
         custom string inputs:Around_ground = ""
         custom float inputs:Around_reach = 1.8
         custom int inputs:Around_seed = 0
+        custom string inputs:Debris_files = ""
+        custom float inputs:Debris_fit = 0.3
+        custom string inputs:Debris_prims = ""
+        custom float inputs:Debris_spacing = 0.32
         string inputs:doc = """Broken concrete and stones piled around the object's base.
-Chunks of a broken concrete block and Poly Haven stones, thickest at the walls. Put the object on a ground and set Around_ground to it (or select the object, then the ground, before picking the style); without one the pile sits at the object's lowest point. The assets come from Poly Haven (CC0), downloaded the first time.
+Thickest at the walls, thinning out with distance. Put the object on a ground and set Around_ground to it (or select the object, then the ground, before picking the style); without one the pile sits at the object's lowest point. Bring your own assets: Debris_files / Debris_prims: your own debris (rocks, bricks, chunks), a folder of USD files or prims in the scene; Debris_fit, the size they are fitted to (0 keeps theirs); Debris_spacing, how close they go, in sizes of the assets. Empty, the style uses its built-in kit (Poly Haven's, CC0, downloaded the first time).
 Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it is; Around_seed, another pattern."""
         uniform token outputs:chunk
         uniform float2 ui:nodegraph:node:pos = (0, 0)
@@ -40,7 +44,7 @@ Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it i
             int inputs:seed.connect = </chunks/ConcreteDebris.inputs:Around_seed>
             float inputs:softness = 0.8
             uniform token outputs:chunk
-            rel ui:gizmo:reach:anchor = </style_ground>
+            rel ui:gizmo:reach:anchor = None
             uniform token ui:gizmo:reach:anchorSource = "primpath_location"
             uniform token ui:gizmo:reach:driver.connect = </chunks/ConcreteDebris/Around.inputs:reach>
             uniform token[] ui:gizmo:reach:editmode = ["onPrimSelection"]
@@ -72,7 +76,7 @@ Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it i
             float inputs:cube:width = 0.3
             bool inputs:grid:grid_checker = 0
             string inputs:mesh_type = "cube"
-            string inputs:prim_path = "@Around.prim_path@/style_kit/block"
+            string inputs:prim_path = "@Around.prim_path@/style_kit/builtin/block"
             string inputs:prim_path.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
             uniform token outputs:chunk
             uniform float2 ui:nodegraph:node:pos = (520, 0)
@@ -86,9 +90,9 @@ Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it i
             token inputs:chunk.connect = </chunks/ConcreteDebris/Block.outputs:chunk>
             int inputs:generations = 3
             float inputs:jaggedness = 0.6
-            string inputs:output_path = "@Around.prim_path@/style_kit/chunks"
+            string inputs:output_path = "@Around.prim_path@/style_kit/builtin/chunks"
             string inputs:output_path.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
-            string inputs:source_prims = "/style_kit/block"
+            string inputs:source_prims = "/style_kit/builtin/block"
             float inputs:Surface:bevel = 0.3
             string inputs:Surface:inside_material = "/materials/style_concrete"
             string inputs:Surface:outside_material = "/materials/style_concrete"
@@ -103,7 +107,7 @@ Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it i
             uniform token info:chunkType = "property_editor"
             token inputs:chunk.connect = </chunks/ConcreteDebris/Break.outputs:chunk>
             string inputs:edits_grp:edits = 'visibility = "invisible"'
-            string inputs:prim = "@Around.prim_path@/style_kit/chunks"
+            string inputs:prim = "@Around.prim_path@/style_kit/builtin/chunks"
             string inputs:prim.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
             uniform token outputs:chunk
             uniform float2 ui:nodegraph:node:pos = (1040, 0)
@@ -116,7 +120,8 @@ Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it i
             uniform token info:chunkType = "polyhaven_model"
             token inputs:chunk.connect = </chunks/ConcreteDebris/HideBlock.outputs:chunk>
             string inputs:model = "namaqualand_stones_01"
-            string inputs:primpath_location = "/style_kit/stones"
+            string inputs:primpath_location = "/style_kit/builtin/stones"
+            float inputs:scale = 2
             uniform token outputs:chunk
             uniform float2 ui:nodegraph:node:pos = (1300, 0)
         }
@@ -125,25 +130,52 @@ Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it i
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
         {
-            uniform token info:chunkType = "scatter_points"
+            uniform token info:chunkType = "asset_kit"
             token inputs:chunk.connect = </chunks/ConcreteDebris/Kit_stones.outputs:chunk>
+            string inputs:fallback = "/style_kit/builtin/chunks/Prototypes/* /style_kit/builtin/stones/namaqualand_stones_01*"
+            string inputs:files = ""
+            string inputs:files.connect = </chunks/ConcreteDebris.inputs:Debris_files>
+            float inputs:fit = 0.3
+            float inputs:fit.connect = </chunks/ConcreteDebris.inputs:Debris_fit>
+            string inputs:primpath_location = "/style_kit/debris"
+            string inputs:prims = ""
+            string inputs:prims.connect = </chunks/ConcreteDebris.inputs:Debris_prims>
+            float inputs:spacing = 0.32
+            float inputs:spacing.connect = </chunks/ConcreteDebris.inputs:Debris_spacing>
+            uniform token outputs:chunk
+            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+        }
+
+        def Chunk "Scatter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            uniform token info:chunkType = "scatter_points"
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Debris.outputs:chunk>
             string inputs:density_primvar = "around"
             bool inputs:Distribution:auto_spacing = 0
             int inputs:Distribution:max_count = 6000
             string inputs:Distribution:sampling = "Tiles"
-            float inputs:Distribution:spacing = 0.075
+            float inputs:Distribution:spacing (
+                customData = {
+                    dictionary chunk = {
+                        string expression = "@Debris.out_spacing@"
+                    }
+                }
+            )
+            float inputs:Distribution:spacing.connect = </chunks/ConcreteDebris/Debris.inputs:out_spacing>
             string inputs:inst_path = "@Around.prim_path@/style_debris"
             string inputs:inst_path.connect = </chunks/ConcreteDebris/Around.inputs:prim_path>
-            string[] inputs:prototypes:proto_path = ["/style_kit/chunks/Prototypes/*", "/style_kit/stones/namaqualand_stones_01*"]
-            float[] inputs:prototypes:proto_scale = [1, 2]
-            float[] inputs:prototypes:proto_weight = [45, 30]
+            string[] inputs:prototypes:proto_path = ["/style_kit/debris/*"]
+            float[] inputs:prototypes:proto_scale = [1]
+            float[] inputs:prototypes:proto_weight = [100]
             string inputs:surface_prim = "/style_ground"
             string inputs:Variation:rand_axis = "Y"
             float inputs:Variation:scale_bias = 2.5
             float inputs:Variation:scale_max = 1.6
             float inputs:Variation:scale_min = 0.4
             uniform token outputs:chunk
-            uniform float2 ui:nodegraph:node:pos = (1560, 0)
+            uniform float2 ui:nodegraph:node:pos = (1820, 0)
         }
 
         def Chunk "Output" (
@@ -151,9 +183,9 @@ Params: Around_reach, how far out the pile goes; Around_breakup, how patchy it i
         )
         {
             uniform token info:chunkType = "output"
-            token inputs:chunk.connect = </chunks/ConcreteDebris/Debris.outputs:chunk>
+            token inputs:chunk.connect = </chunks/ConcreteDebris/Scatter.outputs:chunk>
             uniform token ui:nodegraph:node:expansionState = "closed"
-            uniform float2 ui:nodegraph:node:pos = (1840, 0)
+            uniform float2 ui:nodegraph:node:pos = (2100, 0)
         }
     }
 }

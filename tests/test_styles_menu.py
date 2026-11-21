@@ -126,7 +126,8 @@ def test_the_second_prim_picked_is_the_ground_a_pile_stands_on(graph):  # noqa: 
 
     [style] = [c for c in scene.get_chunks() if c not in before and c.get_param("file_path") is not None]
     lofted = {p.name for p in style.get_my_params() if getattr(p, "_lofted", False)}
-    assert lofted == {"Around_ground", "Around_reach", "Around_breakup", "Around_seed"}, "every param it offers"
+    assert lofted == {"Around_ground", "Around_reach", "Around_breakup", "Around_seed", "Debris_files",
+                      "Debris_prims", "Debris_fit", "Debris_spacing"}, "every param it offers"
     assert style.get_param("Around_ground").value == "/ground"
     debris = UsdGeom.PointInstancer(stage.GetPrimAtPath("/crate/style_debris")).GetPositionsAttr().Get()
     assert debris and all(abs(p[1] + 0.5) < 0.01 for p in debris), "on the ground, not at the crate's base"

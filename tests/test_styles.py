@@ -43,8 +43,8 @@ def test_the_styles_are_found_with_their_pictures_and_summaries():
     found = {s.name: s for s in styles.find_styles()}
 
     assert {"worn_paint", "dirty_stone", "rubble", "hanging_vines", "concrete_debris", "bushy_nature",
-            "forest_hideout", "scrap_yard", "abandoned_cottage", "overgrown_ruin", "ruins_ground", "forest_floor",
-            "asphalt_lot"} <= set(found)
+            "forest_hideout", "scrap_yard", "abandoned_cottage", "overgrown_ruin", "mossy_ledges", "ruins_ground",
+            "forest_floor", "asphalt_lot"} <= set(found)
     worn = found["worn_paint"]
     assert worn.label == "Worn Paint"
     assert worn.thumbnail is not None and worn.thumbnail.name == "worn_paint.png"
@@ -182,8 +182,8 @@ def test_list_rows_put_prim_paths_under_the_namespace():
         rows = scatter.get_param("prototypes")
         row = rows.get_indexed_param(rows.get_param("proto_path"), 0)
 
-        assert row.raw_value == "/style_kit/chunks/Prototypes/*"
-        assert row.value == "/steps/style_kit/chunks/Prototypes/*"
+        assert row.raw_value == "/style_kit/debris/*"
+        assert row.value == "/steps/style_kit/debris/*"
         assert stage.GetPrimAtPath(row.value.rsplit("/", 1)[0]).IsValid(), "the pieces it copies, under the object"
 
 
@@ -246,6 +246,40 @@ def test_concrete_debris_piles_around_the_object_on_its_ground():
         outside = np.maximum(np.abs(debris[:, 0]), np.abs(debris[:, 2])) - 0.6
         assert (outside > -0.2).all() and (outside < 1.9).all(), "around the crate, within reach"
         assert np.allclose(debris[:, 1], 0.0, atol=0.01), "on the ground"
+
+
+def test_a_style_scatters_your_own_assets_when_you_give_it_some():
+    """A slot given prims uses them instead of the built-in kit, and hides your library."""
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _ground(stage)
+        for i, name in enumerate(("brick", "tile")):
+            rock = UsdGeom.Cube.Define(stage, f"/Library/{name}")
+            rock.CreateSizeAttr(2.0)
+            UsdGeom.Xformable(rock).AddTranslateOp().Set((10.0 + i * 3, 1.0, 0.0))
+        crate = scene.create.cube(prim_path="/crate", width=1.2, height=1.2, depth=1.2)
+        scene.create.concrete_debris(crate, primpath_location="/crate", Around_ground="/ground",
+                                     Debris_prims="/Library/*")
+
+        kit = stage.GetPrimAtPath("/crate/style_kit/debris")
+        assert sorted(p.GetName() for p in kit.GetChildren()) == ["brick", "tile"], "yours, not the built-in kit"
+        assert len(_positions(stage, "/crate/style_debris")) > 50
+        bound = UsdGeom.BBoxCache(0, ["default"]).ComputeWorldBound(
+            stage.GetPrimAtPath("/crate/style_kit/debris/brick/place")).ComputeAlignedRange()
+        assert max(bound.GetSize()) == pytest.approx(0.3, abs=1e-4), "fitted to the slot's size"
+        assert UsdGeom.Imageable(stage.GetPrimAtPath("/Library/brick")).ComputeVisibility() == "invisible"
+
+
+def test_mossy_ledges_grow_on_what_faces_up():
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _grid_steps(stage, "/steps", n=61)
+        scene.create.mossy_ledges(primpath_location="/steps", Patches_threshold=0.0)
+
+        moss = _positions(stage, "/steps/style_moss")
+        assert len(moss) > 20
+        on_a_tread = np.isclose(moss[:, 1], 0.0, atol=0.02) | np.isclose(moss[:, 1], 0.25, atol=0.02)
+        assert on_a_tread.mean() > 0.95, "on the treads, not up the riser"
 
 
 def test_the_abandoned_cottage_grows_ivy_on_the_house_and_piles_plants_round_it():
