@@ -37,6 +37,8 @@ USD_CHUNK_DIRS=chunks python examples/scripts/ivy_wall.py
 - **Vine › Hanging**: Hang % sends tendrils off the stem tips. They fall and drape over
   the mesh. Each grows to its own length, Hang Length the longest, and carries smaller,
   sparser leaves than the stem it hangs from.
+  Curl turns the end of each tendril round, out and back up: 180 makes a hook, 360 a loop.
+  Curl Length % is how much of the tendril curls, from its end.
 - **Curves to Mesh › Sides**: 6 is plenty at a few metres. Raise it for a close-up.
 
 The roots start at the lowest painted points, but never on a face pointing straight down,
