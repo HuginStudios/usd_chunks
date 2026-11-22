@@ -1006,12 +1006,16 @@ def _hang(nodes, projector, settings, seed):
     out onto it, so one that falls over a bulge drapes across it instead of through it. Past
     the painted region there is no surface to collide with, and it falls freely.
 
+    With Curl, the last part of each tendril (Curl Length) stops falling and turns round
+    instead, out and back up, so its end hangs as a hook or a loop rather than a plumb line.
+
     Its nodes are born after the tip, so Growth % and the growth primvar grow them last.
 
     Args:
         nodes: The pruned skeleton.
         projector: The painted surface, for collisions.
-        settings: From `_settings`: hang, hang_length, step and up are read.
+        settings: From `_settings`: hang, hang_length, hang_curl, hang_curl_length, step
+            and up are read.
         seed: The random seed; tendrils draw from their own stream, so turning Hang on does not
             change the vine they hang from.
 
@@ -1056,12 +1060,23 @@ def _hang(nodes, projector, settings, seed):
     # Each tendril its own length, Hang Length the longest: all the same, they hung in a row
     # like a fringe cut straight.
     reach = np.maximum(1, np.round(steps * rng.uniform(_SHORTEST, 1.0, len(tips))))
+    curl = _curls(reach, away, up, settings, seed)
     out = nodes.copy()
     for index in range(steps):
         wave = np.sin(phase + pace * index)[:, None]
-        direction = (direction + (-up) * _GRAVITY + sway * wave
-                     + rng.normal(scale=0.08, size=direction.shape))
+        noise = rng.normal(scale=0.08, size=direction.shape)
+        if curl is None:
+            direction = direction + (-up) * _GRAVITY + sway * wave + noise
+        else:
+            # A curling end turns at its own steady rate instead of falling and swaying, or
+            # gravity would pull the hook straight again.
+            start, axis, turn = curl
+            curling = index >= start
+            falling = (-up) * _GRAVITY + sway * wave + noise
+            direction = direction + np.where(curling[:, None], noise * 0.5, falling)
         direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
+        if curl is not None:
+            direction = _turned(direction, axis, np.where(curling, turn, 0.0))
         position = position + direction * step
         landed, normals, found = projector.project_many(position)
         inside = found & (_dot(position - landed, normals) < clearance)
@@ -1076,6 +1091,8 @@ def _hang(nodes, projector, settings, seed):
         position, direction, away = position[going], direction[going], away[going]
         sway, phase, pace, reach = sway[going], phase[going], pace[going], reach[going]
         parent, born = parent[going], born[going] + 1
+        if curl is not None:
+            curl = tuple(part[going] for part in curl)
         # Each leaf on a tendril faces its own way round the strand: all facing out the way the
         # tip left the wall, they read as a flat plastic ribbon.
         facing = _turned(away, direction, rng.uniform(-_LEAF_TURN, _LEAF_TURN, len(away)))
@@ -1085,6 +1102,45 @@ def _hang(nodes, projector, settings, seed):
 
 #: The shortest a tendril grows, as a share of Hang Length.
 _SHORTEST = 0.3
+
+#: The least a tendril curls, as a share of Curl.
+_LEAST_CURL = 0.6
+
+
+def _curls(reach, away, up, settings, seed):
+    """Where and how each tendril's end curls, or None with no Curl.
+
+    Args:
+        reach: Per tendril, how many steps it grows.
+        away: Per tendril, the surface normal at the tip it hangs from.
+        up: The stage's up axis.
+        settings: From `_settings`: hang_curl (degrees) and hang_curl_length are read.
+        seed: The random seed. Curls draw from their own stream, so Curl leaves the rest of
+            the tendril as it was.
+
+    Returns:
+        `(start, axis, turn)`: per tendril, the step its curl starts at, the axis it turns
+        about and the angle it turns each step, in radians. None when Curl is 0.
+    """
+    if settings.get("hang_curl", 0.0) <= 0.0:
+        return None
+    rng = np.random.default_rng([seed, 2])
+    count = len(reach)
+    steps = np.maximum(1, np.round(reach * settings["hang_curl_length"]))
+    # Each its own amount, so the ends do not all hook alike.
+    turn = np.radians(settings["hang_curl"]) * rng.uniform(_LEAST_CURL, 1.0, count) / steps
+    # The end swings out, away from what it hangs from, give or take: back in, it curls into
+    # the wall. Under an arch the normal points down and has no "out", so it picks its own.
+    out = away - np.outer(away @ up, up)
+    flat = np.linalg.norm(out, axis=1) < 0.3
+    random = rng.normal(size=(count, 3))
+    random -= np.outer(random @ up, up)
+    out[flat] = random[flat]
+    out /= np.maximum(np.linalg.norm(out, axis=1), 1e-9)[:, None]
+    out = _turned(out, np.broadcast_to(up, out.shape), rng.uniform(-0.8, 0.8, count))
+    # Turning about this axis takes "down" towards "out", then on up.
+    axis = np.cross(-up, out)
+    return reach - steps, axis, turn
 
 #: How far a tendril's sway pulls it sideways each step, against gravity's pull down.
 _SWAY = 0.22
@@ -1456,6 +1512,8 @@ def _settings(node, surface):
         "hang": number("hang") / 100.0,
         # A share of the painted region, like Thickness, so it reads the same at any scale.
         "hang_length": region * number("hang_length") / 100.0,
+        "hang_curl": number("hang_curl"),
+        "hang_curl_length": min(max(number("hang_curl_length") / 100.0, 0.0), 1.0),
         "taper": number("taper"),
         # A multiple of each node's own radius, applied per node -- not a distance. See `_lift`.
         "lift": number("lift"),
@@ -1562,7 +1620,8 @@ _GROWN: dict = {}
 
 #: The settings that change what grows. The rest only change how it is drawn.
 _GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "meander", "density", "roots",
-                    "min_branch", "max_nodes", "hang", "hang_length", "hang_floor")
+                    "min_branch", "max_nodes", "hang", "hang_length", "hang_curl", "hang_curl_length",
+                    "hang_floor")
 
 
 def _lowest(surface, up):
@@ -2322,6 +2381,31 @@ def main():
             "region. Each tendril grows to its own length, down to a third of this.",
         )
     )
+    hang.add_param(
+        chunk.Slider(
+            "hang_curl",
+            "Curl",
+            min_value=0.0,
+            max_value=360.0,
+            default_value=0.0,
+            flags=_PF.LABELED,
+            tooltip="How far the end of each tendril curls round, in degrees. 0 hangs straight\n"
+            "down. 90 swings the end out, 180 turns it back up like a hook, 360 rolls it\n"
+            "into a loop. Each tendril curls its own amount, down to 60% of this.",
+        )
+    )
+    hang.add_param(
+        chunk.Slider(
+            "hang_curl_length",
+            "Curl Length %",
+            min_value=5.0,
+            max_value=100.0,
+            default_value=35.0,
+            flags=_PF.LABELED,
+            tooltip="How much of each tendril curls, from its end, as a percentage of its\n"
+            "length. Low makes a tight hook at the tip, high a long loose J.",
+        )
+    )
     chunk_api.add_param(hang)
 
     # --- shape ---
@@ -2559,6 +2643,8 @@ def config():
           - Roots: how many vines to start when no painted points are wired.
           - Hang % / Hang Length %: tendrils that fall off the vine tips and
             drape over the mesh, like ivy hanging off a ledge.
+          - Curl / Curl Length %: how far the end of each tendril curls round,
+            out and back up, and how much of it curls.
           - Thickness %: width at the base, as a share of the painted region,
             so the defaults hold at any scene scale. Lift, leaf spacing and
             leaf size are all multiples of it.

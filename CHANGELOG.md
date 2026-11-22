@@ -28,6 +28,8 @@ This file starts with the first release; development before that is in the commi
 - The build-network skill has a chunks-by-task page: every chunk by the job it does, with
   when to pick it over its neighbours. Agents now look for a chunk that builds an object (Fence,
   House) before they model it from boxes.
+- Vine › Hanging has Curl and Curl Length %. The end of each hanging tendril curls round,
+  out and back up, like a hook or a loop. Curl is 0 by default, so tendrils hang as before.
 
 ### Changed
 

@@ -835,29 +835,122 @@ def test_leaves_on_a_tendril_face_every_way_round_it(host) -> None:
     assert np.abs(normals[hanging, 0]).mean() > 0.3
 
 
-def test_tendrils_hang_to_different_lengths(host, monkeypatch) -> None:
-    """All the same length, tendrils hang in a row like a fringe cut straight."""
-    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+def _hung(host, monkeypatch):
+    """Record each skeleton `_hang` returns, newest last."""
     module = _loaded_vine(host)
     hung = []
     real = module._hang
     monkeypatch.setattr(module, "_hang", lambda *args: hung.append(real(*args)) or hung[-1])
-    host.vine(hang=100.0, hang_length=20.0)
+    return hung
 
-    nodes = hung[-1]
+
+def _tendrils(nodes):
+    """Each tendril of a skeleton as its node positions, from where it leaves the vine to its end."""
     parents = np.asarray(nodes.parent)
     hanging = np.asarray(nodes.hanging)
-    # Each tendril starts at a hanging node whose parent is not one; count down its chain.
+    # Each tendril starts at a hanging node whose parent is not one; walk down its chain.
     child = {int(p): i for i, p in enumerate(parents) if p >= 0 and hanging[i]}
-    lengths = []
+    tendrils = []
     for start in np.flatnonzero(hanging & ~hanging[np.maximum(parents, 0)]):
-        n, at = 1, int(start)
-        while at in child:
-            at, n = child[at], n + 1
-        lengths.append(n)
+        chain = [int(start)]
+        while chain[-1] in child:
+            chain.append(child[chain[-1]])
+        tendrils.append(np.asarray(nodes.position)[chain])
+    return tendrils
+
+
+def test_tendrils_hang_to_different_lengths(host, monkeypatch) -> None:
+    """All the same length, tendrils hang in a row like a fringe cut straight."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    hung = _hung(host, monkeypatch)
+    host.vine(hang=100.0, hang_length=20.0)
+
+    lengths = [len(tendril) for tendril in _tendrils(hung[-1])]
 
     assert len(lengths) > 5
     assert max(lengths) > 2 * min(lengths)
+
+
+def test_a_curled_tendril_turns_back_up_at_its_end(host, monkeypatch) -> None:
+    """Hanging ivy hooks at its ends. With Curl 180 a tendril's end turns back up: it ends
+    above its lowest point, heading up."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    hung = _hung(host, monkeypatch)
+    host.vine(hang=100.0, hang_length=20.0, hang_curl=180.0)
+
+    # Long enough to curl visibly: a two-node tendril has no room for a hook.
+    tendrils = [t for t in _tendrils(hung[-1]) if len(t) >= 8]
+    lowest = np.array([t[:, 2].min() for t in tendrils])
+    end = np.array([t[-1, 2] for t in tendrils])
+    heading = np.array([t[-1, 2] - t[-2, 2] for t in tendrils])
+
+    assert len(tendrils) > 5
+    # Nearly every one: a tendril stopped by the floor never reaches its curl.
+    assert np.mean(end > lowest + 1e-3) > 0.8
+    assert np.mean(heading > 0.0) > 0.8
+
+
+def test_curl_swings_a_tendril_out_from_the_wall(host, monkeypatch) -> None:
+    """Back toward the wall, a curl would press into it. It swings out, off the wall."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    hung = _hung(host, monkeypatch)
+    node = host.vine(hang=100.0, hang_length=20.0)
+    straight = _tendrils(hung[-1])
+    node.get_param("hang_curl").value = 90.0
+    curled = _tendrils(hung[-1])
+
+    # The wall is the y = 0 plane; the tendrils leave it on the +y side of its normals.
+    out = [abs(c[-1, 1]) - abs(s[-1, 1]) for s, c in zip(straight, curled) if len(c) >= 8]
+    assert np.mean(np.asarray(out) > 0.0) > 0.8
+
+
+def test_no_curl_hangs_the_tendrils_as_before(host) -> None:
+    """Curl 0 is the default, and the tendrils it draws are the ones drawn before Curl was a
+    setting: turning Curl up and back down to 0 puts every point back where it was."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    node = host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=20.0)
+    before = host.points()
+    node.get_param("hang_curl").value = 180.0
+    curled = host.points()
+    node.get_param("hang_curl").value = 0.0
+
+    assert node.get_param("hang_curl").default_value == 0.0
+    assert curled.shape != before.shape or not np.allclose(curled, before)
+    np.testing.assert_array_equal(host.points(), before)
+
+
+def test_curl_leaves_the_vine_above_its_tendrils_alone(host) -> None:
+    """Curl changes only the ends of the tendrils: the vine on the wall is the same vine."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    node = host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=20.0)
+    straight = host.points()
+    node.get_param("hang_curl").value = 270.0
+    curled = host.points()
+
+    on_wall = np.abs(straight[:, 1]) < 1e-6
+    nearest = np.min(np.linalg.norm(straight[on_wall][:, None, :] - curled[None, :, :], axis=2), axis=1)
+    assert on_wall.sum() > 20
+    assert nearest.max() < 1e-5
+
+
+def test_a_curled_tendril_grows_its_hook_last(host) -> None:
+    """Growth % still grows a curled tendril from its tip down to the end of its hook, and the
+    leaves already grown stay where they were."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    node = host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=20.0,
+                     hang_curl=180.0)
+    growth, _ = _growth(host)
+    counts = host.curves().GetCurveVertexCountsAttr().Get()
+    for strand in np.split(growth, np.cumsum(counts)[:-1]):
+        assert np.all(np.diff(strand) > 0.0)
+
+    final = np.asarray(host.leaves().GetPointsAttr().Get(), dtype=np.float64)
+    for value in (40.0, 70.0):
+        node.get_param("growth").value = value
+        cloud = host.leaves()
+        ids = np.asarray(cloud.GetIdsAttr().Get())
+        assert 0 < len(ids) < len(final)
+        assert np.allclose(np.asarray(cloud.GetPointsAttr().Get(), dtype=np.float64), final[ids], atol=1e-6)
 
 
 def test_tendrils_carry_fewer_smaller_leaves(host) -> None:
