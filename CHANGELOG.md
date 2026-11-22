@@ -11,6 +11,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- URDF Import: a Fixed Base option (on by default) anchors the base link to the world with
+  a fixed joint. Turn it off for a robot that walks or drives.
 - RBD Solver drives joint motors: a joint whose UsdPhysics drive has a `targetPosition` and
   a stiffness becomes a position actuator, with `maxForce` as its force limit. An animated
   target (keyed, or from Pose Articulation) is followed frame by frame with gravity and
@@ -59,6 +61,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** URDF Import reads `<limit effort velocity>`: effort becomes the joint drive's
+  `maxForce` (N m, or N on a prismatic joint, in the stage's units) and velocity PhysX's
+  `physxJoint:maxJointVelocity` (degrees a second). RBD Solver applies the max force, so a
+  robot re-imported from a file with low effort limits now has weaker motors than before.
+  To keep the old behaviour, author a larger `maxForce` downstream of the import. A zero or
+  missing value is still left out.
 - **Breaking:** RBD Solver takes friction from the physics material bound to each collider
   and each robot link's collision prim, and its substeps from the physics scene's
   `physxScene:timeStepsPerSecond`, so a bake and a PhysX run of the same file agree. Its
