@@ -902,6 +902,26 @@ def _pre_load_module(source: str, globs: dict, module: ChunkModule) -> _ConfigTr
     return transformer
 
 
+#: What a module has before it runs: read without running a lazy chunk module.
+_UNLOADED_ATTRS = frozenset(("__file__", "__name__", "__spec__", "__loader__", "__package__", "__path__",
+                             "__cached__", "__class__", "__dict__", "__doc__"))
+
+
+class _ChunkLazyModule(util._LazyModule):
+    """A lazy chunk module that answers what it already has without running.
+
+    Libraries walk sys.modules reading each module's __file__ (torch's import does, through
+    inspect.getmodule; Blender's quit reads every __dict__). On a plain lazy module that ran the
+    chunk, so a chunk whose own dependency was missing broke someone else's import, and every
+    chunk the session never used ran anyway. Any other attribute still loads it.
+    """
+
+    def __getattribute__(self, attr):
+        if attr in _UNLOADED_ATTRS:
+            return object.__getattribute__(self, attr)
+        return super().__getattribute__(attr)
+
+
 class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
     def __init__(self, fullname: str, path: str, loader, mod: ChunkModule):
         self.fullname = fullname
@@ -934,6 +954,8 @@ class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
                 _CONFIG_CACHE.record(self.path, self._module)
 
         self._loader.exec_module(module)
+        if type(module) is util._LazyModule:
+            module.__class__ = _ChunkLazyModule
 
 
 class _ConfigCache:

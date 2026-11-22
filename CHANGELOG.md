@@ -43,6 +43,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Importing a library that walks every loaded module (PyTorch does) failed with another
+  chunk's missing dependency (`No module named 'fbx'`) once chunks were discovered. Reading a
+  chunk module's `__file__`, `__name__` or `__class__` no longer runs a chunk nobody has used.
 - A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
   and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
   Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
