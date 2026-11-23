@@ -49,6 +49,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: a file param a chunk makes while it cooks, like a Dome Light's texture file, has
+  a browse button instead of a bare text field. A path Blender writes relative to the
+  .blend (`//sky.exr`, with the Relative Paths preference on) now reaches the param absolute,
+  since USD cannot resolve it.
+
 - A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
   and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
   Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
