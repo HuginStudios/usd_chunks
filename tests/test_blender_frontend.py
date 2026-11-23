@@ -40,7 +40,7 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 import bpy  # noqa: E402
 
 from mathutils import Matrix, Vector  # noqa: E402
-from pxr import Gf, Kind, Sdf, Usd, UsdGeom  # noqa: E402
+from pxr import Gf, Kind, Sdf, Tf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks import chunk, chunk_registry  # noqa: E402
@@ -1961,6 +1961,40 @@ def test_blender_objects_are_copied_into_the_chunk_layer(imported):
     assert "def Mesh" in text
     # A binding that pointed inside the export root is remapped with it.
     assert "</imported/_materials/ImportRed>" in text
+
+
+def _imported_mesh(node, name):
+    """(face count, subdivision scheme) of the mesh the import wrote for object `name`."""
+    stage = Usd.Stage.Open(node.get_edit_context())
+    mesh = next(UsdGeom.Mesh(p) for p in stage.Traverse()
+                if p.IsA(UsdGeom.Mesh) and p.GetParent().GetName() == Tf.MakeValidIdentifier(name))
+    return len(mesh.GetFaceVertexCountsAttr().Get()), mesh.GetSubdivisionSchemeAttr().Get()
+
+
+def test_a_new_import_applies_the_subdivision_modifier(view, imported):
+    """Blender's USD export writes a Subdivision Surface modifier as the cage plus a
+    catmullClark scheme by default, and the Hydra view draws the cage: a smooth Suzanne
+    in Blender came out faceted in the stage. A new import applies the modifier; a saved
+    one keeps the cage it was made with."""
+    node, obj, _material, mod = imported
+    subsurf = obj.modifiers.new("Subdivision", "SUBSURF")
+    subsurf.levels = subsurf.render_levels = 2
+
+    assert node.get_param("subdivision").value == "As USD subdivision", "a saved import's value"
+    mod.execute(node)
+    assert _imported_mesh(node, obj.name) == (500, UsdGeom.Tokens.catmullClark)
+
+    node.get_edit_context().Clear()
+    node.get_param("subdivision").value = "Apply"
+    mod.execute(node)
+    faces, scheme = _imported_mesh(node, obj.name)
+    assert faces > 500 * 15 and scheme == UsdGeom.Tokens.none, (faces, scheme)
+
+    entry = next(e for e in chunk_graph.menu_entries() if e.module.module_name == "blender_import")
+    view.create_chunk(entry, 0.0, 0.0)
+    made = [c for c in view.scene.get_chunks()
+            if c is not node and c.get_config().module == "blender_import"]
+    assert [c.get_param("subdivision").value for c in made] == ["Apply"], "a new one applies it"
 
 
 def test_only_what_the_import_reads_changes_its_fingerprint(imported):
