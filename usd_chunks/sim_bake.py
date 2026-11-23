@@ -272,7 +272,8 @@ if QtCore is not None:
 
 
 def run(node, bake: Callable[[Context], Generator], *, report: Callable[[str], None],
-        finish: Callable | None = None, live: Callable | None = None, name: str = "SimBake") -> None:
+        finish: Callable | None = None, live: Callable | None = None, name: str = "SimBake",
+        inline: bool = False) -> None:
     """Run bake(ctx) for node: inline, or with its WORKER parts on a thread (see the module).
 
     Args:
@@ -282,13 +283,16 @@ def run(node, bake: Callable[[Context], Generator], *, report: Callable[[str], N
         finish: Called with the result on the main thread when the bake is done.
         live: Called with partial results (Context.live) on the main thread while it runs.
         name: The worker thread's name.
+        inline: Run it straight through on this thread even where a worker is available:
+            a solve short enough to finish inside the cook that asked for it (a live
+            settle), whose result the cook's own view should show.
     """
     if is_running(node):
         report("already simulating -- wait, or press Cancel")
         return
     setattr(node, _CANCEL, False)
 
-    if not in_background():
+    if inline or not in_background():
         ctx = Context(node, report, None)
         try:
             result = drive(bake(ctx))
