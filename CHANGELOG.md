@@ -11,6 +11,37 @@ This file starts with the first release; development before that is in the commi
 
 ### Added
 
+- RBD Solver drives joint motors: a joint whose UsdPhysics drive has a `targetPosition` and
+  a stiffness becomes a position actuator, with `maxForce` as its force limit. An animated
+  target (keyed, or from Pose Articulation) is followed frame by frame with gravity and
+  contacts, and the solve starts at frame 0's target. Stiffness and damping are per degree
+  for an angular drive, as UsdPhysics defines them. A drive without a target stays passive.
+  A robot anchored to the world and driven by motors stays on its mount; one with no
+  anchor (something that walks) keeps a free base.
+- RBD Solver reads a joint's `physxJoint:armature` (the motor's rotor inertia): what lets a
+  stiff drive move light links without the solve ringing apart.
+- RBD Solver simulates an articulated asset and the plain rigid bodies selected with it in one
+  world, so its links can close on a body and lift it by friction alone (with MuJoCo's no-slip
+  pass, so a held body does not creep out). Before, an articulated asset had a solve of its own and
+  passed through everything else.
+- RBD Solver honours `convexDecomposition` on an articulated asset's collision meshes (URDF
+  Import's Collider menu): each is split into convex pieces instead of one hull, so a
+  curved part no longer simulates as a solid wedge.
+- RBD Solver: Live Settle settles to rest on every cook, inline, so posing an articulated asset
+  upstream (Pose Articulation) shows at once where its motors, gravity and contacts let it rest. It
+  writes the resting pose only, no animation, and keeps each robot's compiled model between
+  cooks, rebuilding it only when the robot, its colliders or the solver's settings change.
+- RBD Solver: a **set-down goal** (`setDown:*` on an articulated asset's prim: a goal point, a
+  body, the link holding it, the joints, the frames it is held over and a gain). Each of those
+  frames the solver predicts where the held body will land and shifts the joints' drive
+  targets, at most 10 degrees, so it lands on the goal.
+- `sim_bake.run(..., inline=True)` runs a bake straight through on the calling thread even
+  where a worker is available, for a solve short enough to finish inside its cook.
+- Blender: **Add Chunk Folder** in the USDChunks sidebar adds a folder of chunks (your own
+  library, say) to `USD_CHUNK_DIRS` from inside Blender. Its chunks join the Add menu at once
+  and the folder is kept in the add-on's new **Chunk Folders** preference. **Add
+  Renderer...** in the viewport's Renderer menu does the same for a Hydra render delegate
+  (Aurora, ...) built against Blender's USD; it is listed after a restart.
 - Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
   [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
   street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
@@ -33,6 +64,17 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** RBD Solver takes friction from the physics material bound to each collider
+  and each robot link's collision prim, and its substeps from the physics scene's
+  `physxScene:timeStepsPerSecond`, so a bake and a PhysX run of the same file agree. Its
+  Friction and Substeps sliders now apply only where nothing is authored. A scene whose
+  colliders carry a physics material bakes with that material's friction; change the
+  material, not the slider.
+- RBD Solver builds mesh colliders (an imported asset's STL links) about 50 times faster; a
+  live settle of a six-joint arm went from 9 s to 50 ms a move. It splits a collider marked
+  convexDecomposition once per mesh and reuses the split (a re-solve: about 1 s, down from
+  20 s), and writes a settled pose in one change block, so a live settle
+  sends the viewport one change notice per move instead of three per link.
 - `usdchunks list <words>` finds chunks by task words, best first: whole words only ("rain"
   no longer lists every fence for "terrain"), every word of the query, the name counting most.
   Scatter Points is found for rocks, trees and grass, Inline USD for keyframes.
@@ -46,6 +88,22 @@ This file starts with the first release; development before that is in the commi
 - Importing a library that walks every loaded module (PyTorch does) failed with another
   chunk's missing dependency (`No module named 'fbx'`) once chunks were discovered. Reading a
   chunk module's `__file__`, `__name__` or `__class__` no longer runs a chunk nobody has used.
+- CAD Import, Reference and Payload keep their location when you pick a new version of the
+  same file from another folder: `widget.stp` stays at `/widget` instead of moving to
+  `/widget1`, so the chunks downstream that read `/widget` keep working.
+- Blender: a file param a chunk makes while it cooks, like a Dome Light's texture file, has
+  a browse button instead of a bare text field. A path Blender writes relative to the
+  .blend (`//sky.exr`, with the Relative Paths preference on) now reaches the param absolute,
+  since USD cannot resolve it.
+- RBD Solver simulates every articulated prim in its selection in one world, with the plain
+  rigid bodies: two mechanisms touching one part touch it and each other. Each was solved on
+  its own, the bodies joining only the first, so the second passed through what the first
+  held. Two copies of one asset (the same link names) no longer clash.
+- RBD Solver on a body whose transform is animated upstream (an Attach carrying it) divides
+  that animation out frame by frame, as it already did for articulated links. The bake
+  showed the simulated motion with the animation played on top of it.
+- RBD Solver no longer drops the contact between an articulated link and a collider it
+  starts inside: a link posed into the table passed straight through it.
 - A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
   and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
   Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
@@ -90,6 +148,9 @@ This file starts with the first release; development before that is in the commi
   put its params back.
 - `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
   what it needs, instead of listing no params as if it took none.
+- RBD Solver moves an animated collider (a sweeping paddle, a door swinging shut) when it
+  simulates a jointed asset. The collider stayed where it started, and one whose rest pose
+  overlapped the asset never touched it at all.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

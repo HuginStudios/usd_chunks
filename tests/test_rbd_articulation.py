@@ -233,6 +233,32 @@ class TestModelBuild:
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "Door_joint")
         assert math.degrees(model.jnt_range[jid][0]) == pytest.approx(-90.0, abs=0.5)
 
+    def test_a_link_starting_inside_a_collider_still_collides_with_it(self):
+        """Initial overlaps are excluded between the mechanism's own links only. The
+        colliders sit in a body of their own, so excluding every overlapping pair dropped a
+        link's contact with the table its pose had pushed it into, and it passed
+        straight through."""
+        stage, root = _cabinet()
+        table = UsdGeom.Cube.Define(stage, "/table")
+        table.CreateSizeAttr(0.1)
+        roots = rbd.read_articulations(root)
+
+        model, data, _ordered = rbd.build_articulated_spec(
+            roots, gravity=-9.81, friction=0.7, restitution=0.0, mass=1.0,
+            substeps=4, dt=1 / 24.0, up_idx=2, solver_iters=20,
+            collision_prims=[table.GetPrim()], floor_drop=2.0, free_root=False,
+        )
+
+        links = {"Body", "Door"}
+        touching = {
+            model.body(model.geom_bodyid[data.contact[i].geom1]).name
+            for i in range(data.ncon)
+        } | {
+            model.body(model.geom_bodyid[data.contact[i].geom2]).name
+            for i in range(data.ncon)
+        }
+        assert touching & links and touching - links - {"world"}
+
     def test_a_fixed_joint_adds_no_degree_of_freedom(self):
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -249,6 +275,158 @@ class TestModelBuild:
         )
 
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "Welded_joint") < 0
+
+
+def _motor_cabinet(targets, *, stiffness=0.5, damping=0.05, max_force=None):
+    """The cabinet with its door hinge driven: `targets` is {frame: degrees}, or one value
+    for an unanimated target."""
+    stage, root = _cabinet()
+    hinge = stage.GetPrimAtPath("/root/Door/hinge")
+    drive = UsdPhysics.DriveAPI.Apply(hinge, "angular")
+    drive.CreateStiffnessAttr(stiffness)
+    drive.CreateDampingAttr(damping)
+    if max_force is not None:
+        drive.CreateMaxForceAttr(max_force)
+    attr = drive.CreateTargetPositionAttr()
+    if isinstance(targets, dict):
+        for frame, value in targets.items():
+            attr.Set(float(value), Usd.TimeCode(frame))
+    else:
+        attr.Set(float(targets))
+    return stage, root
+
+
+def _hinge_degrees(results, frame):
+    """The door's angle about the hinge (X) relative to the body, at a baked frame."""
+    rel = results["Door"][frame] * results["Body"][frame].GetInverse()
+    quat = rel.ExtractRotationQuat()
+    return math.degrees(2.0 * math.atan2(quat.GetImaginary()[0], quat.GetReal()))
+
+
+def _run_sim(roots, **kwargs):
+    gen = rbd._sim_articulated_gen_mj(
+        roots, gravity=-9.81, friction=0.7, restitution=0.0, mass=1.0, substeps=2,
+        start_frame=1, dt=1 / 24.0, up_idx=2, solver_iters=20, collision_prims=[],
+        floor_drop=2.0, free_root=False, **kwargs,
+    )
+    try:
+        while True:
+            next(gen)
+    except StopIteration as exc:
+        return exc.value
+
+
+@needs_mujoco
+class TestMotors:
+    def test_a_drive_with_a_target_is_a_position_actuator(self):
+        """USD's angular drive is per degree, MuJoCo's per radian: a stiffness passed
+        through unscaled is 57 times too soft, and the arm sags rather than tracking."""
+        stage, root = _motor_cabinet(-30.0, stiffness=2.0, damping=0.1, max_force=5.0)
+        roots = rbd.read_articulations(root)
+
+        model, _data, _ordered = rbd.build_articulated_spec(
+            roots, gravity=-9.81, friction=0.7, restitution=0.0, mass=1.0,
+            substeps=4, dt=1 / 24.0, up_idx=2, solver_iters=20,
+            collision_prims=[], floor_drop=2.0, free_root=False,
+        )
+
+        aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "Door_joint_motor")
+        assert aid >= 0
+        assert model.actuator_gainprm[aid][0] == pytest.approx(2.0 * 180.0 / math.pi)
+        assert model.actuator_biasprm[aid][2] == pytest.approx(-0.1 * 180.0 / math.pi)
+        assert list(model.actuator_forcerange[aid]) == pytest.approx([-5.0, 5.0])
+        # The drive's stiffness is the motor's, not also a spring back to the rest pose.
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "Door_joint")
+        assert model.jnt_stiffness[jid] == 0.0
+
+    def test_limits_are_measured_from_the_pose_the_model_is_built_in(self):
+        """The model's zero is the posed links, so a joint posed to -80 degrees of a
+        -90..0 limit has -10 left one way and 80 the other. Unshifted, a pose that jumped
+        to another solution was clamped somewhere else entirely, its hand 28 cm off."""
+        stage, root = _motor_cabinet(-80.0)
+        roots = rbd.read_articulations(root)
+
+        model, _data, _ordered = rbd.build_articulated_spec(
+            roots, gravity=-9.81, friction=0.7, restitution=0.0, mass=1.0,
+            substeps=4, dt=1 / 24.0, up_idx=2, solver_iters=20,
+            collision_prims=[], floor_drop=2.0, free_root=False,
+        )
+
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "Door_joint")
+        assert [math.degrees(v) for v in model.jnt_range[jid]] == pytest.approx([-10.0, 80.0], abs=0.01)
+
+    def test_a_drive_without_a_target_stays_passive(self):
+        stage, root = _cabinet()
+        drive = UsdPhysics.DriveAPI.Apply(stage.GetPrimAtPath("/root/Door/hinge"), "angular")
+        drive.CreateStiffnessAttr(2.0)
+        roots = rbd.read_articulations(root)
+
+        model, _data, _ordered = rbd.build_articulated_spec(
+            roots, gravity=-9.81, friction=0.7, restitution=0.0, mass=1.0,
+            substeps=4, dt=1 / 24.0, up_idx=2, solver_iters=20,
+            collision_prims=[], floor_drop=2.0, free_root=False,
+        )
+
+        assert model.nu == 0
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "Door_joint")
+        assert model.jnt_stiffness[jid] == pytest.approx(2.0)
+
+    def test_the_joint_follows_an_animated_target(self):
+        """The point of a motor: keyframed drive targets (Pose Articulation, inverse kinematics)
+        come out of the solve as the same motion, with physics."""
+        stage, root = _motor_cabinet({1: 0.0, 6: -60.0})
+        roots = rbd.read_articulations(root)
+
+        results = _run_sim(roots, frame_count=24)
+
+        assert _hinge_degrees(results, 3) < -5.0  # moving while the target moves
+        assert _hinge_degrees(results, 23) == pytest.approx(-60.0, abs=2.0)
+
+    def test_a_target_is_measured_from_its_default(self):
+        """Pose Articulation authors its pose into the link transforms AND the default
+        target. The model is built from those transforms, so taken as absolute the target
+        would turn the joint by the pose a second time."""
+        stage, root = _motor_cabinet(-30.0)  # the default: the pose already in the links
+        roots = rbd.read_articulations(root)
+
+        results = _run_sim(roots, frame_count=12)
+
+        assert _hinge_degrees(results, 11) == pytest.approx(0.0, abs=1.0)
+
+    def _free_joint(self, stage, root):
+        roots = rbd.read_articulations(root)
+        model, _data, _ordered = rbd.build_articulated_spec(
+            roots, gravity=-9.81, friction=0.7, restitution=0.0, mass=1.0,
+            substeps=4, dt=1 / 24.0, up_idx=2, solver_iters=20,
+            collision_prims=[], floor_drop=2.0, free_root=True,
+        )
+        return mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "Body_free") >= 0
+
+    def test_an_anchored_robot_stays_on_its_mount(self):
+        """Anchored and motorised is an arm bolted down: freed, it topples as it reaches."""
+        stage, root = _motor_cabinet(-30.0)
+        assert not self._free_joint(stage, root)
+
+    def test_an_anchored_mechanism_without_motors_still_drops(self):
+        """An appliance's sim-ready anchor is not honoured: the solver is asked to drop it."""
+        stage, root = _cabinet()
+        assert self._free_joint(stage, root)
+
+    def test_a_robot_with_motors_and_no_anchor_is_free(self):
+        """Something that walks keeps its free base."""
+        stage, root = _motor_cabinet(-30.0)
+        stage.RemovePrim("/root/Body/FixedJoint")
+        assert self._free_joint(stage, root)
+
+    def test_the_solve_starts_at_the_first_frames_target(self):
+        """Not at the rest pose: an arm animated from mid-reach would snap there on frame 1."""
+        stage, root = _motor_cabinet({1: -45.0, 10: -45.0})
+        roots = rbd.read_articulations(root)
+
+        results = _run_sim(roots, frame_count=4)
+
+        assert _hinge_degrees(results, 0) == pytest.approx(-45.0, abs=0.5)
+        assert _hinge_degrees(results, 3) == pytest.approx(-45.0, abs=2.0)
 
 
 @needs_mujoco

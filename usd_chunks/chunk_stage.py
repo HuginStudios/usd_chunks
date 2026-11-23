@@ -3751,8 +3751,12 @@ def suggest_location_from_file(param) -> None:
     current = location.raw_value or ""
     if chunk_glob.is_pattern(path) or (current and current != _suggested_locations.get(chunk)):
         return
-    name = Tf.MakeValidIdentifier(Path(path).stem)
-    location.value = _suggested_locations[chunk] = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
+    suggestion = f"/{Tf.MakeValidIdentifier(Path(path).stem)}"
+    # A file with the same name (a new version from another folder) keeps the location: the
+    # prim already there is this chunk's own, not a clash.
+    if suggestion != current:
+        suggestion = chunk_utils.get_unique_path(param.get_scene_stage(), suggestion)
+    location.value = _suggested_locations[chunk] = suggestion
 
 
 def hold_asset_layers(node, paths: Iterable[str]) -> None:

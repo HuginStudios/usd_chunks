@@ -64,6 +64,19 @@ _OUTPUT = ChunkFlags.ParamFlags.OUTPUT
 _writing: set = set()
 
 
+def _as_param_value(param, value):
+    """A UI value as the param should hold it.
+
+    A file path Blender made relative to the .blend ("//textures/sky.exr", what its file
+    browser writes when the Relative Paths preference is on and the file is saved) means
+    nothing to USD, which resolves an asset path against the layer, so a file param gets
+    it absolute.
+    """
+    if isinstance(value, str) and value.startswith("//") and PT.FILE in param.get_type():
+        return bpy.path.abspath(value)
+    return value
+
+
 def _write_param(param, value) -> None:
     """Push a UI value into the chunk param, once.
 
@@ -77,6 +90,7 @@ def _write_param(param, value) -> None:
         return
     _writing.add(key)
     try:
+        value = _as_param_value(param, value)
         if param.value != value:
             param.value = value
     except Exception:  # pragma: no cover - a chunk's setter may reject a value
@@ -527,6 +541,12 @@ def sync_to_node(node, chunk) -> None:
                 if PT.COLOR_PICKER in param.get_type():
                     # A swatch, not three bare numbers: what a declared colour draws as.
                     node.id_properties_ui(key).update(subtype="COLOR", min=0.0, max=1.0)
+                elif PT.FILE in param.get_type():
+                    # A browse button, as a declared file param has (property_for): a
+                    # light's texture file is a param its cook makes, so it lands here.
+                    spec = chunk_widget_api.file_dialog_spec(param)
+                    node.id_properties_ui(key).update(
+                        subtype="DIR_PATH" if spec.directory else "FILE_PATH")
                 # Seen as mirrored, not edited: sync_lofted pushes only a user's change.
                 _lofted_seen[(node.as_pointer(), key)] = _plain(node[key])
         except Exception:
