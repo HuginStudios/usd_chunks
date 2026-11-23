@@ -91,6 +91,11 @@ This file starts with the first release; development before that is in the commi
 - Blender: a chunk's read-only text, like the Swedish House's size readout or a download
   status, shows as plain text. It was an editable field with the param's name in front
   ("not built yet | 8.5 x 4.7 m").
+- Blender Import brings a subdivided mesh in smooth, as Blender shows it. Blender's USD export
+  wrote a Subdivision Surface modifier as the low-poly cage plus a subdivision scheme, and the
+  viewport drew the cage, so a smooth Suzanne came out faceted. A new Blender Import applies
+  the modifier; its new Subdivision menu has **As USD subdivision** for the cage and scheme.
+  Imports saved before keep As USD subdivision, so they cook as they did.
 - CAD Import, Reference and Payload keep their location when you pick a new version of the
   same file from another folder: `widget.stp` stays at `/widget` instead of moving to
   `/widget1`, so the chunks downstream that read `/widget` keep working.
