@@ -903,6 +903,47 @@ def _add(view, module_name):
     return view.tree.nodes[chunk_stage.get_chunk_prim_path(chunk)]
 
 
+class _Layout:
+    """Stands in for a bpy UILayout (there is none headless) and records what is drawn."""
+
+    def __init__(self):
+        self.calls = []
+        self.active = True
+        self.alert = False
+
+    def row(self, **_kw):
+        return self
+
+    column = row
+
+    def label(self, text="", **_kw):
+        self.calls.append(("label", text))
+
+    def prop(self, _data, key, **kw):
+        self.calls.append(("prop", key, kw.get("text")))
+
+    def operator(self, idname, **_kw):
+        self.calls.append(("operator", idname))
+        return type("Op", (), {})()
+
+
+def test_a_label_param_is_drawn_as_its_text_not_a_field(view):
+    """A Label is a read-only line (the House's "8.5 x 4.7 m · Hip roof" readout, a status).
+    Qt shows its text. Blender drew an editable text field captioned with the param's own
+    label, so the readout read "not built ... | 8.5 x 4.7 m" and could be typed into."""
+    node = _add(view, "house")
+    readout = node.get_chunk().get_param("readout")
+    readout.value = "8.5 x 4.7 m"
+    layout = _Layout()
+    assert chunk_blender.draw_param(node, layout, readout)
+    assert layout.calls == [("label", "8.5 x 4.7 m")]
+
+    readout.value = ""
+    layout = _Layout()
+    assert not chunk_blender.draw_param(node, layout, readout), "nothing to read: no row"
+    assert layout.calls == []
+
+
 def test_a_hidden_groups_params_are_hidden_with_it(view):
     """mesh keeps cube, tube and grid groups and shows the one its menu names. The
     params inside carry no HIDDEN bit of their own, so reading only theirs drew every
