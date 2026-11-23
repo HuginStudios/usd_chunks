@@ -1050,6 +1050,43 @@ def active_view():
     return _active_view
 
 
+def follow_hide_toggles(view=None) -> bool:
+    """Take a node folded or opened with Blender's own header arrow onto its chunk.
+
+    The arrow sets node.hide and nothing else: no operator, no update(). The chunk kept its
+    COLLAPSED bit and the node kept its folded sockets, so a node opened with the arrow
+    showed no params at all, and the next reload folded it again. Here node.hide wins
+    wherever it disagrees with the bit -- the bit is set or cleared and the sockets follow,
+    as collapse_selected_or_all does for H.
+
+    Called from the add-on's poll (the arrow has no callback of its own to hang this on).
+
+    Args:
+        view: The view to check. Defaults to the live one.
+
+    Returns:
+        True when a node changed.
+    """
+    view = view or active_view()
+    tree = view.tree if view is not None else None
+    if tree is None:
+        return False
+    changed = False
+    for node in tree.nodes:
+        chunk = view.chunks.get(node.name)
+        if chunk is None or node.hide == chunk.has_state(ChunkFlags.State.COLLAPSED):
+            continue
+        if node.hide:
+            chunk.set_state(ChunkFlags.State.COLLAPSED)
+        else:
+            chunk.unset_state(ChunkFlags.State.COLLAPSED)
+        sync_socket_visibility(node)
+        changed = True
+    if changed:
+        tag_redraw()
+    return changed
+
+
 #: The ID property naming a chunk tree for good: a tree is found by name first, and by
 #: this when the name has changed.
 TREE_UID = "usd_chunks_uid"
