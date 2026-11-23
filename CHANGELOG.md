@@ -49,6 +49,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- CAD Import, Reference and Payload keep their location when you pick a new version of the
+  same file from another folder: `widget.stp` stays at `/widget` instead of moving to
+  `/widget1`, so the chunks downstream that read `/widget` keep working.
 - Blender: a file param a chunk makes while it cooks, like a Dome Light's texture file, has
   a browse button instead of a bare text field. A path Blender writes relative to the
   .blend (`//sky.exr`, with the Relative Paths preference on) now reaches the param absolute,
