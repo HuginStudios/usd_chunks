@@ -369,6 +369,7 @@ def _poll_new_trees() -> float:
             # been touched THIS session. Reopen the file rather than blanking a real network.
             _open_stage(_stage_for_tree(tree), tree=tree)
         _follow_shown_tree()
+        bg.follow_hide_toggles()
     except Exception:  # a timer that raises is unregistered for good
         logger.exception("usd_chunks: could not switch to the chunk network on screen")
     return 0.1  # reschedule in 0.1s -- this is the latency between "+ New" and Shift+A working

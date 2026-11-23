@@ -689,6 +689,54 @@ def test_a_collapsed_node_shows_its_wired_sockets_and_a_plus_each_side(view):
     assert len(_shown(_node(view, "Move").inputs)) > 1, "open again: every param's socket"
 
 
+def test_blenders_own_collapse_arrow_opens_and_folds_the_params(view):
+    """The arrow in a node's header sets node.hide and nothing else. The chunk stayed
+    COLLAPSED, its param sockets stayed folded, and the node opened with no sliders in it."""
+    view.set_selection({_node(view, "Move").name})
+    view.collapse_selected_or_all()
+    move = _node(view, "Move")
+    chunk = view.chunks[move.name]
+
+    move.hide = False  # what a click on the arrow does
+    assert bg.follow_hide_toggles(view)
+    move = _node(view, "Move")
+    assert not chunk.has_state(ChunkFlags.State.COLLAPSED)
+    assert len(_shown(move.inputs)) > 1, "open: every param's socket"
+    _flush(view)  # the tick between two clicks
+    assert not _node(view, "Move").hide
+
+    move = _node(view, "Move")
+    move.hide = True
+    assert bg.follow_hide_toggles(view)
+    move = _node(view, "Move")
+    assert chunk.has_state(ChunkFlags.State.COLLAPSED)
+    assert [s.name for s in _shown(move.inputs)] == [bg._PLUS]
+    view.reload()
+    assert _node(view, "Move").hide, "folded with the arrow survives a reload"
+
+
+def test_a_collapse_from_the_model_is_not_taken_back_before_the_tree_catches_up(view):
+    """A collapse made on the chunk (a script, undo) reaches node.hide on the next flush.
+    Until then the two disagree, and that is the tree lagging, not the arrow: the poll must
+    not undo it."""
+    move = _node(view, "Move")
+    chunk = view.chunks[move.name]
+    chunk.set_state(ChunkFlags.State.COLLAPSED)
+    assert not _node(view, "Move").hide, "precondition: the tree has not caught up yet"
+    assert not bg.follow_hide_toggles(view)
+    assert chunk.has_state(ChunkFlags.State.COLLAPSED)
+    _flush(view)
+    assert _node(view, "Move").hide
+
+
+def test_the_add_ons_poll_follows_the_collapse_arrow(view, monkeypatch):
+    """The arrow has no callback of its own, so the add-on's 0.1 s poll is what notices it."""
+    seen = []
+    monkeypatch.setattr(bg, "follow_hide_toggles", lambda v=None: seen.append(v))
+    addon._poll_new_trees()
+    assert seen
+
+
 def test_a_link_to_a_plus_is_taken_out_and_picked_as_a_param(view):
     """The link is not a wire until a param is picked: update() removes it, and join()
     asks (headless, the pick waits in pending_pick; Blender proper shows a search)."""
