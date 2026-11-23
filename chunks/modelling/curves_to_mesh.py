@@ -85,14 +85,14 @@ def _curve_prims(prim, recurse: bool):
     return [p for p in Usd.PrimRange(prim) if UsdGeom.BasisCurves(p)]
 
 
-def _widths_per_vertex(curves, point_count: int) -> np.ndarray:
+def _widths_per_vertex(curves, point_count: int, time=Usd.TimeCode.Default()) -> np.ndarray:
     """Widths as one value per control point, whatever interpolation they were authored at.
 
     A constant width is one number for the whole prim; vertex and varying are already per-CV
     for the purposes here. Anything missing falls back to a hairline rather than zero, since a
     tube of radius zero is invisible and reads as the chunk having failed.
     """
-    widths = curves.GetWidthsAttr().Get()
+    widths = curves.GetWidthsAttr().Get(time)
     if not widths:
         return np.full(point_count, 0.1, dtype=np.float64)
     widths = np.asarray(widths, dtype=np.float64)
@@ -103,23 +103,39 @@ def _widths_per_vertex(curves, point_count: int) -> np.ndarray:
     return widths[:point_count]
 
 
-def _read_strands(prim):
-    """(points, radii) per strand, in world space.
+#: A per-point primvar carried from the curves onto the mesh, one value per vertex. Vine
+#: writes it: when each point grew, so a shader can grow the mesh in as it did the curves.
+GROWTH_PRIMVAR = "growth"
+
+
+def _growth_per_vertex(curves, point_count: int, time):
+    """The curves' growth primvar, one value per control point, or None when it has none."""
+    primvar = UsdGeom.PrimvarsAPI(curves).GetPrimvar(GROWTH_PRIMVAR)
+    if not primvar or not primvar.HasValue():
+        return None
+    values = primvar.Get(time)
+    if values is None or len(values) != point_count:
+        return None
+    return np.asarray(values, dtype=np.float64)
+
+
+def _read_strands(prim, time=Usd.TimeCode.Default()):
+    """(points, radii) per strand, in world space, at `time`.
 
     World space because the output Mesh is authored without a transform of its own: the curves
     may sit under any xform, and a tube that ignored it would land somewhere else entirely.
     """
     curves = UsdGeom.BasisCurves(prim)
-    points = curves.GetPointsAttr().Get()
-    counts = curves.GetCurveVertexCountsAttr().Get()
+    points = curves.GetPointsAttr().Get(time)
+    counts = curves.GetCurveVertexCountsAttr().Get(time)
     if not points or not counts:
         return [], "", ""
 
     points = np.asarray(points, dtype=np.float64)
-    widths = _widths_per_vertex(curves, len(points))
+    widths = _widths_per_vertex(curves, len(points), time)
 
     matrix = np.asarray(
-        UsdGeom.XformCache().GetLocalToWorldTransform(prim), dtype=np.float64
+        UsdGeom.XformCache(time).GetLocalToWorldTransform(prim), dtype=np.float64
     )
     # Row-vector convention, matching Gf: p * M, with the translation in the last row.
     points = points @ matrix[:3, :3] + matrix[3, :3]
@@ -138,6 +154,29 @@ def _read_strands(prim):
         strands.append((points[at:at + count], widths[at:at + count] * 0.5))
         at += count
     return strands, kind, basis
+
+
+def _read_growth(prim, time=Usd.TimeCode.Default()):
+    """The curves' growth primvar split per strand, or None when it has none."""
+    curves = UsdGeom.BasisCurves(prim)
+    counts = curves.GetCurveVertexCountsAttr().Get(time)
+    points = curves.GetPointsAttr().Get(time)
+    if not counts or not points:
+        return None
+    growth = _growth_per_vertex(curves, len(points), time)
+    if growth is None:
+        return None
+    return np.split(growth, np.cumsum(np.asarray(counts, dtype=np.int64))[:-1])
+
+
+def _sample_times(prims):
+    """Every time the curves' shape is sampled at, sorted; empty for still curves."""
+    times = set()
+    for prim in prims:
+        curves = UsdGeom.BasisCurves(prim)
+        for attr in (curves.GetPointsAttr(), curves.GetCurveVertexCountsAttr(), curves.GetWidthsAttr()):
+            times.update(attr.GetTimeSamples())
+    return sorted(times)
 
 
 # ---------------------------------------------------------------------------
@@ -166,49 +205,71 @@ def _catmullrom_weights(t: np.ndarray) -> np.ndarray:
     ], axis=1) / 2.0
 
 
-def _centreline(points: np.ndarray, radii: np.ndarray, kind, basis, per_segment: int):
-    """The polyline a tube is swept along, with a radius per sample.
+def _centrelines(points, values, counts, kind, basis, per_segment: int):
+    """The polylines the tubes are swept along, every strand at once.
 
     Linear curves are their own control points. Cubic ones are evaluated, because a B-spline
     does not pass through its CVs -- sweeping the CVs directly leaves the mesh beside the curve
     the renderer draws, worst at the ends, which is where Vine pins its roots.
 
-    Radii ride the same basis as the positions, so the taper the pipe model produced survives
-    into the tube instead of being re-sampled by eye.
+    `values` are per-CV columns (the radius, the growth primvar) that ride the same basis as
+    the positions, so the taper the pipe model produced survives into the tube instead of
+    being re-sampled by eye.
+
+    Args:
+        points: (N, 3) control points of every strand, end to end.
+        values: (N, k) per-CV values to carry.
+        counts: CVs per strand.
+        kind, basis: The curves' type and basis.
+        per_segment: Samples per cubic segment.
+
+    Returns:
+        (points, values, counts) of the evaluated samples.
     """
-    if kind != UsdGeom.Tokens.cubic or len(points) < 4:
-        return points, radii
-
+    counts = np.asarray(counts, dtype=np.int64)
+    if kind != UsdGeom.Tokens.cubic or not len(counts):
+        return points, values, counts
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    # Strands shorter than a cubic segment are drawn as their control points, as before.
+    cubic = counts >= 4
     weights_of = _catmullrom_weights if basis == UsdGeom.Tokens.catmullRom else _bspline_weights
-    # vstep is 1 for both bases handled here; bezier (vstep 3) is not, and falls back to its
-    # control points above rather than being evaluated wrongly.
-    segments = len(points) - 3
-    t = np.linspace(0.0, 1.0, per_segment + 1)[:-1]
-    weights = weights_of(t)
+    # vstep is 1 for both bases handled here; bezier (vstep 3) is not, and is evaluated as a
+    # B-spline rather than wrongly in some third way.
+    weights = weights_of(np.linspace(0.0, 1.0, per_segment + 1)[:-1])
+    last = weights_of(np.asarray([1.0]))[0]
+    segments = np.where(cubic, counts - 3, 0)
+    out_counts = np.where(cubic, segments * per_segment + 1, counts)
 
-    out_p, out_r = [], []
-    for s in range(segments):
-        hull_p = points[s:s + 4]
-        hull_r = radii[s:s + 4]
-        out_p.append(weights @ hull_p)
-        out_r.append(weights @ hull_r)
-    # The closing sample of the last segment, which the half-open ranges above leave off.
-    last = weights_of(np.asarray([1.0]))
-    out_p.append(last @ points[segments - 1:segments + 3])
-    out_r.append(last @ radii[segments - 1:segments + 3])
-    return np.concatenate(out_p), np.concatenate(out_r)
+    hull = np.repeat(starts, segments) + (np.arange(segments.sum()) - np.repeat(
+        np.cumsum(segments) - segments, segments))
+    corner = hull[:, None] + np.arange(4)
+    both = np.concatenate((points, values), axis=1)
+    sampled = np.matmul(weights, both[corner])                 # (S, per_segment, 3 + k)
+    closing = last @ both[starts[cubic][:, None] + (counts[cubic] - 4)[:, None] + np.arange(4)]
+
+    out = np.empty((int(out_counts.sum()), both.shape[1]))
+    out_starts = np.concatenate(([0], np.cumsum(out_counts)[:-1]))
+    # Each cubic strand's samples, then its closing sample; other strands copied as they are.
+    seg_rows = np.repeat(out_starts, segments) + (np.arange(segments.sum()) - np.repeat(
+        np.cumsum(segments) - segments, segments)) * per_segment
+    out[(seg_rows[:, None] + np.arange(per_segment)).reshape(-1)] = sampled.reshape(-1, both.shape[1])
+    out[out_starts[cubic] + out_counts[cubic] - 1] = closing
+    for k in np.flatnonzero(~cubic).tolist():
+        out[out_starts[k]:out_starts[k] + counts[k]] = both[starts[k]:starts[k] + counts[k]]
+    return out[:, :3], out[:, 3:], out_counts
 
 
-def _drop_duplicates(points: np.ndarray, radii: np.ndarray):
-    """Remove consecutive identical samples, which have no direction to frame."""
-    if len(points) < 2:
-        return points, radii
+def _drop_repeats(points, values, counts):
+    """Remove consecutive identical samples within a strand: they have no direction to frame."""
+    if not len(points):
+        return points, values, counts
+    strand = np.repeat(np.arange(len(counts)), counts)
     step = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    keep = np.concatenate(([True], step > _EPSILON))
-    return points[keep], radii[keep]
+    keep = np.concatenate(([True], (step > _EPSILON) | (strand[1:] != strand[:-1])))
+    return points[keep], values[keep], np.bincount(strand[keep], minlength=len(counts))
 
 
-def _frames(points: np.ndarray):
+def _frames(points, counts=None):
     """A rotation-minimising frame per sample: (tangents, normals, binormals).
 
     Wang et al., *Computation of Rotation Minimizing Frames* (2008), double reflection. Each
@@ -216,54 +277,114 @@ def _frames(points: np.ndarray):
     spins about the curve. Re-deriving a frame per sample from a fixed up-vector is the usual
     shortcut and it twists -- on a textured tube that reads as a barber pole.
 
-    The recurrence is sequential by nature, so the loop cannot go away; what can is numpy's
-    per-call overhead inside it. Profiled at 83% of a 40-strand sweep, almost all of it in
-    `np.linalg.norm` on three-element vectors -- so everything hoistable is computed as arrays
-    up front and the loop itself runs on plain floats. Same arithmetic, same answer to the
-    last bit, about seven times faster.
+    The recurrence is sequential along a strand but independent between strands, so it runs
+    down all of them at once: step i of every strand still that long, as arrays. Strands go
+    longest first, so the ones still running are always a prefix and a slice, not a mask.
+    The arithmetic is the per-strand loop's, term for term.
+
+    Args:
+        points: (N, 3) samples of every strand, end to end.
+        counts: Samples per strand; None for one strand.
     """
     n = len(points)
+    counts = np.asarray([n] if counts is None else counts, dtype=np.int64)
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    last = starts + counts - 1
+
     tangents = np.zeros((n, 3))
     tangents[:-1] = np.diff(points, axis=0)
-    tangents[-1] = tangents[-2]
+    tangents[last] = tangents[np.maximum(last - 1, starts)]
     lengths = np.linalg.norm(tangents, axis=1, keepdims=True)
     tangents = tangents / np.where(lengths > _EPSILON, lengths, 1.0)
 
     # Any vector not parallel to the first tangent seeds the frame; which one is arbitrary,
     # it only fixes where the UV seam falls.
-    seed = np.array([0.0, 0.0, 1.0])
-    if abs(float(np.dot(seed, tangents[0]))) > 0.9:
-        seed = np.array([1.0, 0.0, 0.0])
-    first = np.cross(tangents[0], seed)
-    first /= max(float(np.linalg.norm(first)), _EPSILON)
+    first_t = tangents[starts]
+    seed = np.where((np.abs(first_t[:, 2]) > 0.9)[:, None], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    first = np.cross(first_t, seed)
+    first /= np.maximum(np.linalg.norm(first, axis=1), _EPSILON)[:, None]
 
-    # Hoisted out of the loop: the step vectors and their squared lengths.
-    steps = np.diff(points, axis=0)
-    step_sq = np.einsum("ij,ij->i", steps, steps)
+    steps = np.zeros((n, 3))
+    steps[:-1] = np.diff(points, axis=0)
+    step_sq = steps[:, 0] * steps[:, 0] + steps[:, 1] * steps[:, 1] + steps[:, 2] * steps[:, 2]
 
+    order = np.argsort(-counts, kind="stable")
+    ordered_starts = starts[order]
+    running = counts[order] - 1               # steps each strand takes, longest first
     normals = np.empty((n, 3))
-    normals[0] = first
-    rx, ry, rz = float(first[0]), float(first[1]), float(first[2])
-    tx, ty, tz = float(tangents[0][0]), float(tangents[0][1]), float(tangents[0][2])
-    t_list = tangents.tolist()
-    v_list = steps.tolist()
-    c_list = step_sq.tolist()
+    normals[ordered_starts] = first[order]
+    r = first[order].copy()
+    steps_total = int(running.max()) if len(running) else 0
+    i = 0
+    while i < steps_total:
+        # Strands still running at step i: running is sorted longest first.
+        live = int(np.searchsorted(-running, -i, side="left"))
+        if live < _ARRAY_FRAMES:
+            # A step as arrays costs the same for one strand as for a thousand. With only a
+            # few long strands left -- a vine's trunks -- plain floats finish them faster.
+            for j in range(live):
+                _carry_frame(normals, tangents, steps, step_sq, int(ordered_starts[j]) + i,
+                             int(running[j]) - i, r[j])
+            break
+        at = ordered_starts[:live] + i
+        r = r[:live]
+        v = steps[at]
+        c1 = step_sq[at]
+        t = tangents[at]
+        t_next = tangents[at + 1]
+        moving = c1 >= _EPSILON
+        safe = np.where(moving, c1, 1.0)
+        k = 2.0 * (v[:, 0] * r[:, 0] + v[:, 1] * r[:, 1] + v[:, 2] * r[:, 2]) / safe
+        r_l = r - k[:, None] * v
+        k = 2.0 * (v[:, 0] * t[:, 0] + v[:, 1] * t[:, 1] + v[:, 2] * t[:, 2]) / safe
+        t_l = t - k[:, None] * v
+        v2 = t_next - t_l
+        c2 = v2[:, 0] * v2[:, 0] + v2[:, 1] * v2[:, 1] + v2[:, 2] * v2[:, 2]
+        k = 2.0 * (v2[:, 0] * r_l[:, 0] + v2[:, 1] * r_l[:, 1] + v2[:, 2] * r_l[:, 2]) / np.where(
+            c2 < _EPSILON, 1.0, c2)
+        reflected = np.where((c2 < _EPSILON)[:, None], r_l, r_l - k[:, None] * v2)
+        norm = np.sqrt(reflected[:, 0] * reflected[:, 0] + reflected[:, 1] * reflected[:, 1]
+                       + reflected[:, 2] * reflected[:, 2])
+        reflected = np.where((norm > _EPSILON)[:, None],
+                             reflected / np.where(norm > _EPSILON, norm, 1.0)[:, None], reflected)
+        # A repeated point: no direction to reflect through, so carry the frame across.
+        r = np.where(moving[:, None], reflected, r)
+        normals[at + 1] = r
+        i += 1
 
-    for i in range(n - 1):
+    binormals = np.cross(tangents, normals)
+    return tangents, normals, binormals
+
+
+#: Below this many strands still running, `_frames` finishes them one at a time.
+_ARRAY_FRAMES = 16
+
+
+def _carry_frame(normals, tangents, steps, step_sq, at, count, frame):
+    """Carry one strand's frame `count` steps on from sample `at`, writing `normals`.
+
+    The per-sample double reflection on plain floats: the same arithmetic as the array step
+    in `_frames`, for when only a few strands are left and numpy's per-call cost would be
+    most of the work.
+    """
+    rx, ry, rz = (float(c) for c in frame)
+    t_list = tangents[at:at + count + 1].tolist()
+    v_list = steps[at:at + count].tolist()
+    c_list = step_sq[at:at + count].tolist()
+    tx, ty, tz = t_list[0]
+    out = []
+    for i in range(count):
         c1 = c_list[i]
         nx, ny, nz = t_list[i + 1]
         if c1 < _EPSILON:
-            # A repeated point: no direction to reflect through, so carry the frame across.
-            normals[i + 1] = (rx, ry, rz)
+            out.append((rx, ry, rz))
             tx, ty, tz = nx, ny, nz
             continue
         v1x, v1y, v1z = v_list[i]
-
         k = 2.0 * (v1x * rx + v1y * ry + v1z * rz) / c1
         r_lx, r_ly, r_lz = rx - k * v1x, ry - k * v1y, rz - k * v1z
         k = 2.0 * (v1x * tx + v1y * ty + v1z * tz) / c1
         t_lx, t_ly, t_lz = tx - k * v1x, ty - k * v1y, tz - k * v1z
-
         v2x, v2y, v2z = nx - t_lx, ny - t_ly, nz - t_lz
         c2 = v2x * v2x + v2y * v2y + v2z * v2z
         if c2 < _EPSILON:
@@ -271,165 +392,189 @@ def _frames(points: np.ndarray):
         else:
             k = 2.0 * (v2x * r_lx + v2y * r_ly + v2z * r_lz) / c2
             rx, ry, rz = r_lx - k * v2x, r_ly - k * v2y, r_lz - k * v2z
-
         norm = math.sqrt(rx * rx + ry * ry + rz * rz)
         if norm > _EPSILON:
             rx, ry, rz = rx / norm, ry / norm, rz / norm
-        normals[i + 1] = (rx, ry, rz)
+        out.append((rx, ry, rz))
         tx, ty, tz = nx, ny, nz
-
-    binormals = np.cross(tangents, normals)
-    return tangents, normals, binormals
+    if out:
+        normals[at + 1:at + 1 + count] = out
 
 
 # ---------------------------------------------------------------------------
 # the sweep
 # ---------------------------------------------------------------------------
 
-def _sweep(points, radii, sides: int, uv_mode: str, tiles_along: float,
-           tiles_around: float):
-    """One strand's ring vertices, normals, st and faces.
+def _along(points, radii, counts, strand, uv_mode, tiles_along, proportional_unit):
+    """v along every strand: per strand, per scene unit, or in `proportional_unit`s of each.
 
-    The seam ring is duplicated -- `sides + 1` vertices rather than `sides` -- so u can run a
-    clean 0..1 around the tube. Sharing one vertex at the seam would force it to hold both 0
-    and 1, and the texture would run backwards across that column.
+    Args:
+        proportional_unit: Per strand; how long one Proportional tile is.
     """
-    points, radii = _drop_duplicates(points, radii)
-    if len(points) < 2:
-        return None
-
-    _, normals, binormals = _frames(points)
-
-    step = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    arc = np.concatenate(([0.0], np.cumsum(step)))
-    total = float(arc[-1])
-    if uv_mode == _UV_PER_STRAND and total > _EPSILON:
-        v = (arc / total) * tiles_along
-    elif uv_mode == _UV_BY_LENGTH:
-        v = arc * tiles_along
-    else:
-        # Proportional: v counts circumferences, so one tile covers a square patch of
-        # surface and a texture keeps its aspect whatever the strand's length or thickness.
-        circumference = 2.0 * np.pi * max(float(np.mean(radii)), _EPSILON)
-        v = (arc / circumference) * tiles_along
-
-    angles = np.linspace(0.0, 2.0 * np.pi, sides + 1)
-    cos, sin = np.cos(angles), np.sin(angles)
-
-    # (samples, sides+1, 3): each ring is the frame's normal/binormal circle at that radius.
-    radial = cos[None, :, None] * normals[:, None, :] + sin[None, :, None] * binormals[:, None, :]
-    ring = points[:, None, :] + radial * radii[:, None, None]
-
-    u = (angles / (2.0 * np.pi)) * tiles_around
-    st = np.stack([
-        np.broadcast_to(u[None, :], (len(points), sides + 1)),
-        np.broadcast_to(v[:, None], (len(points), sides + 1)),
-    ], axis=-1)
-
-    rows, cols = len(points), sides + 1
-    i = np.arange(rows - 1)[:, None]
-    j = np.arange(sides)[None, :]
-    a = i * cols + j
-    faces = np.stack([a, a + cols, a + cols + 1, a + 1], axis=-1).reshape(-1, 4)
-
-    return (ring.reshape(-1, 3), radial.reshape(-1, 3), st.reshape(-1, 2), faces)
-
-
-def _along(points, radii, uv_mode, tiles_along, proportional_unit):
-    """v along a strand: per strand, per scene unit, or in `proportional_unit`s."""
-    step = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    arc = np.concatenate(([0.0], np.cumsum(step)))
-    total = float(arc[-1])
-    if uv_mode == _UV_PER_STRAND and total > _EPSILON:
-        return (arc / total) * tiles_along
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    step = np.zeros(len(points))
+    step[1:] = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    step[starts] = 0.0
+    arc = np.zeros(len(points))
+    for s, c in zip(starts.tolist(), np.asarray(counts).tolist()):
+        arc[s:s + c] = np.cumsum(step[s:s + c])
+    total = arc[starts + np.asarray(counts) - 1]
+    if uv_mode == _UV_PER_STRAND:
+        # A strand of no length has nothing to spread the texture along; v stays 0 on it.
+        safe = np.where(total > _EPSILON, total, 1.0)
+        return (arc / safe[strand]) * tiles_along
     if uv_mode == _UV_BY_LENGTH:
         return arc * tiles_along
-    return (arc / max(proportional_unit, _EPSILON)) * tiles_along
+    return (arc / np.maximum(proportional_unit, _EPSILON)[strand]) * tiles_along
 
 
-def _ribbon(points, radii, uv_mode: str, tiles_along: float, tiles_around: float, up):
-    """One strand as a flat strip lying across `up`, the curve's width wide.
+def _mean_per_strand(values, counts):
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    return np.asarray([float(np.mean(values[s:s + c])) for s, c in zip(starts.tolist(),
+                                                                       np.asarray(counts).tolist())])
 
-    Faces wind counter-clockwise seen from `up`, so the strip faces the sky. Where the curve
-    runs straight up, up x tangent has no direction; the rotation-minimising normal stands in.
+
+def _quads(counts, cols: int, across: int):
+    """Quads joining each sample's ring to the next one's within a strand.
+
+    `across` is how many quads go around (sides for a tube, 1 for a ribbon); a ring has `cols`
+    vertices. Rows run in sample order and quads around in order, as the per-strand loop
+    wrote them.
     """
-    points, radii = _drop_duplicates(points, radii)
-    if len(points) < 2:
-        return None
-    tangents, normals, _ = _frames(points)
-    up = np.asarray(up, dtype=np.float64)
-    side = np.cross(up, tangents)
-    length = np.linalg.norm(side, axis=1)
-    flat = length < 1e-6
-    side[flat] = normals[flat]
-    side /= np.maximum(np.linalg.norm(side, axis=1), _EPSILON)[:, None]
-
-    # Proportional: v counts widths, so one tile is square on the strip.
-    v = _along(points, radii, uv_mode, tiles_along, 2.0 * float(np.mean(radii)))
-    left = points + side * radii[:, None]
-    right = points - side * radii[:, None]
-    ring = np.stack([left, right], axis=1)                  # (samples, 2, 3)
-    st = np.stack([
-        np.broadcast_to(np.array([0.0, tiles_around])[None, :], (len(points), 2)),
-        np.broadcast_to(v[:, None], (len(points), 2)),
-    ], axis=-1)
-    a = np.arange(len(points) - 1) * 2
-    faces = np.stack([a, a + 1, a + 3, a + 2], axis=-1)
-    facing = np.broadcast_to(up, ring.shape)
-    return (ring.reshape(-1, 3), facing.reshape(-1, 3), st.reshape(-1, 2), faces)
+    strand = np.repeat(np.arange(len(counts)), counts)
+    rows = np.flatnonzero(strand[1:] == strand[:-1])
+    a = rows[:, None] * cols + np.arange(across)[None, :]
+    return np.stack([a, a + cols, a + cols + 1, a + 1], axis=-1).reshape(-1, 4)
 
 
 def build_mesh(strands, kind, basis, sides: int, per_segment: int,
                uv_mode: str, tiles_along: float, width_scale: float,
-               tiles_around: float = 1.0, profile: str = _PROFILE_TUBE, up=(0.0, 0.0, 1.0)):
+               tiles_around: float = 1.0, profile: str = _PROFILE_TUBE, up=(0.0, 0.0, 1.0),
+               carry=None):
     """Sweep every strand and concatenate them into one mesh.
 
-    Returns (points, normals, st, face_counts, face_indices), or None when nothing swept.
-    """
-    points_out, normals_out, st_out, faces_out = [], [], [], []
-    offset = 0
-    for raw_points, raw_radii in strands:
-        if len(raw_points) < 2:
-            continue
-        line, radii = _centreline(raw_points, raw_radii * width_scale, kind, basis, per_segment)
-        if profile == _PROFILE_RIBBON:
-            swept = _ribbon(line, radii, uv_mode, tiles_along, tiles_around, up)
-        else:
-            swept = _sweep(line, radii, sides, uv_mode, tiles_along, tiles_around)
-        if swept is None:
-            continue
-        ring, radial, st, faces = swept
-        points_out.append(ring)
-        normals_out.append(radial)
-        st_out.append(st)
-        faces_out.append(faces + offset)
-        offset += len(ring)
+    Every strand is handled in the same array pass rather than one at a time: a vine is
+    hundreds of short strands, and per strand the numpy call overhead was most of the cost.
 
-    if not points_out:
+    The seam ring of a tube is duplicated -- `sides + 1` vertices rather than `sides` -- so u
+    can run a clean 0..1 around it. Sharing one vertex at the seam would force it to hold both
+    0 and 1, and the texture would run backwards across that column.
+
+    A ribbon is a flat strip lying across `up`, the curve's width wide, faces wound counter-
+    clockwise seen from `up`. Where the curve runs straight up, up x tangent has no direction
+    and the rotation-minimising normal stands in.
+
+    Args:
+        strands: (points, radii) per strand.
+        carry: Optional per-CV values per strand, (count,) each, swept along like the radius:
+            one value per output point (the growth primvar).
+
+    Returns:
+        (points, normals, st, face_counts, face_indices), or None when nothing swept. With
+        `carry`, a sixth item: the carried values, one per point.
+    """
+    strands = [(np.asarray(p, dtype=np.float64), np.asarray(r, dtype=np.float64))
+               for p, r in strands]
+    use = [i for i, (p, _) in enumerate(strands) if len(p) >= 2]
+    if not use:
         return None
-    points = np.concatenate(points_out)
-    indices = np.concatenate(faces_out).reshape(-1)
-    return (
-        points,
-        np.concatenate(normals_out),
-        np.concatenate(st_out),
-        np.full(len(indices) // 4, 4, dtype=np.int32),
-        indices.astype(np.int32),
+    counts = np.asarray([len(strands[i][0]) for i in use], dtype=np.int64)
+    points = np.concatenate([strands[i][0] for i in use])
+    columns = [np.concatenate([strands[i][1] for i in use]) * width_scale]
+    if carry is not None:
+        columns.append(np.concatenate([np.asarray(carry[i], dtype=np.float64) for i in use]))
+    line, values, counts = _centrelines(points, np.stack(columns, axis=1), counts, kind, basis,
+                                        per_segment)
+    line, values, counts = _drop_repeats(line, values, counts)
+    if (counts < 2).any():
+        keep_strand = counts >= 2
+        keep = np.repeat(keep_strand, counts)
+        line, values, counts = line[keep], values[keep], counts[keep_strand]
+    if not len(counts):
+        return None
+    radii = values[:, 0]
+    tangents, normals, binormals = _frames(line, counts)
+    strand = np.repeat(np.arange(len(counts)), counts)
+
+    if profile == _PROFILE_RIBBON:
+        up = np.asarray(up, dtype=np.float64)
+        side = np.cross(up, tangents)
+        flat = np.linalg.norm(side, axis=1) < 1e-6
+        side[flat] = normals[flat]
+        side /= np.maximum(np.linalg.norm(side, axis=1), _EPSILON)[:, None]
+        # Proportional: v counts widths, so one tile is square on the strip.
+        v = _along(line, radii, counts, strand, uv_mode, tiles_along,
+                   2.0 * _mean_per_strand(radii, counts))
+        ring = np.stack([line + side * radii[:, None], line - side * radii[:, None]], axis=1)
+        u = np.array([0.0, tiles_around])
+        facing = np.broadcast_to(up, ring.shape)
+        cols, across = 2, 1
+        faces = _quads(counts, cols, across)
+        faces = faces[:, [0, 3, 2, 1]]        # a, a+1, a+3, a+2: counter-clockwise from up
+        radial = facing
+    else:
+        # Proportional: v counts circumferences, so one tile covers a square patch of surface
+        # and a texture keeps its aspect whatever the strand's length or thickness.
+        v = _along(line, radii, counts, strand, uv_mode, tiles_along,
+                   2.0 * np.pi * np.maximum(_mean_per_strand(radii, counts), _EPSILON))
+        angles = np.linspace(0.0, 2.0 * np.pi, sides + 1)
+        cos, sin = np.cos(angles), np.sin(angles)
+        radial = cos[None, :, None] * normals[:, None, :] + sin[None, :, None] * binormals[:, None, :]
+        ring = line[:, None, :] + radial * radii[:, None, None]
+        u = (angles / (2.0 * np.pi)) * tiles_around
+        cols, across = sides + 1, sides
+        faces = _quads(counts, cols, across)
+
+    st = np.stack([
+        np.broadcast_to(u[None, :], (len(line), cols)),
+        np.broadcast_to(v[:, None], (len(line), cols)),
+    ], axis=-1)
+    built = (
+        ring.reshape(-1, 3),
+        np.asarray(radial).reshape(-1, 3),
+        st.reshape(-1, 2),
+        np.full(len(faces), 4, dtype=np.int32),
+        faces.reshape(-1).astype(np.int32),
     )
+    return built + (np.repeat(values[:, 1], cols),) if carry is not None else built
 
 
 # ---------------------------------------------------------------------------
 # authoring
 # ---------------------------------------------------------------------------
 
-def _author(stage, path: str, built, source_prim) -> None:
-    points, _normals, st, counts, indices = built
+def _author(stage, path: str, built, source_prim, time=Usd.TimeCode.Default()) -> None:
+    """Write the swept mesh at `time`; `built` None writes an empty one.
+
+    Empty rather than absent, so a material bound to the Mesh output, or anything else wired
+    below, still finds a prim when there is nothing to sweep yet -- a vine before anything is
+    painted, or the first frame of a growth animation.
+    """
+    if built is None:
+        built = (np.zeros((0, 3)), None, np.zeros((0, 2)), np.zeros(0, dtype=np.int32),
+                 np.zeros(0, dtype=np.int32))
+    points, _normals, st, counts, indices = built[:5]
+    carried = built[5] if len(built) > 5 else None
     mesh = UsdGeom.Mesh.Define(stage, Sdf.Path(path))
     mesh.CreatePointsAttr().Set(
-        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(points, dtype=np.float32))
+        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(points, dtype=np.float32).reshape(-1, 3)), time
     )
-    mesh.CreateFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(counts))
-    mesh.CreateFaceVertexIndicesAttr().Set(Vt.IntArray.FromNumpy(indices))
+    mesh.CreateFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(np.ascontiguousarray(counts, dtype=np.int32)), time)
+    mesh.CreateFaceVertexIndicesAttr().Set(Vt.IntArray.FromNumpy(np.ascontiguousarray(indices, dtype=np.int32)), time)
+    primvars = UsdGeom.PrimvarsAPI(mesh)
+    uv = primvars.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+    uv.Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(st, dtype=np.float32).reshape(-1, 2)), time)
+    if carried is not None:
+        primvars.CreatePrimvar(GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(
+            Vt.FloatArray.FromNumpy(np.ascontiguousarray(carried, dtype=np.float32)), time)
+    if len(points):
+        lo = points.min(axis=0)
+        hi = points.max(axis=0)
+        mesh.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*lo.astype(float)),
+                                                   Gf.Vec3f(*hi.astype(float))]), time)
+    if not time.IsDefault():
+        return
+
     # Polygons, not a subdivision cage: left to the default the tube is smoothed into a
     # thinner one, and the silhouette stops matching the width the curve was authored at.
     mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
@@ -447,10 +592,6 @@ def _author(stage, path: str, built, source_prim) -> None:
     # Little is lost: a swept tube's true normals are its radial directions, and a renderer
     # recovers those from the geometry. `sides` is what governs how round it looks.
 
-    primvars = UsdGeom.PrimvarsAPI(mesh)
-    uv = primvars.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
-    uv.Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(st, dtype=np.float32)))
-
     # Carry the curve's colour, so the tube looks like what it replaced before any material is
     # bound -- otherwise turning this on appears to lose the vine's green.
     source_colour = UsdGeom.Gprim(source_prim).GetDisplayColorAttr().Get() if source_prim else None
@@ -458,10 +599,50 @@ def _author(stage, path: str, built, source_prim) -> None:
         UsdGeom.Primvar(mesh.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
         mesh.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*source_colour[0])]))
 
-    lo = points.min(axis=0)
-    hi = points.max(axis=0)
-    mesh.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*lo.astype(float)),
-                                               Gf.Vec3f(*hi.astype(float))]))
+
+def _sweep_sources(sources, time, settings):
+    """Sweep every source's strands at `time`: (built, strand count, first source with any).
+
+    Sources are grouped by their type and basis, so a linear and a cubic curve picked together
+    are each swept as what they are, and the groups' meshes are joined.
+    """
+    groups: dict = {}
+    first = None
+    for source in sources:
+        strands, kind, basis = _read_strands(source, time)
+        if not strands:
+            continue
+        growth = _read_growth(source, time)
+        first = first or source
+        group = groups.setdefault((kind, basis), ([], []))
+        group[0].extend(strands)
+        group[1].extend(growth if growth is not None else [None] * len(strands))
+    parts = []
+    for (kind, basis), (strands, growth) in groups.items():
+        # Carry growth only when every strand has it; a mix would have no value for some.
+        carry = growth if all(g is not None for g in growth) else None
+        built = build_mesh(strands, kind, basis, settings["sides"], settings["segments"],
+                           settings["uv_mode"], settings["tiles_along"], settings["width_scale"],
+                           settings["tiles_around"], settings["profile"], settings["up"], carry)
+        if built is not None:
+            parts.append(built if carry is not None else built + (None,))
+    count = sum(len(g[0]) for g in groups.values())
+    if not parts:
+        return None, count, first
+    if len(parts) == 1:
+        built = parts[0]
+    else:
+        offsets = np.cumsum([0] + [len(p[0]) for p in parts[:-1]])
+        carried = [p[5] for p in parts]
+        built = (
+            np.concatenate([p[0] for p in parts]),
+            np.concatenate([p[1] for p in parts]),
+            np.concatenate([p[2] for p in parts]),
+            np.concatenate([p[3] for p in parts]),
+            np.concatenate([p[4] + o for p, o in zip(parts, offsets)]).astype(np.int32),
+            np.concatenate(carried) if all(c is not None for c in carried) else None,
+        )
+    return (built if built[5] is not None else built[:5]), count, first
 
 
 def execute(node) -> None:
@@ -475,9 +656,13 @@ def execute(node) -> None:
     out_path = node.get_param("primpath_location").value
     if not out_path:
         return
+    if node.get_param("out_mesh").value != out_path:
+        node.get_param("out_mesh").value = out_path
 
     paths = node.get_param("curves_prim").resolve_paths()
     if not paths:
+        if stage is not None:
+            _author(stage, out_path, None, None)
         node.get_param("readout").value = "pick a BasisCurves to sweep"
         return
 
@@ -491,36 +676,43 @@ def execute(node) -> None:
         for curve in _curve_prims(upstream.GetPrimAtPath(path), recurse)
     ]
     if not sources:
+        _author(stage, out_path, None, None)
         node.get_param("readout").value = "no BasisCurves under that prim"
         return
 
-    sides = max(3, int(node.get_param("sides", is_i).value))
-    per_segment = max(1, int(node.get_param("segments", is_i).value))
-    uv_mode = node.get_param("uv_mode", is_s).value
-    tiles_along = float(node.get_param("tiles_along", is_f).value) or 1.0
-    tiles_around = float(node.get_param("tiles_around", is_f).value) or 1.0
-    width_scale = float(node.get_param("width_scale", is_f).value)
-    profile = node.get_param("profile", is_s).value
-    up = (0.0, 1.0, 0.0) if UsdGeom.GetStageUpAxis(upstream).upper() == "Y" else (0.0, 0.0, 1.0)
+    settings = {
+        "sides": max(3, int(node.get_param("sides", is_i).value)),
+        "segments": max(1, int(node.get_param("segments", is_i).value)),
+        "uv_mode": node.get_param("uv_mode", is_s).value,
+        "tiles_along": float(node.get_param("tiles_along", is_f).value) or 1.0,
+        "tiles_around": float(node.get_param("tiles_around", is_f).value) or 1.0,
+        "width_scale": float(node.get_param("width_scale", is_f).value),
+        "profile": node.get_param("profile", is_s).value,
+        "up": (0.0, 1.0, 0.0) if UsdGeom.GetStageUpAxis(upstream).upper() == "Y" else (0.0, 0.0, 1.0),
+    }
 
-    all_strands, kind, basis, first = [], UsdGeom.Tokens.linear, UsdGeom.Tokens.bspline, None
-    for source in sources:
-        strands, kind, basis = _read_strands(source)
-        if strands:
-            all_strands.extend(strands)
-            first = first or source
+    built, strand_count, first = _sweep_sources(sources, Usd.TimeCode.Default(), settings)
+    _author(stage, out_path, built, first)
+    # Animated curves -- a Vine with Animate Growth on -- give an animated mesh: each time the
+    # curves are sampled at is swept and written at that time.
+    times = _sample_times(sources)
+    for time in times:
+        at, _count, _first = _sweep_sources(sources, Usd.TimeCode(time), settings)
+        _author(stage, out_path, at, first, Usd.TimeCode(time))
 
-    built = build_mesh(all_strands, kind, basis, sides, per_segment,
-                       uv_mode, tiles_along, width_scale, tiles_around, profile, up)
-    if built is None:
+    if node.get_param("hide_source", is_b).value:
+        # The mesh replaces the curves. A renderer that draws curves (Storm, V-Ray) would
+        # otherwise draw the vine twice, once as each.
+        for source in sources:
+            UsdGeom.Imageable(stage.GetPrimAtPath(source.GetPath())).CreateVisibilityAttr().Set(
+                UsdGeom.Tokens.invisible)
+
+    if built is None and not times:
         node.get_param("readout").value = "those curves have no sweepable strands"
         return
-
-    _author(stage, out_path, built, first)
-    node.get_param("out_mesh").value = out_path
-    node.get_param("readout").value = (
-        f"{len(all_strands)} strands, {len(built[3])} faces"
-    )
+    faces = len(built[3]) if built is not None else 0
+    node.get_param("readout").value = f"{strand_count} strands, {faces} faces" + (
+        f", {len(times)} frames" if times else "")
 
 
 def main():
@@ -557,13 +749,13 @@ def main():
         "Ribbon: a flat strip lying on the ground, the curve's width wide -- a road, a\n"
         "river, a path. u runs across it, v along.",
     ))
-    shape.add_param(chunk.Spinbox(
+    shape.add_param(chunk.Slider(
         "sides", "Sides", is_int=True, min_value=3, max_value=64, default_value=6,
         flags=_PF.LABELED,
         tooltip="Faces around the tube. Six is plenty for a vine seen from a metre away;\n"
         "raise it for a hero strand, lower it for a field of them.",
     ))
-    shape.add_param(chunk.Spinbox(
+    shape.add_param(chunk.Slider(
         "segments", "Segments", is_int=True, min_value=1, max_value=16, default_value=4,
         flags=_PF.LABELED,
         tooltip="Samples per curve segment, for cubic curves only. A linear curve is already\n"
@@ -577,6 +769,11 @@ def main():
     shape.add_param(chunk.Checkbox(
         "recurse", "Include Children", default_value=True, flags=_PF.LABELED,
         tooltip="Sweep every BasisCurves under the picked prim, not only the prim itself.",
+    ))
+    shape.add_param(chunk.Checkbox(
+        "hide_source", "Hide Curves", default_value=True, flags=_PF.LABELED,
+        tooltip="Hide the curves the mesh was made from. A renderer that draws curves (Storm,\n"
+        "V-Ray) would otherwise draw the vine twice.",
     ))
     chunk_api.add_param(shape)
 
@@ -623,9 +820,6 @@ def config():
         description="""
         Turns curves (vines, hair) into tube meshes with UVs, so they can take a real material.
 
-        Curves to Mesh — sweeps a tube along a BasisCurves and gives it UVs,
-        so it can carry a real material.
-
         A curve cannot be textured in most renderers. Rendering the same
         BasisCurves with and without a primvars:st and comparing the images:
         Storm honours curve UVs, V-Ray and Cycles return pixel-identical
@@ -634,6 +828,11 @@ def config():
         Wire a Vine chunk's Vine Curves output into Curves, bind your material
         to the Mesh output, and the vines take bark, moss or whatever else.
         Works on any BasisCurves — Add Hair's, or curves referenced in.
+
+        The curves are hidden once swept (Hide Curves), so a renderer that
+        draws curves does not draw the vine twice. Animated curves, such as a
+        Vine with Animate Growth on, give an animated mesh: every time sample
+        is swept. A "growth" primvar on the curves is carried onto the mesh.
 
         Parameters:
           - Curves: the BasisCurves to sweep, or a prim above some.

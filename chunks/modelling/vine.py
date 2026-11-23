@@ -33,6 +33,7 @@ Requires: pxr (OpenUSD), usd_chunks, numpy (growth is array work over thousands 
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 
@@ -48,6 +49,9 @@ logger = logging.getLogger(__name__)
 CURVES_PRIM = "Curves"
 LEAVES_PRIM = "Leaves"
 
+#: Per-point primvar on the curves: when the point grew, 0 at the roots to 1 at the last tip.
+GROWTH_PRIMVAR = "growth"
+
 _FORMS = ["Smooth", "Linear"]
 
 #: How much of the previous step's direction is carried into the next one.
@@ -57,6 +61,14 @@ _FORMS = ["Smooth", "Linear"]
 #: much past one it overwhelms the attractors and the vine walks straight out of the paint.
 #: This sits where a vine stops looking like a random walk and still goes where it is sent.
 _MOMENTUM = 0.6
+
+#: The most children one node grows. After that its attractors stop pulling on it.
+#:
+#: Momentum and climb can outweigh the pull of attractors that lie behind a node. Its child
+#: then lands to the side, no nearer to them, so they still pick the same node next step,
+#: and it sprouts again -- on a sphere, 50 to 80 stubs from one node, and a dense rock spent
+#: a third of its 20,000 points on one. A vine forks into two or three; four leaves room.
+_MAX_CHILDREN = 4
 
 #: Pipe-model exponent. Two is da Vinci's rule -- a branch's cross-section equals the sum of its
 #: children's -- which is the thinnest-looking of the usual choices and the right end for a vine,
@@ -103,6 +115,19 @@ class _Surface:
         zero3 = np.zeros((0, 3), dtype=np.float64)
         zero1 = np.zeros(0, dtype=np.float64)
         return cls(zero3, zero3, zero3, zero3, zero1, zero1, zero1)
+
+    @classmethod
+    def join(cls, parts):
+        """Several surfaces as one."""
+        parts = [part for part in parts if len(part)]
+        if not parts:
+            return cls.empty()
+        if len(parts) == 1:
+            return parts[0]
+        return cls(*(
+            np.concatenate([getattr(part, name) for part in parts])
+            for name in ("v0", "v1", "v2", "n", "w0", "w1", "w2")
+        ))
 
     def __len__(self):
         return len(self.v0)
@@ -232,14 +257,14 @@ def _collect_surface(prim, primvar_name):
         _face_outward(mesh, p, n, (i0, i1, i2), len(points))
         parts.append(_Surface(v0, v1, v2, n, weights[i0], weights[i1], weights[i2]))
 
-    if not parts:
-        return _Surface.empty()
-    if len(parts) == 1:
-        return parts[0]
-    return _Surface(*(
-        np.concatenate([getattr(part, name) for part in parts])
-        for name in ("v0", "v1", "v2", "n", "w0", "w1", "w2")
-    ))
+    return _Surface.join(parts)
+
+
+def _outermost(paths):
+    """`paths` without any that sit under another one, which would add its meshes twice."""
+    picked = [Sdf.Path(path) for path in paths]
+    return [str(path) for path in picked
+            if not any(other != path and path.HasPrefix(other) for other in picked)]
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +329,9 @@ _KEY_OFFSETS = np.asarray(
 )
 
 
+#: Up to this many points are projected as one padded block; see `_Projector.project_many`.
+_ONE_BLOCK = 32
+
 #: Shared empty candidate list, for a cell whose neighbourhood holds no surface at all.
 _NO_TRIANGLES = np.zeros(0, dtype=np.int64)
 
@@ -354,7 +382,9 @@ class _PointGrid:
 
 
 def _dot(a, b):
-    return np.sum(a * b, axis=-1)
+    # np.add.reduce is what np.sum calls, without the wrapper -- a third of the cost of a
+    # small array's dot, and the projection takes six of them every growth step.
+    return np.add.reduce(a * b, axis=-1)
 
 
 def _closest_on_triangles(point, v0, v1, v2):
@@ -370,42 +400,44 @@ def _closest_on_triangles(point, v0, v1, v2):
     `(Q, 1, 3)` and `(Q, K, 3)`. Per-call numpy overhead was 310us against a median of 21
     triangles -- the arithmetic was never the cost, the three thousand calls were.
     """
-    ab = v1 - v0
-    ac = v2 - v0
-    ap = point - v0
-    d1 = _dot(ab, ap)
-    d2 = _dot(ac, ap)
-    bp = point - v1
-    d3 = _dot(ab, bp)
-    d4 = _dot(ac, bp)
-    cp = point - v2
-    d5 = _dot(ab, cp)
-    d6 = _dot(ac, cp)
-
-    va = d3 * d6 - d5 * d4
-    vb = d5 * d2 - d1 * d6
-    vc = d1 * d4 - d3 * d2
-    denom = va + vb + vc
-
+    # One errstate for the whole test rather than one per division: entering it costs about
+    # what the arithmetic on a growth step's few dozen triangles does.
     with np.errstate(divide="ignore", invalid="ignore"):
-        inv = np.where(np.abs(denom) > 1e-20, 1.0 / denom, 0.0)
-    out = v0 + ab * (vb * inv)[..., None] + ac * (vc * inv)[..., None]
-    # A degenerate triangle has no interior to land in; its first corner is as good as anything.
-    degenerate = np.abs(denom) <= 1e-20
-    out = np.where(degenerate[..., None], v0, out)
+        ab = v1 - v0
+        ac = v2 - v0
+        ap = point - v0
+        d1 = _dot(ab, ap)
+        d2 = _dot(ac, ap)
+        bp = point - v1
+        d3 = _dot(ab, bp)
+        d4 = _dot(ac, bp)
+        cp = point - v2
+        d5 = _dot(ab, cp)
+        d6 = _dot(ac, cp)
 
-    edge = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
-    if edge.any():
-        t = _safe_ratio(d1, d1 - d3)
-        out = np.where(edge[..., None], v0 + ab * t[..., None], out)
-    edge = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
-    if edge.any():
-        t = _safe_ratio(d2, d2 - d6)
-        out = np.where(edge[..., None], v0 + ac * t[..., None], out)
-    edge = (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
-    if edge.any():
-        t = _safe_ratio(d4 - d3, (d4 - d3) + (d5 - d6))
-        out = np.where(edge[..., None], v1 + (v2 - v1) * t[..., None], out)
+        va = d3 * d6 - d5 * d4
+        vb = d5 * d2 - d1 * d6
+        vc = d1 * d4 - d3 * d2
+        denom = va + vb + vc
+
+        inv = np.where(np.abs(denom) > 1e-20, 1.0 / denom, 0.0)
+        out = v0 + ab * (vb * inv)[..., None] + ac * (vc * inv)[..., None]
+        # A degenerate triangle has no interior to land in; its first corner is as good as any.
+        degenerate = np.abs(denom) <= 1e-20
+        out = np.where(degenerate[..., None], v0, out)
+
+        edge = (vc <= 0) & (d1 >= 0) & (d3 <= 0)
+        if edge.any():
+            t = _safe_ratio(d1, d1 - d3)
+            out = np.where(edge[..., None], v0 + ab * t[..., None], out)
+        edge = (vb <= 0) & (d2 >= 0) & (d6 <= 0)
+        if edge.any():
+            t = _safe_ratio(d2, d2 - d6)
+            out = np.where(edge[..., None], v0 + ac * t[..., None], out)
+        edge = (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)
+        if edge.any():
+            t = _safe_ratio(d4 - d3, (d4 - d3) + (d5 - d6))
+            out = np.where(edge[..., None], v1 + (v2 - v1) * t[..., None], out)
 
     out = np.where(((d1 <= 0) & (d2 <= 0))[..., None], v0, out)
     out = np.where(((d3 >= 0) & (d4 <= d3))[..., None], v1, out)
@@ -414,8 +446,12 @@ def _closest_on_triangles(point, v0, v1, v2):
 
 
 def _safe_ratio(numerator, denominator):
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.clip(np.where(np.abs(denominator) > 1e-20, numerator / denominator, 0.0), 0.0, 1.0)
+    """numerator / denominator clamped to 0..1, and 0 where the denominator is ~0.
+
+    The caller holds the errstate that silences the division by zero `np.where` throws away.
+    """
+    ratio = np.where(np.abs(denominator) > 1e-20, numerator / denominator, 0.0)
+    return np.minimum(np.maximum(ratio, 0.0), 1.0)
 
 
 class _Projector:
@@ -436,6 +472,13 @@ class _Projector:
         # answered once and kept. A vine walks the same neighbourhood for several steps
         # running, and every node of every iteration was re-deriving it.
         self._candidates: dict = {}
+
+    def lowest(self, up):
+        """How far along `up` the lowest corner of the surface is."""
+        s = self._surface
+        if not len(s):
+            return -np.inf
+        return float(min((s.v0 @ up).min(), (s.v1 @ up).min(), (s.v2 @ up).min()))
 
     def project(self, point):
         """(position, normal) on the surface, or (point, None) when it is out of reach."""
@@ -477,35 +520,42 @@ class _Projector:
         # The ragged candidate lists as (Q, K) blocks, by index arithmetic rather than a
         # np.full per row: padding a row at a time was thousands of tiny allocations a cook.
         # Short rows repeat their last entry, which is already a candidate of that row, so a
-        # padded column can only tie with a real answer and never beat one. Rows go in blocks
-        # of about the same length, shortest first: one block padded every row to the
-        # longest, about twice the work. Each row's answer is the same either way.
+        # padded column can only tie with a real answer and never beat one. A big batch goes
+        # in blocks of about the same length, shortest first: one block padded every row to
+        # the longest, about twice the work. A growth step's handful of points goes as one
+        # block, where sorting them into blocks cost more than the padding it saved. Each
+        # row's answer is the same either way.
         lengths = lengths[live]
-        by_length = np.argsort(lengths, kind="stable")
-        s = self._surface
-        start = 0
-        while start < len(by_length):
-            width = int(lengths[by_length[start]])
-            stop = int(np.searchsorted(lengths[by_length], width * 1.25, side="right"))
-            stop = max(stop, start + 1)
-            block = by_length[start:stop]
-            rows_live = live[block]
-            block_lengths = lengths[block]
-            width = int(block_lengths.max())
-            flat = np.concatenate([per_point[i] for i in rows_live])
-            starts = np.concatenate(([0], np.cumsum(block_lengths)[:-1]))
-            column = np.minimum(np.arange(width)[None, :], (block_lengths - 1)[:, None])
-            index = flat[starts[:, None] + column]
-            query = points[rows_live][:, None, :]
-            candidates = _closest_on_triangles(query, s.v0[index], s.v1[index], s.v2[index])
-            offset = candidates - query
-            best = np.argmin(_dot(offset, offset), axis=1)
-            rows = np.arange(len(rows_live))
-            landed[rows_live] = candidates[rows, best]
-            normals[rows_live] = s.n[index[rows, best]]
-            start = stop
+        if len(live) <= _ONE_BLOCK:
+            self._answer(points, per_point, live, lengths, landed, normals)
+        else:
+            by_length = np.argsort(lengths, kind="stable")
+            sorted_lengths = lengths[by_length]
+            start = 0
+            while start < len(by_length):
+                stop = int(np.searchsorted(sorted_lengths, sorted_lengths[start] * 1.25, side="right"))
+                stop = max(stop, start + 1)
+                block = by_length[start:stop]
+                self._answer(points, per_point, live[block], lengths[block], landed, normals)
+                start = stop
         found[live] = True
         return landed, normals, found
+
+    def _answer(self, points, per_point, rows_live, block_lengths, landed, normals):
+        """Project one block of rows, writing into `landed` and `normals`."""
+        s = self._surface
+        width = int(block_lengths.max())
+        flat = per_point[rows_live[0]] if len(rows_live) == 1 else np.concatenate([per_point[i] for i in rows_live])
+        starts = np.concatenate(([0], np.cumsum(block_lengths)[:-1]))
+        column = np.minimum(np.arange(width)[None, :], (block_lengths - 1)[:, None])
+        index = flat[starts[:, None] + column]
+        query = points[rows_live][:, None, :]
+        candidates = _closest_on_triangles(query, s.v0[index], s.v1[index], s.v2[index])
+        offset = candidates - query
+        best = np.argmin(_dot(offset, offset), axis=1)
+        rows = np.arange(len(rows_live))
+        landed[rows_live] = candidates[rows, best]
+        normals[rows_live] = s.n[index[rows, best]]
 
 
 # ---------------------------------------------------------------------------
@@ -525,9 +575,16 @@ class _Nodes:
     iteration over every attractor still pulling -- a list comprehension in the hot loop.
     `position`, `normal` and `direction` are views of the filled part, so indexed writes into
     them (the lift does one) land in the buffer.
+
+    `born` is the growth step each node was made in, 0 for the roots. It is the vine's clock:
+    Growth % keeps the nodes born before a cut-off, and the `growth` primvar is it, scaled.
+
+    `hanging` marks the nodes of a tendril hanging in the air. They are not snapped back onto
+    the surface or lifted off it; their normal is the one their tip left the surface with,
+    which is the way their leaves face.
     """
 
-    __slots__ = ("parent", "_position", "_normal", "_direction", "_count")
+    __slots__ = ("parent", "_position", "_normal", "_direction", "_born", "_hanging", "_count")
 
     def __init__(self, capacity=256):
         capacity = max(int(capacity), 8)
@@ -535,6 +592,8 @@ class _Nodes:
         self._position = np.zeros((capacity, 3), dtype=np.float64)
         self._normal = np.zeros((capacity, 3), dtype=np.float64)
         self._direction = np.zeros((capacity, 3), dtype=np.float64)
+        self._born = np.zeros(capacity, dtype=np.int64)
+        self._hanging = np.zeros(capacity, dtype=bool)
         self._count = 0
 
     @property
@@ -549,29 +608,42 @@ class _Nodes:
     def direction(self):
         return self._direction[: self._count]
 
+    @property
+    def born(self):
+        return self._born[: self._count]
+
+    @property
+    def hanging(self):
+        return self._hanging[: self._count]
+
     def _reserve(self, extra):
         capacity = len(self._position)
         if self._count + extra <= capacity:
             return
         while capacity < self._count + extra:
             capacity *= 2
-        for name in ("_position", "_normal", "_direction"):
-            grown = np.zeros((capacity, 3), dtype=np.float64)
-            grown[: self._count] = getattr(self, name)[: self._count]
+        for name in ("_position", "_normal", "_direction", "_born", "_hanging"):
+            old = getattr(self, name)
+            grown = np.zeros((capacity,) + old.shape[1:], dtype=old.dtype)
+            grown[: self._count] = old[: self._count]
             setattr(self, name, grown)
 
-    def add(self, position, parent, normal, direction):
+    def add(self, position, parent, normal, direction, born=0):
         self._reserve(1)
         index = self._count
         self._position[index] = position
         self._normal[index] = normal
         self._direction[index] = direction
+        self._born[index] = born
         self.parent.append(int(parent))
         self._count += 1
         return index
 
-    def add_many(self, positions, parents, normals, directions):
-        """Append a whole growth iteration at once; the indices they were given."""
+    def add_many(self, positions, parents, normals, directions, born=0, hanging=False):
+        """Append a whole growth iteration at once; the indices they were given.
+
+        `born` is the growth step and `hanging` the tendril flag, one for all or one each.
+        """
         count = len(positions)
         if not count:
             return np.zeros(0, dtype=np.int64)
@@ -580,9 +652,30 @@ class _Nodes:
         self._position[start:start + count] = positions
         self._normal[start:start + count] = normals
         self._direction[start:start + count] = directions
+        self._born[start:start + count] = born
+        self._hanging[start:start + count] = hanging
         self.parent.extend(int(p) for p in parents)
         self._count += count
         return np.arange(start, start + count)
+
+    def copy(self):
+        """A copy whose positions and normals can be moved without touching this one."""
+        return self.subset(np.ones(self._count, dtype=bool))
+
+    def subset(self, keep):
+        """The nodes where `keep` is True, as a new skeleton, parents renumbered.
+
+        Every kept node's parent must be kept too, which holds for anything cut by age or
+        by pruning: a parent is older than its child and is on the path to it.
+        """
+        index = np.flatnonzero(keep)
+        renumber = np.full(self._count + 1, -1, dtype=np.int64)
+        renumber[index] = np.arange(len(index))
+        parents = np.asarray(self.parent, dtype=np.int64)[index]
+        twin = _Nodes(len(index))
+        twin.add_many(self.position[index], renumber[parents], self.normal[index],
+                      self.direction[index], self.born[index], self.hanging[index])
+        return twin
 
     def __len__(self):
         return self._count
@@ -610,6 +703,52 @@ def _tangent(direction, normal, rng):
     return fallback / max(float(np.linalg.norm(fallback)), 1e-9)
 
 
+#: Meander's wavelength, in growth steps: how far a vine goes before it swings back.
+_MEANDER_WAVELENGTH = 24.0
+
+
+def _value_noise(points, seed):
+    """Smooth noise in -1..1 over 3D space, one value per point; about one swing per unit.
+
+    Value noise on an integer lattice, blended with smoothstep: cheap, the same everywhere a
+    point lands whatever order it is asked in, and smooth, so neighbouring steps of one vine
+    turn the same way. Per-step random noise (Wander) cannot do that -- it averages out over a
+    few steps, which leaves a straight vine with a jitter on it.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    cell = np.floor(points)
+    frac = points - cell
+    fade = frac * frac * (3.0 - 2.0 * frac)
+    base = cell.astype(np.int64)
+    total = np.zeros(len(points))
+    for corner in range(8):
+        offset = np.array([(corner >> 0) & 1, (corner >> 1) & 1, (corner >> 2) & 1])
+        lattice = base + offset
+        # A 64-bit integer hash of the lattice point and the seed, folded to 0..1.
+        h = (lattice[:, 0] * 73856093) ^ (lattice[:, 1] * 19349663) ^ (lattice[:, 2] * 83492791)
+        h = (h ^ (seed * 2654435761)) & 0xFFFFFFFF
+        h = (h * 2246822519) & 0xFFFFFFFF
+        h ^= h >> 13
+        value = (h & 0xFFFF) / 32767.5 - 1.0
+        weight = np.prod(np.where(offset == 1, fade, 1.0 - fade), axis=1)
+        total += value * weight
+    return total
+
+
+def _meander(directions, normals, positions, amount, wavelength, seed):
+    """Turn each direction about its surface normal by a smoothly varying angle.
+
+    The angle comes from `_value_noise` over space, so a vine swings one way for a while and
+    then the other, and two vines that pass the same spot bend alike, as if following the
+    wall's grain. At 1 the turn reaches about 70 degrees either way.
+    """
+    if amount <= 0.0 or not len(directions):
+        return directions
+    angle = _value_noise(positions / max(wavelength, 1e-9), seed) * amount * 1.2
+    turned = np.cross(normals, directions)
+    return directions * np.cos(angle)[:, None] + turned * np.sin(angle)[:, None]
+
+
 def _tangents(directions, normals):
     """`_tangent` for a whole iteration, and without the random nudge.
 
@@ -631,7 +770,7 @@ def _tangents(directions, normals):
     return flat / np.maximum(length, 1e-9)[:, None]
 
 
-def _choose_roots(points, up, count, spacing):
+def _choose_roots(points, up, count, spacing, normals=None):
     """Which attractors vines start from when nobody painted the roots by hand.
 
     Lowest first, then spread: a vine that starts at the bottom of what was painted and climbs
@@ -639,20 +778,31 @@ def _choose_roots(points, up, count, spacing):
     random cheerfully does -- reads as one vine, not five. Spacing is relaxed rather than
     enforced, so a narrow painted strip still gets the roots it was asked for.
 
+    Faces that look straight down go last. The lowest paint on a wall or a rock is usually
+    its underside, sitting on the ground: a brush stroke along the foot of a wall reaches it,
+    and vines rooted there grew along the buried face, out of sight.
+
     Indices, not positions, so the caller can take the normal it already sampled alongside each
     attractor rather than projecting thousands of candidates to find five.
     """
     if not len(points) or count <= 0:
         return []
-    order = np.argsort(points @ up)
+    height = points @ up
+    if normals is not None:
+        underside = (np.asarray(normals) @ up) < -0.7
+        order = np.lexsort((height, underside))
+    else:
+        order = np.argsort(height)
     chosen: list[int] = []
+    taken: set[int] = set()
     for gap in (spacing, spacing * 0.25, 0.0):
         for i in order.tolist():
             if len(chosen) >= count:
                 break
-            if gap > 0.0 and chosen and _too_near(points, i, chosen, gap):
+            if i in taken or (gap > 0.0 and chosen and _too_near(points, i, chosen, gap)):
                 continue
             chosen.append(i)
+            taken.add(i)
         if len(chosen) >= count:
             break
     return chosen
@@ -693,8 +843,17 @@ def _grow(roots, attractors, projector, settings, rng):
     alive = np.ones(len(attractors), dtype=bool)
     nearest = np.full(len(attractors), -1, dtype=np.int64)
     nearest_sq = np.full(len(attractors), np.inf)
+    # Whether each attractor pulls right now, and the unit vector from its nearest node to it.
+    # Both change only when its nearest node does, so they are kept rather than rebuilt.
+    pulls = np.zeros(len(attractors), dtype=bool)
+    towards = np.zeros((len(attractors), 3), dtype=np.float64)
     attractor_sq = _dot(attractors, attractors)
     pending = np.arange(len(nodes))
+    # Children per node, and the nodes that have grown all they may; see _MAX_CHILDREN. One
+    # spare slot at the end, so the -1 of an attractor with no nearest node reads as open.
+    slots = max(len(nodes), settings["max_nodes"]) + 1
+    children = np.zeros(slots, dtype=np.int64)
+    closed = np.zeros(slots, dtype=bool)
 
     up = settings["up"]
     step = settings["step"]
@@ -702,52 +861,69 @@ def _grow(roots, attractors, projector, settings, rng):
     kill_sq = settings["kill"] ** 2
     climb = settings["climb"]
     wander = settings["wander"]
+    meander = settings.get("meander", 0.0)
 
+    # A new node can only change an attractor within reach of it: one further away than both
+    # the influence and the kill distance is neither pulled nor consumed by it. So an
+    # iteration looks only at the attractors in the cells around its new nodes, not at all of
+    # them. An attractor whose nearest node is within reach gets the same nearest node a
+    # search over everything would give it, so the vine is the same.
+    grid = _PointGrid(attractors, max(settings["influence"], settings["kill"]))
+
+    step_count = 0
     while len(pending) and len(nodes) < settings["max_nodes"]:
+        step_count += 1
         fresh = nodes.position[pending]
-        live = np.flatnonzero(alive)
-        if not len(live):
-            break
+        # Neighbourhoods of nodes in nearby cells overlap. A mask removes the repeats and
+        # sorts what is left in one pass, several times faster than np.unique on thousands.
+        seen = np.zeros(len(attractors), dtype=bool)
+        for key in np.unique(grid.keys_of(fresh)).tolist():
+            seen[grid.near_key(key)] = True
+        live = np.flatnonzero(seen & alive)
 
-        # |a - f|^2 expanded, so the distances are one matrix product rather than an
-        # (attractors x new nodes x 3) difference that has to be built before it is reduced.
-        # That temporary was the largest allocation in the cook and was made every iteration.
-        # Clipped at zero: the expansion can go a few ulps negative where a node sits exactly
-        # on an attractor, and a negative square would come back NaN from the sqrt nobody takes
-        # but would still lose the comparison against the kill distance.
-        distance_sq = np.maximum(
-            attractor_sq[live][:, None] - 2.0 * (attractors[live] @ fresh.T) + _dot(fresh, fresh),
-            0.0,
-        )
-        closest = np.argmin(distance_sq, axis=1)
-        best_sq = distance_sq[np.arange(len(live)), closest]
-        better = best_sq < nearest_sq[live]
-        if better.any():
-            improved = live[better]
-            nearest_sq[improved] = best_sq[better]
-            nearest[improved] = pending[closest[better]]
+        if len(live):
+            # |a - f|^2 expanded, so the distances are one matrix product rather than an
+            # (attractors x new nodes x 3) difference built before it is reduced. Clipped at
+            # zero: the expansion can go a few ulps negative where a node sits exactly on an
+            # attractor, and would then lose the comparison against the kill distance.
+            distance_sq = np.maximum(
+                attractor_sq[live][:, None] - 2.0 * (attractors[live] @ fresh.T) + _dot(fresh, fresh),
+                0.0,
+            )
+            closest = np.argmin(distance_sq, axis=1)
+            best_sq = distance_sq[np.arange(len(live)), closest]
+            better = best_sq < nearest_sq[live]
+            if better.any():
+                improved = live[better]
+                owner = pending[closest[better]]
+                nearest_sq[improved] = best_sq[better]
+                nearest[improved] = owner
+                unit = attractors[improved] - nodes.position[owner]
+                length = np.linalg.norm(unit, axis=1)
+                real = length > 1e-9
+                unit[real] /= length[real, None]
+                towards[improved] = unit
 
-        # Reached: an attractor a node has come this close to has done its job.
-        alive[live[nearest_sq[live] <= kill_sq]] = False
+            # Reached: an attractor a node has come this close to has done its job.
+            alive[live[nearest_sq[live] <= kill_sq]] = False
+            pulls[live] = alive[live] & (nearest_sq[live] <= influence_sq) & ~closed[nearest[live]]
 
-        pulling = np.flatnonzero(alive & (nearest >= 0) & (nearest_sq <= influence_sq))
+        pulling = np.flatnonzero(pulls)
         if not len(pulling):
             break
 
-        # Sum of unit directions, accumulated per node. np.add.at rather than a loop: on a
-        # filled region this runs over every attractor still alive, every iteration.
-        pull = np.zeros((len(nodes), 3), dtype=np.float64)
-        towards = attractors[pulling] - nodes.position[nearest[pulling]]
-        length = np.linalg.norm(towards, axis=1)
-        real = length > 1e-9
-        towards[real] /= length[real, None]
-        np.add.at(pull, nearest[pulling], towards)
+        # Sum of unit directions, per node that has any. Summed into one row per owner rather
+        # than one per node: zeroing a row for every node in the vine, every iteration, cost
+        # as much as the sums. np.add.at adds in the same order either way.
+        owners, owner_of = np.unique(nearest[pulling], return_inverse=True)
+        pull = np.zeros((len(owners), 3), dtype=np.float64)
+        np.add.at(pull, owner_of, towards[pulling])
 
         # The whole iteration steps at once: one direction array, one projection, one append.
         # Per node this was three numpy calls, an rng draw and a `project` -- 310us of call
         # overhead each against a median of 21 candidate triangles, which was most of the cook.
-        owners = np.unique(nearest[pulling])[: settings["max_nodes"] - len(nodes)]
-        direction = pull[owners]
+        room = settings["max_nodes"] - len(nodes)
+        owners, direction = owners[:room], pull[:room]
         length = np.linalg.norm(direction, axis=1)
         moving = length > 1e-9
         owners, direction = owners[moving], direction[moving] / length[moving, None]
@@ -758,6 +934,12 @@ def _grow(roots, attractors, projector, settings, rng):
         if wander > 0.0:
             direction = direction + rng.normal(scale=wander, size=direction.shape)
         direction = _tangents(direction, nodes.normal[owners])
+        if meander > 0.0:
+            direction = _tangents(
+                _meander(direction, nodes.normal[owners], nodes.position[owners], meander,
+                         step * _MEANDER_WAVELENGTH, settings["seed"]),
+                nodes.normal[owners],
+            )
 
         landed, landed_normals, found = projector.project_many(
             nodes.position[owners] + direction * step
@@ -766,8 +948,16 @@ def _grow(roots, attractors, projector, settings, rng):
         # ends there -- which is what keeps the vines inside the paint with no boundary test.
         reached = np.flatnonzero(found)
         pending = nodes.add_many(
-            landed[reached], owners[reached], landed_normals[reached], direction[reached]
+            landed[reached], owners[reached], landed_normals[reached], direction[reached], step_count
         )
+
+        # Owners are unique, so a plain += counts each one once.
+        parents = owners[reached]
+        children[parents] += 1
+        full = parents[children[parents] >= _MAX_CHILDREN]
+        if len(full):
+            closed[full] = True
+            pulls[pulling[closed[nearest[pulling]]]] = False
 
     return nodes
 
@@ -800,19 +990,177 @@ def _prune(nodes, min_length):
                 keep[child] = True
                 stack.append(child)
 
-    remap = {-1: -1}
-    kept = _Nodes()
-    for index in range(len(nodes)):
-        if not keep[index]:
-            continue
-        # A parent is always kept when its child is, so the lookup cannot miss.
-        remap[index] = kept.add(
-            nodes.position[index],
-            remap[nodes.parent[index]],
-            nodes.normal[index],
-            nodes.direction[index],
-        )
-    return kept
+    # A parent is always kept when its child is, so the renumbering cannot miss.
+    return nodes.subset(keep)
+
+
+#: How hard a hanging tendril is pulled down each step, against carrying on the way it went.
+_GRAVITY = 0.45
+
+
+def _hang(nodes, projector, settings, seed):
+    """Drop a tendril from some of the vine's tips: it leaves the surface and hangs.
+
+    A share of the tips (Hang) each grow Hang Length further, first out from the surface and
+    then down under gravity. A tendril that would pass into the painted surface is pushed back
+    out onto it, so one that falls over a bulge drapes across it instead of through it. Past
+    the painted region there is no surface to collide with, and it falls freely.
+
+    With Curl, the last part of each tendril (Curl Length) stops falling and turns round
+    instead, out and back up, so its end hangs as a hook or a loop rather than a plumb line.
+
+    Its nodes are born after the tip, so Growth % and the growth primvar grow them last.
+
+    Args:
+        nodes: The pruned skeleton.
+        projector: The painted surface, for collisions.
+        settings: From `_settings`: hang, hang_length, hang_curl, hang_curl_length, step
+            and up are read.
+        seed: The random seed; tendrils draw from their own stream, so turning Hang on does not
+            change the vine they hang from.
+
+    Returns:
+        The skeleton with the tendrils added, or `nodes` itself when there are none.
+    """
+    if settings["hang"] <= 0.0 or settings["hang_length"] <= 0.0 or not len(nodes):
+        return nodes
+    rng = np.random.default_rng([seed, 1])
+    parents = np.asarray(nodes.parent, dtype=np.int64)
+    has_child = np.zeros(len(nodes), dtype=bool)
+    has_child[parents[parents >= 0]] = True
+    tips = np.flatnonzero(~has_child & (parents >= 0) & ~nodes.hanging)
+    tips = tips[rng.random(len(tips)) < settings["hang"]]
+    if not len(tips):
+        return nodes
+
+    step, up = settings["step"], settings["up"]
+    # About the radius of a vine at the default Thickness. Not Thickness itself: that is a
+    # drawing setting, and changing it must not grow the tendrils again.
+    clearance = step
+    steps = max(1, int(round(settings["hang_length"] / step)))
+    away = nodes.normal[tips].copy()
+    position = nodes.position[tips].copy()
+    # Out from the wall first, with a touch of the way the tip was heading. More of the tip's
+    # heading than that, and a tip that was climbing loops back over itself as it falls.
+    direction = away + nodes.direction[tips] * 0.15
+    direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
+    parent = tips.copy()
+    born = nodes.born[tips].copy()
+    # The ground, near enough: nothing hangs below the lowest point of the mesh it grows on --
+    # the whole mesh, not only its painted part. Ivy painted on the arches of a wall hangs down
+    # past the arches; a floor at the lowest paint, the springing, stopped every tendril there.
+    floor = settings.get("hang_floor", projector.lowest(up))
+    # A slow sideways sway, its own way and pace on each tendril, so a strand hangs in a long
+    # loose curve. Per-step noise alone averaged out into a dead-straight line.
+    sway = rng.normal(size=(len(tips), 3))
+    sway -= np.outer(sway @ up, up)
+    sway *= _SWAY / np.maximum(np.linalg.norm(sway, axis=1), 1e-9)[:, None]
+    phase = rng.uniform(0.0, 2.0 * np.pi, len(tips))
+    pace = rng.uniform(0.6, 1.4, len(tips)) * 2.0 * np.pi * step / max(settings["hang_length"], step)
+    # Each tendril its own length, Hang Length the longest: all the same, they hung in a row
+    # like a fringe cut straight.
+    reach = np.maximum(1, np.round(steps * rng.uniform(_SHORTEST, 1.0, len(tips))))
+    curl = _curls(reach, away, up, settings, seed)
+    out = nodes.copy()
+    for index in range(steps):
+        wave = np.sin(phase + pace * index)[:, None]
+        noise = rng.normal(scale=0.08, size=direction.shape)
+        if curl is None:
+            direction = direction + (-up) * _GRAVITY + sway * wave + noise
+        else:
+            # A curling end turns at its own steady rate instead of falling and swaying, or
+            # gravity would pull the hook straight again.
+            start, axis, turn = curl
+            curling = index >= start
+            falling = (-up) * _GRAVITY + sway * wave + noise
+            direction = direction + np.where(curling[:, None], noise * 0.5, falling)
+        direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
+        if curl is not None:
+            direction = _turned(direction, axis, np.where(curling, turn, 0.0))
+        position = position + direction * step
+        landed, normals, found = projector.project_many(position)
+        inside = found & (_dot(position - landed, normals) < clearance)
+        if inside.any():
+            position[inside] = landed[inside] + normals[inside] * clearance
+            # Slide along the surface instead of pressing into it.
+            direction[inside] = direction[inside] - normals[inside] * np.minimum(
+                _dot(direction[inside], normals[inside]), 0.0)[:, None]
+        going = (position @ up >= floor) & (index < reach)
+        if not going.any():
+            break
+        position, direction, away = position[going], direction[going], away[going]
+        sway, phase, pace, reach = sway[going], phase[going], pace[going], reach[going]
+        parent, born = parent[going], born[going] + 1
+        if curl is not None:
+            curl = tuple(part[going] for part in curl)
+        # Each leaf on a tendril faces its own way round the strand: all facing out the way the
+        # tip left the wall, they read as a flat plastic ribbon.
+        facing = _turned(away, direction, rng.uniform(-_LEAF_TURN, _LEAF_TURN, len(away)))
+        parent = out.add_many(position, parent, facing, direction, born, True)
+    return out
+
+
+#: The shortest a tendril grows, as a share of Hang Length.
+_SHORTEST = 0.3
+
+#: The least a tendril curls, as a share of Curl.
+_LEAST_CURL = 0.6
+
+
+def _curls(reach, away, up, settings, seed):
+    """Where and how each tendril's end curls, or None with no Curl.
+
+    Args:
+        reach: Per tendril, how many steps it grows.
+        away: Per tendril, the surface normal at the tip it hangs from.
+        up: The stage's up axis.
+        settings: From `_settings`: hang_curl (degrees) and hang_curl_length are read.
+        seed: The random seed. Curls draw from their own stream, so Curl leaves the rest of
+            the tendril as it was.
+
+    Returns:
+        `(start, axis, turn)`: per tendril, the step its curl starts at, the axis it turns
+        about and the angle it turns each step, in radians. None when Curl is 0.
+    """
+    if settings.get("hang_curl", 0.0) <= 0.0:
+        return None
+    rng = np.random.default_rng([seed, 2])
+    count = len(reach)
+    steps = np.maximum(1, np.round(reach * settings["hang_curl_length"]))
+    # Each its own amount, so the ends do not all hook alike.
+    turn = np.radians(settings["hang_curl"]) * rng.uniform(_LEAST_CURL, 1.0, count) / steps
+    # The end swings out, away from what it hangs from, give or take: back in, it curls into
+    # the wall. Under an arch the normal points down and has no "out", so it picks its own.
+    out = away - np.outer(away @ up, up)
+    flat = np.linalg.norm(out, axis=1) < 0.3
+    random = rng.normal(size=(count, 3))
+    random -= np.outer(random @ up, up)
+    out[flat] = random[flat]
+    out /= np.maximum(np.linalg.norm(out, axis=1), 1e-9)[:, None]
+    out = _turned(out, np.broadcast_to(up, out.shape), rng.uniform(-0.8, 0.8, count))
+    # Turning about this axis takes "down" towards "out", then on up.
+    axis = np.cross(-up, out)
+    return reach - steps, axis, turn
+
+#: How far a tendril's sway pulls it sideways each step, against gravity's pull down.
+_SWAY = 0.22
+
+#: How far, either way, a tendril's leaf turns round the strand from the way the tip faced.
+_LEAF_TURN = 1.4
+
+
+def _turned(vectors, axes, angles):
+    """Each vector turned about its axis (unit) by its angle, in radians (Rodrigues)."""
+    axes = axes / np.maximum(np.linalg.norm(axes, axis=1), 1e-9)[:, None]
+    cos, sin = np.cos(angles)[:, None], np.sin(angles)[:, None]
+    return (vectors * cos + np.cross(axes, vectors) * sin
+            + axes * _dot(axes, vectors)[:, None] * (1.0 - cos))
+
+
+def _growth_of(nodes):
+    """When each node grew, from 0 (the roots) to 1 (the last tip), as an array."""
+    last = int(nodes.born.max()) if len(nodes) else 0
+    return nodes.born / float(max(last, 1))
 
 
 def _lift(nodes, radii, factor):
@@ -830,7 +1178,10 @@ def _lift(nodes, radii, factor):
     """
     if factor == 0.0:
         return
-    nodes.position[:] += nodes.normal * (np.asarray(radii, dtype=np.float64) * factor)[:, None]
+    # Not the hanging nodes: they are in the air already, and lifting them along a normal that
+    # belongs to the wall they left would kink each tendril where it starts.
+    lift = np.asarray(radii, dtype=np.float64) * factor * ~nodes.hanging
+    nodes.position[:] += nodes.normal * lift[:, None]
 
 
 # ---------------------------------------------------------------------------
@@ -945,7 +1296,8 @@ def _resurface(nodes, projector):
     if not len(nodes):
         return
     landed, normals, found = projector.project_many(nodes.position)
-    reached = np.flatnonzero(found)
+    # A hanging tendril is in the air on purpose; snapping it back would glue it to the wall.
+    reached = np.flatnonzero(found & ~nodes.hanging)
     nodes.position[reached] = landed[reached]
     nodes.normal[reached] = normals[reached]
 
@@ -984,35 +1336,129 @@ def _pin(points, widths):
 # ---------------------------------------------------------------------------
 
 
-def _leaf_points(strands, positions, normals, radii, spacing):
+#: How big a leaf on a hanging tendril is, against one on the wall.
+_TENDRIL_LEAF = 0.8
+
+#: How much of a strand's growth, back from its tip, its leaves take to reach full size.
+_YOUNG_SPAN = 0.15
+
+#: No leaves: points, normals, growth, directions, scales, tips.
+_NO_LEAVES = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3)), np.zeros(0), np.zeros(0))
+
+
+def _leaf_points(strands, positions, normals, radii, growth, settings, hanging=None):
     """Points along the vines at a fixed arc-length spacing, with the surface normal at each.
 
     Deliberately the same shape a Scatter Brush's Painted Points output has -- position plus
     normal -- so a Scatter Points chunk instances leaves along a vine with the code it already
     has, rather than this chunk growing leaf geometry nobody asked it for.
 
-    Offset outward by the local radius so a leaf sits *on* the vine instead of inside it.
+    Each leaf sits on the stem's surface (lifted by the local radius) and is pushed off to one
+    side by Spread, alternating left and right along the strand the way ivy sets its leaves.
+    Straight down the middle, every instanced leaf covered the stem it grew from. Bare Base
+    drops the leaves on the oldest part of the vine, where real ivy has lost them.
+
+    Args:
+        strands: Index chains, from `_strands`.
+        positions: (N, 3) node positions.
+        normals: (N, 3) surface normals at the nodes.
+        radii: A radius per node.
+        growth: When each node grew, 0..1, from `_growth_of`.
+        settings: From `_settings`: leaf_spacing, leaf_spread, leaf_bare and leaf_young are
+            read.
+        hanging: Per node, whether it is on a hanging tendril. Tendrils carry two leaves in three,
+            at 80% of the size: a hanging shoot is thinner and sparser than one clinging
+            to a wall, and leaved as thickly it hung in clumps.
+
+    Returns:
+        (points, normals, growth, directions, scales, tips): (L, 3), (L, 3), (L,), (L, 3),
+        (L,) and (L,) arrays. A direction is the way the leaf leaves its stem -- out to its
+        side and a little forward -- for Scatter Points to point the leaf along. A scale is
+        the leaf's size: full on the older stem, down to Tip Leaf Size at the tip it is
+        growing toward. A tip is when that tip grew, so `_leaves_at` can size the leaf for a
+        vine cut short of it.
     """
-    if spacing <= 0.0:
-        return [], []
-    points, facing = [], []
-    for chain in strands:
-        travelled = 0.0
-        next_leaf = spacing
-        for a, b in zip(chain[:-1], chain[1:]):
-            start, end = positions[a], positions[b]
-            segment = float(np.linalg.norm(end - start))
-            if segment <= 1e-9:
-                continue
-            while next_leaf <= travelled + segment:
-                t = (next_leaf - travelled) / segment
-                normal = normals[b]
-                at = start + (end - start) * t
-                points.append(Gf.Vec3f(*(at + normal * radii[b])))
-                facing.append(Gf.Vec3f(*normal))
-                next_leaf += spacing
-            travelled += segment
-    return points, facing
+    spacing = settings["leaf_spacing"]
+    found_points, found_normals, found_growth, found_dirs, found_scales, found_tips = [], [], [], [], [], []
+    radii = np.asarray(radii, dtype=np.float64)
+    bare = settings["leaf_bare"] * (float(growth.max()) if len(growth) else 0.0)
+    for chain in strands if spacing > 0.0 else ():
+        chain = np.asarray(chain)
+        start, end = positions[chain[:-1]], positions[chain[1:]]
+        segment = np.linalg.norm(end - start, axis=1)
+        travelled = np.concatenate(([0.0], np.cumsum(segment)))
+        distance = np.arange(1, int(travelled[-1] / spacing + 1e-9) + 1) * spacing
+        if not len(distance):
+            continue
+        # The segment each leaf falls on: the first one whose far end reaches it. A
+        # zero-length segment is never chosen, since the one before it reaches as far.
+        on = np.clip(np.searchsorted(travelled, distance, side="left") - 1, 0, len(segment) - 1)
+        t = np.clip((distance - travelled[on]) / np.maximum(segment[on], 1e-12), 0.0, 1.0)
+        tip = chain[1:][on]
+        normal = normals[tip]
+        along = (end[on] - start[on]) / np.maximum(segment[on], 1e-12)[:, None]
+        side = np.cross(normal, along)
+        side /= np.maximum(np.linalg.norm(side, axis=1), 1e-12)[:, None]
+        sign = np.where(np.arange(len(distance)) % 2 == 0, 1.0, -1.0)[:, None]
+        at = start[on] + (end[on] - start[on]) * t[:, None]
+        at = at + normal * radii[tip][:, None] + side * sign * settings["leaf_spread"]
+        age = growth[chain[:-1]][on] * (1.0 - t) + growth[tip] * t
+        keep = age >= bare
+        # Out to the leaf's side, leaning half as much forward: an ivy petiole. Forward is
+        # flattened onto the surface first: the stem rises and falls a little with Lift as
+        # it tapers, and a leaf following that would tip off the wall.
+        forward = along - normal * np.einsum("ij,ij->i", along, normal)[:, None]
+        direction = side * sign + forward * 0.5
+        direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-12)[:, None]
+        # Young toward the tip: the last _YOUNG_SPAN of this strand's growth ramps the size
+        # from Tip Leaf Size up to full.
+        youth = np.clip((growth[chain[-1]] - age) / _YOUNG_SPAN, 0.0, 1.0)
+        scale = settings["leaf_young"] + (1.0 - settings["leaf_young"]) * youth
+        if hanging is not None:
+            on_tendril = hanging[tip]
+            keep &= ~on_tendril | (np.arange(len(distance)) % 3 != 2)
+            scale = np.where(on_tendril, scale * _TENDRIL_LEAF, scale)
+        found_points.append(at[keep])
+        found_normals.append(normal[keep])
+        found_growth.append(age[keep])
+        found_dirs.append(direction[keep])
+        found_scales.append(scale[keep])
+        found_tips.append(np.full(int(np.count_nonzero(keep)), float(growth[chain[-1]])))
+    if not found_points:
+        return _NO_LEAVES
+    return (np.concatenate(found_points), np.concatenate(found_normals), np.concatenate(found_growth),
+            np.concatenate(found_dirs), np.concatenate(found_scales), np.concatenate(found_tips))
+
+
+def _leaves_at(leaves, fraction, settings):
+    """The grown vine's leaves as they stand at `fraction` of its growth, each with its id.
+
+    A leaf is kept if the vine has reached it, and keeps the place and the id it has on the
+    grown vine, so Scatter Points gives it the same leaf at every Growth %. Leaves from the
+    part-grown vine sat along strands that regroup as it grows: they moved, and their order
+    changed, from one Growth % to the next, and the leaves on them flickered.
+
+    A leaf near the cut is sized as the tip it is growing toward: Tip Leaf Size at the cut,
+    full a little way behind it. So leaves still grow in behind the tips.
+
+    Args:
+        leaves: The grown vine's leaves, from `_leaf_points`.
+        fraction: How far grown, 0..1.
+        settings: From `_settings`: leaf_young is read.
+
+    Returns:
+        (points, normals, growth, directions, scales, ids) for the leaves grown by then.
+    """
+    points, normals, growth, directions, scales, tips = leaves
+    ids = np.arange(len(points), dtype=np.int64)
+    keep = growth <= fraction + 1e-12
+    points, normals, growth, directions = points[keep], normals[keep], growth[keep], directions[keep]
+    scales, tips, ids = scales[keep], tips[keep], ids[keep]
+    young = settings["leaf_young"]
+    grown = young + (1.0 - young) * np.clip((tips - growth) / _YOUNG_SPAN, 0.0, 1.0)
+    now = young + (1.0 - young) * np.clip((np.minimum(tips, fraction) - growth) / _YOUNG_SPAN, 0.0, 1.0)
+    scales = scales * now / np.maximum(grown, 1e-6)
+    return points, normals, growth, directions, scales, ids
 
 
 # ---------------------------------------------------------------------------
@@ -1056,29 +1502,38 @@ def _settings(node, surface):
         "kill": step * number("kill"),
         "climb": number("climb"),
         "wander": number("wander"),
+        "meander": number("meander"),
+        "seed": int(number("seed")),
         "density": number("density"),
         "roots": max(1, int(number("root_count"))),
         "min_branch": max(1, int(number("min_branch"))),
         "max_nodes": max(2, min(_MAX_NODES, int(number("max_points")))),
         "base_width": base_width,
+        "hang": number("hang") / 100.0,
+        # A share of the painted region, like Thickness, so it reads the same at any scale.
+        "hang_length": region * number("hang_length") / 100.0,
+        "hang_curl": number("hang_curl"),
+        "hang_curl_length": min(max(number("hang_curl_length") / 100.0, 0.0), 1.0),
         "taper": number("taper"),
         # A multiple of each node's own radius, applied per node -- not a distance. See `_lift`.
         "lift": number("lift"),
         "smooth": max(0, int(number("smooth"))),
+        "growth": min(max(number("growth") / 100.0, 0.0), 1.0),
+        "animate": bool(node.get_param("animate").value),
+        "start_frame": number("start_frame"),
+        "end_frame": number("end_frame"),
         "form": node.get_param("curve_form").value,
         "leaves": bool(node.get_param("leaves").value),
         "leaf_spacing": base_width * number("leaf_spacing"),
+        "leaf_spread": base_width * number("leaf_spread"),
+        "leaf_bare": min(max(number("leaf_bare") / 100.0, 0.0), 1.0),
+        "leaf_young": min(max(number("leaf_young"), 0.05), 1.0),
         "leaf_size": base_width * number("leaf_size"),
     }
 
 
-def _painted_roots(stage, points_path, projector, limit):
-    """Roots the brush placed by hand, projected onto the surface.
-
-    A dab lands on the skin already, but the brush records where the *cursor* hit and this
-    chunk's idea of the surface is a sampled reconstruction of it -- so they are reconciled here
-    rather than trusted to agree. A dab outside the painted region has nowhere to grow and is
-    dropped, which is the same rule the growth itself follows.
+def _seed_cloud(stage, points_path):
+    """The points wired into Painted Points, read but not yet placed on the surface.
 
     Only a point cloud is read. A mesh has points too, and a mesh path wired here by mistake
     made every vertex a root: a scanned rock froze the session, then crashed it.
@@ -1086,6 +1541,34 @@ def _painted_roots(stage, points_path, projector, limit):
     Args:
         stage: The stage to read the points from.
         points_path: The Painted Points path.
+
+    Returns:
+        (points, problem): the points as an (N, 3) array, or None when there are none, and
+        what to tell the user when the path is not a point cloud -- empty otherwise.
+    """
+    if not points_path or stage is None:
+        return None, ""
+    prim = stage.GetPrimAtPath(points_path)
+    if not prim or not prim.IsValid():
+        return None, ""
+    if not prim.IsA(UsdGeom.Points):
+        return None, f"Painted Points is a {prim.GetTypeName() or 'prim'}, not a point cloud: {points_path}"
+    points = UsdGeom.Points(prim).GetPointsAttr().Get()
+    if not points:
+        return None, ""
+    return np.asarray(points, dtype=np.float64).reshape(-1, 3), ""
+
+
+def _painted_roots(cloud, projector, limit):
+    """Roots the brush placed by hand, projected onto the surface.
+
+    A dab lands on the skin already, but the brush records where the *cursor* hit and this
+    chunk's idea of the surface is a sampled reconstruction of it -- so they are reconciled here
+    rather than trusted to agree. A dab outside the painted region has nowhere to grow and is
+    dropped, which is the same rule the growth itself follows.
+
+    Args:
+        cloud: The painted points, (N, 3), from `_seed_cloud`; None when there are none.
         projector: Puts each point on the painted surface.
         limit: The most roots to take. More are thinned evenly.
 
@@ -1093,26 +1576,14 @@ def _painted_roots(stage, points_path, projector, limit):
         (roots, note): the roots as (position, normal) pairs, and what to tell the user --
         empty when there is nothing to say.
     """
-    if not points_path or stage is None:
-        return [], ""
-    prim = stage.GetPrimAtPath(points_path)
-    if not prim or not prim.IsValid():
-        return [], ""
-    if not prim.IsA(UsdGeom.Points):
-        return [], f"Painted Points is a {prim.GetTypeName() or 'prim'}, not a point cloud: {points_path}"
-    points = UsdGeom.Points(prim).GetPointsAttr().Get()
-    if not points:
+    if cloud is None or not len(cloud):
         return [], ""
     note = ""
-    if len(points) > limit:
-        note = f"used {limit} of {len(points)} painted points"
-        points = [points[int(i)] for i in np.linspace(0, len(points) - 1, limit)]
-    roots = []
-    for point in points:
-        landed, normal = projector.project(np.asarray(point, dtype=np.float64))
-        if normal is not None:
-            roots.append((landed, normal))
-    return roots, note
+    if len(cloud) > limit:
+        note = f"used {limit} of {len(cloud)} painted points"
+        cloud = cloud[[int(i) for i in np.linspace(0, len(cloud) - 1, limit)]]
+    landed, normals, found = projector.project_many(cloud)
+    return [(landed[i], normals[i]) for i in np.flatnonzero(found).tolist()], note
 
 
 def _attractor_count(surface, settings):
@@ -1144,6 +1615,134 @@ def _up_axis(stage):
     )
 
 
+#: The last skeleton each Vine grew, by its layer identifier; see `_growth_key`.
+_GROWN: dict = {}
+
+#: The settings that change what grows. The rest only change how it is drawn.
+_GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "meander", "density", "roots",
+                    "min_branch", "max_nodes", "hang", "hang_length", "hang_curl", "hang_curl_length",
+                    "hang_floor")
+
+
+def _lowest(surface, up):
+    """How far along `up` the lowest corner of `surface` is: where hanging tendrils stop."""
+    return float(min((surface.v0 @ up).min(), (surface.v1 @ up).min(), (surface.v2 @ up).min()))
+
+
+class _Grown:
+    """One cook's growth: the pruned skeleton before smoothing, and what the readout says.
+
+    `seated` is the skeleton after smoothing and re-seating on the surface, for the Smoothing
+    it was done at: (passes, positions, normals). Re-seating projects every node, and is most
+    of what is left of a cook once the growth is reused.
+
+    `leaves` is the grown vine's leaves, for the settings they were drawn with: (key, leaves),
+    the key from `_leaf_key`. Every Growth % cuts them, so dragging Growth draws them once.
+    """
+
+    __slots__ = ("key", "nodes", "projector", "roots", "roots_note", "hand_placed", "grown", "seated", "leaves")
+
+    def __init__(self, nodes, projector, roots, roots_note, hand_placed, grown):
+        self.key = None
+        self.nodes, self.projector = nodes, projector
+        self.roots, self.roots_note, self.hand_placed, self.grown = roots, roots_note, hand_placed, grown
+        self.seated = None
+        self.leaves = None
+
+
+#: What the grown vine's leaves depend on besides the skeleton: its Smoothing, the stem widths
+#: and lift they sit on, and the leaf settings.
+_LEAF_SETTINGS = ("smooth", "base_width", "taper", "lift", "leaves", "leaf_spacing", "leaf_spread",
+                  "leaf_bare", "leaf_young")
+
+
+def _leaf_key(settings):
+    return tuple(settings[name] for name in _LEAF_SETTINGS)
+
+
+def _growth_key(surface, settings, seed, cloud):
+    """A digest of everything the growth reads: the painted surface, the settings, the roots.
+
+    The surface is hashed in full, not by size: a brush stroke changes the paint and not the
+    triangle count, and that has to grow a new vine. Hashing costs a few milliseconds on a
+    100k-triangle rock; growing it again costs hundreds.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for array in (surface.v0, surface.v1, surface.v2, surface.n, surface.w0, surface.w1, surface.w2):
+        digest.update(np.ascontiguousarray(array).data)
+    if cloud is not None:
+        digest.update(np.ascontiguousarray(cloud).data)
+    digest.update(repr((seed, cloud is None, tuple(settings["up"].tolist()),
+                        tuple(settings[name] for name in _GROWTH_SETTINGS))).encode())
+    return digest.digest()
+
+
+def _remember(layer_id, grown):
+    """Keep `grown` as the last growth of the Vine whose layer is `layer_id`."""
+    if len(_GROWN) > 64:
+        # A deleted chunk leaves its entry behind. Rather than track chunk lifetimes, drop the
+        # lot now and then; the next cook of each Vine grows again.
+        _GROWN.clear()
+    _GROWN[layer_id] = grown
+
+
+def _grow_skeleton(surface, settings, seed, cloud):
+    """Scatter the attractors, pick the roots and grow.
+
+    Args:
+        surface: The painted surface.
+        settings: From `_settings`, with "up" set.
+        seed: The random seed.
+        cloud: The Painted Points, from `_seed_cloud`; None for automatic roots.
+
+    Returns:
+        A `_Grown`, or a str saying why nothing grew.
+    """
+    rng = np.random.default_rng(seed)
+    nothing = "nothing painted — paint the surface with a Scatter Brush"
+
+    sample_count = _surface_sample_count(surface, settings)
+    positions, _sn, _sw, triangle_of = _sample(surface, sample_count, rng, weighted=False)
+    if not len(positions):
+        return nothing
+    # Two cells have to reach a sample from anywhere on the surface. Normally that is the step
+    # size; on a region big enough to hit the sample ceiling the samples are further apart than
+    # the steps are, and sizing to the step would leave projections landing in empty cells.
+    spacing = math.sqrt(float(surface.area.sum()) / max(sample_count, 1))
+    projector = _Projector(surface, positions, triangle_of, max(settings["step"], spacing) * 2.0)
+
+    wanted = _attractor_count(surface, settings)
+    attractors, attractor_normals, weights, _ai = _sample(surface, wanted * 2, rng, weighted=True)
+    # Thinned by the paint a second time, per sample rather than per triangle. Choosing the
+    # triangle by weight already puts the attractors in the painted region; this is what softens
+    # its *edge*, where one corner of a face is painted and another is not.
+    keep = np.flatnonzero(rng.random(len(attractors)) < weights)[:wanted]
+    attractors, attractor_normals = attractors[keep], attractor_normals[keep]
+    if not len(attractors):
+        return nothing
+
+    # Every root is a node, and the vine needs room past them to grow.
+    roots, roots_note = _painted_roots(cloud, projector, limit=max(1, settings["max_nodes"] // 4))
+    hand_placed = bool(roots)
+    if not roots:
+        # Spread across the painted region, not merely out of each other's reach. Spacing them
+        # by the influence radius put all eight roots of a boulder in its lowest few
+        # centimetres, and a vine cannot jump from there to the far side of the paint -- so one
+        # half grew and the other stayed bare. Sharing the region out between them is what
+        # "five vines" is asking for.
+        spread = max(settings["influence"], surface.diagonal() / (settings["roots"] + 1))
+        chosen = _choose_roots(attractors, settings["up"], settings["roots"], spread, attractor_normals)
+        roots = [(attractors[i], attractor_normals[i]) for i in chosen]
+    if not roots:
+        return "no root found on the painted surface"
+
+    nodes = _grow(roots, attractors, projector, settings, rng)
+    grown = len(nodes)
+    nodes = _prune(nodes, settings["min_branch"])
+    nodes = _hang(nodes, projector, settings, seed)
+    return _Grown(nodes, projector, len(roots), roots_note, hand_placed, grown)
+
+
 def execute(node):
     """Grow the vines. Reactive: any param change, or an upstream brush stroke, re-runs this."""
     stage = node.get_stage()
@@ -1170,95 +1769,148 @@ def execute(node):
     # part of what this cook is growing on.
     upstream = chunk_stage.get_upstream_stage(stage, node.get_scene(), node)
     field = (node.get_param("density_primvar").value or "").strip()
-    surface = _collect_surface(upstream.GetPrimAtPath(paths[0]), field).painted()
+    # Every picked prim, not only the first: a wall and the pillar beside it are one place to
+    # grow, and a vine crosses from one to the other where they touch.
+    whole = _Surface.join(
+        [_collect_surface(upstream.GetPrimAtPath(path), field) for path in _outermost(paths)]
+    )
+    surface = whole.painted()
     if not surface:
         _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
         return
 
     settings = _settings(node, surface)
     settings["up"] = _up_axis(stage)
-    rng = np.random.default_rng(int(node.get_param("seed").value or 0))
-
-    sample_count = _surface_sample_count(surface, settings)
-    positions, _sn, _sw, triangle_of = _sample(surface, sample_count, rng, weighted=False)
-    if not len(positions):
-        _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
-        return
-    # Two cells have to reach a sample from anywhere on the surface. Normally that is the step
-    # size; on a region big enough to hit the sample ceiling the samples are further apart than
-    # the steps are, and sizing to the step would leave projections landing in empty cells.
-    spacing = math.sqrt(float(surface.area.sum()) / max(sample_count, 1))
-    projector = _Projector(surface, positions, triangle_of, max(settings["step"], spacing) * 2.0)
-
-    wanted = _attractor_count(surface, settings)
-    attractors, attractor_normals, weights, _ai = _sample(surface, wanted * 2, rng, weighted=True)
-    # Thinned by the paint a second time, per sample rather than per triangle. Choosing the
-    # triangle by weight already puts the attractors in the painted region; this is what softens
-    # its *edge*, where one corner of a face is painted and another is not.
-    keep = np.flatnonzero(rng.random(len(attractors)) < weights)[:wanted]
-    attractors, attractor_normals = attractors[keep], attractor_normals[keep]
-    if not len(attractors):
-        _bail(node, stage, layer, where, "nothing painted — paint the surface with a Scatter Brush")
+    settings["hang_floor"] = _lowest(whole, settings["up"])
+    seed = int(node.get_param("seed").value or 0)
+    cloud, cloud_problem = _seed_cloud(upstream, (node.get_param("seed_points").value or "").strip())
+    if cloud_problem:
+        _bail(node, stage, layer, where, cloud_problem)
         return
 
-    # Every root is a node, and the vine needs room past them to grow.
-    roots, roots_note = _painted_roots(
-        upstream, (node.get_param("seed_points").value or "").strip(), projector,
-        limit=max(1, settings["max_nodes"] // 4),
-    )
-    if roots_note and not roots:
-        _bail(node, stage, layer, where, roots_note)
-        return
-    hand_placed = bool(roots)
-    if not roots:
-        # Spread across the painted region, not merely out of each other's reach. Spacing them
-        # by the influence radius put all eight roots of a boulder in its lowest few
-        # centimetres, and a vine cannot jump from there to the far side of the paint -- so one
-        # half grew and the other stayed bare. Sharing the region out between them is what
-        # "five vines" is asking for.
-        spread = max(settings["influence"], surface.diagonal() / (settings["roots"] + 1))
-        chosen = _choose_roots(attractors, settings["up"], settings["roots"], spread)
-        roots = [(attractors[i], attractor_normals[i]) for i in chosen]
-    if not roots:
-        _bail(node, stage, layer, where, "no root found on the painted surface")
-        return
+    # The growth is most of the cook, and only some params change it. Dragging Thickness,
+    # Taper, Lift, Smoothing or anything under Leaves or Display reuses the last cook's
+    # skeleton instead of growing the same one again.
+    key = _growth_key(surface, settings, seed, cloud)
+    grown = _GROWN.get(node.get_layer_identifier())
+    if grown is None or grown.key != key:
+        grown = _grow_skeleton(surface, settings, seed, cloud)
+        if isinstance(grown, str):
+            _bail(node, stage, layer, where, grown)
+            return
+        grown.key = key
+        _remember(node.get_layer_identifier(), grown)
+    # A copy: smoothing and lifting below move the nodes, and the kept skeleton must not move.
+    nodes, projector = grown.nodes.copy(), grown.projector
 
-    nodes = _grow(roots, attractors, projector, settings, rng)
-    grown = len(nodes)
-    nodes = _prune(nodes, settings["min_branch"])
     strands = _strands(nodes)
     if not strands:
         _bail(node, stage, layer, where, "nothing grew — try a larger Influence or more Density")
         return
 
-    # Smooth, put back on the surface, then lift -- in that order, so every control point ends
-    # up exactly its own radius off the skin. Widths come first because the lift is measured in
-    # radii; see `_lift`.
-    radii = _radii(nodes, settings["base_width"], settings["base_width"] * settings["taper"])
-    _smooth_nodes(nodes, strands, settings["smooth"])
-    _resurface(nodes, projector)
-    _lift(nodes, radii, settings["lift"])
+    # Smooth and put back on the surface, the whole vine. Growth % cuts it after that, so a
+    # vine drawn part-grown sits exactly where the grown one does, and animating Growth does
+    # not make the older part wriggle as the tips move on.
+    if grown.seated is not None and grown.seated[0] == settings["smooth"]:
+        nodes.position[:], nodes.normal[:] = grown.seated[1], grown.seated[2]
+    else:
+        _smooth_nodes(nodes, strands, settings["smooth"])
+        _resurface(nodes, projector)
+        grown.seated = (settings["smooth"], nodes.position.copy(), nodes.normal.copy())
+    growth = _growth_of(nodes)
+    full = settings["growth"] >= 1.0
+    drawn = _draw(nodes, growth, settings["growth"], settings, with_leaves=full)
+    if drawn is None:
+        _bail(node, stage, layer, where, "nothing grown yet — raise Growth")
+        return
+    strands = drawn[0]
+    # The leaves are the grown vine's, cut to Growth % (see `_leaves_at`), on every frame too.
+    # Drawn once for the skeleton and kept: dragging Growth % only cuts them.
+    leaf_key = _leaf_key(settings)
+    if full:
+        grown_leaves = drawn[4]
+    elif grown.leaves is not None and grown.leaves[0] == leaf_key:
+        grown_leaves = grown.leaves[1]
+    else:
+        grown_leaves = _draw(nodes, growth, 1.0, settings)[4]
+    grown.leaves = (leaf_key, grown_leaves)
+    leaf_count = int(np.count_nonzero(grown_leaves[2] <= settings["growth"] + 1e-12))
 
-    leaves = (
-        _leaf_points(strands, nodes.position, nodes.normal, radii, settings["leaf_spacing"])
-        if settings["leaves"]
-        else ([], [])
-    )
-
+    frames = _frames(settings)
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         UsdGeom.Scope.Define(stage, where[0])
-        _author_curves(stage, where[1], strands, nodes, radii, settings, node)
-        _author_leaves(stage, where[2], leaves, settings, node)
+        # The default value is the vine at Growth %, for anything that reads without a time.
+        _author_curves(stage, where[1], drawn, settings, node)
+        _author_leaves(stage, where[2], grown_leaves, settings, node, grown_to=settings["growth"])
+        for frame, fraction in frames:
+            at = _draw(nodes, growth, fraction, settings, with_leaves=False)
+            time = Usd.TimeCode(frame)
+            _author_curves(stage, where[1], at, settings, node, time)
+            # The grown vine's leaves, each from the frame the vine reaches it, kept by index,
+            # which is each leaf's id, so an instancer can follow them.
+            _author_leaves(stage, where[2], grown_leaves, settings, node, time, fraction)
 
-    hit_cap = grown >= settings["max_nodes"]
+    hit_cap = grown.grown >= settings["max_nodes"]
     _report(
         node,
-        f"{len(roots)} vine{'s' if len(roots) != 1 else ''}"
-        f"{' from painted points' if hand_placed else ''} · "
-        f"{len(strands)} branches · {len(leaves[0])} leaves"
+        f"{grown.roots} vine{'s' if grown.roots != 1 else ''}"
+        f"{' from painted points' if grown.hand_placed else ''} · "
+        f"{len(strands)} branches · {leaf_count} leaves"
+        + (f" · grows over frames {frames[0][0]:g}-{frames[-1][0]:g}" if frames else "")
         + (f"\ncapped at {settings['max_nodes']} points — raise Max Points" if hit_cap else "")
-        + (f"\n{roots_note}" if roots_note else ""),
+        + (f"\n{grown.roots_note}" if grown.roots_note else ""),
     )
+
+
+def _draw(nodes, growth, fraction, settings, with_leaves=True):
+    """The vine as drawn at one moment of its growth.
+
+    Shared by the still image and every animated frame, so frame N of an animation is exactly
+    what Growth % set to that frame's share draws.
+
+    Args:
+        nodes: The smoothed, re-seated skeleton. Not changed.
+        growth: When each node grew, from `_growth_of`.
+        fraction: How far grown, 0..1.
+        settings: From `_settings`.
+        with_leaves: Place the leaves too. Off where only the stems are wanted: a part-grown
+            vine's leaves are the grown vine's, cut (see `_leaves_at`).
+
+    Returns:
+        (strands, nodes, radii, growth, leaves) for what has grown, or None before anything
+        has: a root on its own is not a curve.
+    """
+    keep = growth <= fraction + 1e-12
+    cut, cut_growth = nodes.subset(keep), growth[keep]
+    strands = _strands(cut)
+    if not strands:
+        return None
+    # Widths from the vine as it stands, so a part-grown one still tapers to its tips. Then
+    # lift, measured in radii; see `_lift`.
+    radii = _radii(cut, settings["base_width"], settings["base_width"] * settings["taper"])
+    _lift(cut, radii, settings["lift"])
+    leaves = (
+        _leaf_points(strands, cut.position, cut.normal, radii, cut_growth, settings, cut.hanging)
+        if settings["leaves"] and with_leaves
+        else _NO_LEAVES
+    )
+    return strands, cut, radii, cut_growth, leaves
+
+
+def _frames(settings):
+    """(frame, growth fraction) for every frame of the animation; empty when it is off.
+
+    The vine grows from nothing at Start Frame to Growth % at End Frame, evenly.
+    """
+    if not settings["animate"]:
+        return []
+    start, end = settings["start_frame"], settings["end_frame"]
+    if end < start:
+        start, end = end, start
+    count = int(math.floor(end - start)) + 1
+    if count <= 1:
+        return [(float(start), settings["growth"])]
+    return [(start + i, settings["growth"] * i / (count - 1)) for i in range(count)]
 
 
 def _bail(node, stage, layer, where, message):
@@ -1282,44 +1934,70 @@ def _bail(node, stage, layer, where, message):
     _report(node, message)
 
 
-def _author_curves(stage, path, strands, nodes, radii, settings, node):
-    """One BasisCurves holding every strand."""
+def _author_curves(stage, path, drawn, settings, node, time=Usd.TimeCode.Default()):
+    """One BasisCurves holding every strand, with a `growth` primvar per point.
+
+    `growth` is when each point grew, 0 at the roots to 1 at the last tip of the fully grown
+    vine. A shader that hides points above a threshold animates the vine growing -- the
+    same cut Growth % makes here, but at render time.
+
+    `drawn` is from `_draw`; None writes an empty curve set, which is a frame before anything
+    grew. The topology, points, widths, growth and extent are written at `time`.
+    """
     smooth = settings["form"] == "Smooth"
-    counts, points, widths = [], [], []
+    curves = UsdGeom.BasisCurves.Define(stage, path)
+    if time.IsDefault():
+        curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic if smooth else UsdGeom.Tokens.linear)
+        if smooth:
+            curves.CreateBasisAttr().Set(UsdGeom.Tokens.bspline)
+        curves.CreateWrapAttr().Set(UsdGeom.Tokens.nonperiodic)
+        curves.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        colour = node.get_param("vine_color").value or (0.18, 0.42, 0.15)
+        UsdGeom.Primvar(curves.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
+        curves.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
+    growth_primvar = UsdGeom.PrimvarsAPI(curves).CreatePrimvar(
+        GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+    )
+    if drawn is None:
+        curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray(), time)
+        curves.CreatePointsAttr().Set(Vt.Vec3fArray(), time)
+        curves.CreateWidthsAttr().Set(Vt.FloatArray(), time)
+        growth_primvar.Set(Vt.FloatArray(), time)
+        return
+    strands, nodes, radii, growth = drawn[:4]
+    diameters = np.asarray(radii, dtype=np.float64) * 2.0
+    counts, points, widths, ages = [], [], [], []
     for chain in strands:
         # Already smoothed and re-seated on the surface, back when the normals could still be
         # refreshed to match -- see `_smooth_nodes`.
         chain_points = nodes.position[chain]
-        chain_widths = np.asarray([radii[i] * 2.0 for i in chain], dtype=np.float64)
+        chain_widths = diameters[chain]
+        chain_ages = growth[chain]
         if smooth:
             chain_points, chain_widths = _pin(chain_points, chain_widths)
+            chain_ages = np.concatenate((chain_ages[:1], chain_ages[:1], chain_ages, chain_ages[-1:], chain_ages[-1:]))
         counts.append(len(chain_points))
         points.append(chain_points)
         widths.append(chain_widths)
+        ages.append(chain_ages)
 
     all_points = np.concatenate(points)
     all_widths = np.concatenate(widths)
 
-    curves = UsdGeom.BasisCurves.Define(stage, path)
-    curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic if smooth else UsdGeom.Tokens.linear)
-    if smooth:
-        curves.CreateBasisAttr().Set(UsdGeom.Tokens.bspline)
-    curves.CreateWrapAttr().Set(UsdGeom.Tokens.nonperiodic)
-    curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([int(c) for c in counts]))
+    curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([int(c) for c in counts]), time)
     curves.CreatePointsAttr().Set(
-        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(all_points, dtype=np.float32))
+        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(all_points, dtype=np.float32)), time
     )
     curves.CreateWidthsAttr().Set(
-        Vt.FloatArray.FromNumpy(np.ascontiguousarray(all_widths, dtype=np.float32))
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(all_widths, dtype=np.float32)), time
     )
-    curves.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
-    colour = node.get_param("vine_color").value or (0.18, 0.42, 0.15)
-    UsdGeom.Primvar(curves.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
-    curves.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
-    _set_extent(curves, all_points, float(all_widths.max()) if len(all_widths) else 0.0)
+    growth_primvar.Set(
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(np.concatenate(ages), dtype=np.float32)), time
+    )
+    _set_extent(curves, all_points, float(all_widths.max()) if len(all_widths) else 0.0, time)
 
 
-def _author_leaves(stage, path, leaves, settings, node):
+def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Default(), grown_to=None):
     """The leaf cloud, in the shape Scatter Points already reads.
 
     Authored even when it is empty, so the Leaf Points output resolves to a real prim the moment
@@ -1328,28 +2006,52 @@ def _author_leaves(stage, path, leaves, settings, node):
 
     Guide purpose: the points are data for Scatter Points, and a renderer that draws Points
     (V-Ray) would show each leaf as a ball. usdview shows them with Display Guide on.
+
+    `leaves` are the grown vine's, None before any leaf grew. Points, normals, widths, growth
+    and extent are written at `time`; with `grown_to`, only the leaves grown by then (see
+    `_leaves_at`). Every leaf carries its index in `leaves` as its id, so the same leaf keeps
+    the same id on every frame and at every Growth %.
     """
-    points, normals = leaves
+    if leaves is None:
+        leaves = _NO_LEAVES
+    points, normals, growth, directions, scales, ids = _leaves_at(
+        leaves, 1.0 if grown_to is None else grown_to, settings)
+
+    def vec3f(array):
+        return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(array, dtype=np.float32).reshape(-1, 3))
+
     cloud = UsdGeom.Points.Define(stage, path)
-    cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
-    cloud.CreatePointsAttr().Set(Vt.Vec3fArray(points))
-    cloud.CreateNormalsAttr().Set(Vt.Vec3fArray(normals))
-    cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)))
-    colour = node.get_param("leaf_color").value or (0.35, 0.62, 0.22)
-    UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
-    cloud.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
-    if points:
-        _set_extent(cloud, np.asarray([[p[0], p[1], p[2]] for p in points]), settings["leaf_size"])
+    if time.IsDefault():
+        cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+        colour = node.get_param("leaf_color").value or (0.35, 0.62, 0.22)
+        UsdGeom.Primvar(cloud.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
+        cloud.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
+    cloud.CreatePointsAttr().Set(vec3f(points), time)
+    cloud.CreateIdsAttr().Set(Vt.Int64Array.FromNumpy(ids), time)
+    cloud.CreateNormalsAttr().Set(vec3f(normals), time)
+    cloud.CreateWidthsAttr().Set(Vt.FloatArray([settings["leaf_size"]] * len(points)), time)
+    primvars = UsdGeom.PrimvarsAPI(cloud)
+    # The same clock as the curves' growth primvar, so a shader can grow leaves in with them.
+    primvars.CreatePrimvar(GROWTH_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(growth, dtype=np.float32)), time)
+    # Read by Scatter Points: Up Along Surface follows the direction, and the scale multiplies
+    # each leaf's own.
+    primvars.CreatePrimvar("direction", Sdf.ValueTypeNames.Vector3fArray, UsdGeom.Tokens.vertex).Set(
+        vec3f(directions), time)
+    primvars.CreatePrimvar("scale", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(
+        Vt.FloatArray.FromNumpy(np.ascontiguousarray(scales, dtype=np.float32)), time)
+    if len(points):
+        _set_extent(cloud, np.asarray(points), settings["leaf_size"], time)
 
 
-def _set_extent(gprim, points, width):
+def _set_extent(gprim, points, width, time=Usd.TimeCode.Default()):
     """A bound that accounts for the width, since a curve is drawn fatter than its control points."""
     if not len(points):
         return
     pad = width * 0.5
     low = points.min(axis=0) - pad
     high = points.max(axis=0) + pad
-    gprim.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*low), Gf.Vec3f(*high)]))
+    gprim.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*low), Gf.Vec3f(*high)]), time)
 
 
 def _publish(node, name, value):
@@ -1385,8 +2087,14 @@ def _sync_params(node):
     """
     _show(node, "root_count", not (node.get_param("seed_points").value or "").strip())
     _show(node, "step", not node.get_param("auto_step").value)
+    animate = bool(node.get_param("animate").value)
+    _show(node, "start_frame", animate)
+    _show(node, "end_frame", animate)
     leaves = bool(node.get_param("leaves").value)
     _show(node, "leaf_spacing", leaves)
+    _show(node, "leaf_spread", leaves)
+    _show(node, "leaf_bare", leaves)
+    _show(node, "leaf_young", leaves)
     _show(node, "leaf_size", leaves)
     _show(node, "leaf_color", leaves)
 
@@ -1405,6 +2113,12 @@ def _wiring_changed(owner, notice, sender):
     _sync_params(owner.get_chunk() or owner)
 
 
+def _loaded(owner, notice, sender):
+    """Hide what the saved values make useless, on reopen: restored values send no change,
+    and with the open cache on the reopened chunk never cooks, so execute() doesn't either."""
+    _sync_params(owner.get_chunk() or owner)
+
+
 def main():
     chunk_api = chunk.Chunk("Vine")
 
@@ -1413,8 +2127,9 @@ def main():
             "surface_prim",
             "Surface Mesh",
             flags=_PF.LABELED | _PF.PRIM_SELECTION,
-            tooltip="The mesh the vines climb — or any prim above one. Point this and the\n"
-            "Scatter Brush at the same thing.",
+            tooltip="The meshes the vines climb — or prims above them. Pick several, or use a\n"
+            "pattern like /World/Walls/*, and the vines grow over all of them, crossing where\n"
+            "they touch. Point the Scatter Brush at the same thing.",
         )
     )
     chunk_api.add_param(
@@ -1501,11 +2216,24 @@ def main():
     )
     grow.add_param(
         chunk.Slider(
+            "growth",
+            "Growth %",
+            min_value=0.0,
+            max_value=100.0,
+            default_value=100.0,
+            flags=_PF.LABELED,
+            tooltip="How far the vines have grown, from the roots (0) to fully grown (100).\n"
+            "Cuts every vine at the same moment of its growth, so a low value is a young\n"
+            "vine, not a shorter one. Drawing only: changing it does not grow again.",
+        )
+    )
+    grow.add_param(
+        chunk.Slider(
             "density",
             "Density",
             min_value=0.0,
             max_value=1.0,
-            default_value=0.5,
+            default_value=0.2,
             flags=_PF.LABELED,
             tooltip="How thickly the vines fill what was painted. Low leaves gaps between them,\n"
             "high packs them against each other.",
@@ -1517,10 +2245,23 @@ def main():
             "Climb",
             min_value=0.0,
             max_value=2.0,
-            default_value=0.35,
+            default_value=0.15,
             flags=_PF.LABELED,
             tooltip="Pull toward the stage's up axis — the plant's phototropism. Zero lets the\n"
             "vines wander the painted region evenly; high sends them straight up a wall.",
+        )
+    )
+    grow.add_param(
+        chunk.Slider(
+            "meander",
+            "Meander",
+            min_value=0.0,
+            max_value=1.0,
+            default_value=0.8,
+            flags=_PF.LABELED,
+            tooltip="How much the vines swing from side to side as they grow, in long smooth\n"
+            "curves. Zero grows them straight toward the unfilled paint, which reads as\n"
+            "combed hair; high makes them wind like old ivy.",
         )
     )
     grow.add_param(
@@ -1536,10 +2277,11 @@ def main():
         )
     )
     grow.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "root_count",
             "Roots",
             min_value=1,
+            max_value=50,
             default_value=5,
             is_int=True,
             flags=_PF.LABELED,
@@ -1548,7 +2290,7 @@ def main():
         )
     )
     grow.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "min_branch",
             "Min Branch",
             min_value=1,
@@ -1572,6 +2314,99 @@ def main():
         )
     )
     chunk_api.add_param(grow)
+
+    # --- animation ---
+    animation = _collapsed(chunk.Group("anim_grp", "Animation", icon="film", flags=_GF))
+    animate = chunk.Checkbox(
+        "animate",
+        "Animate Growth",
+        default_value=False,
+        flags=_PF.LABELED,
+        tooltip="Write the growth as an animation: nothing at Start Frame, Growth % at End\n"
+        "Frame. Every frame is what Growth % would draw at that point. Curves to Mesh sweeps\n"
+        "each frame, so the mesh grows too.",
+    )
+    animate.add_callback(_wiring_changed)
+    animation.add_param(animate)
+    animation.add_param(
+        chunk.Slider(
+            "start_frame",
+            "Start Frame",
+            min_value=0,
+            max_value=1000,
+            default_value=1,
+            is_int=True,
+            flags=_PF.LABELED,
+            tooltip="The frame the vine starts growing from its roots.",
+        )
+    )
+    animation.add_param(
+        chunk.Slider(
+            "end_frame",
+            "End Frame",
+            min_value=0,
+            max_value=1000,
+            default_value=100,
+            is_int=True,
+            flags=_PF.LABELED,
+            tooltip="The frame it reaches Growth %.",
+        )
+    )
+    chunk_api.add_param(animation)
+
+    # --- hanging ---
+    hang = _collapsed(chunk.Group("hang_grp", "Hanging", icon="sprout", flags=_GF))
+    hang.add_param(
+        chunk.Slider(
+            "hang",
+            "Hang %",
+            min_value=0.0,
+            max_value=100.0,
+            default_value=0.0,
+            flags=_PF.LABELED,
+            tooltip="Share of the vine tips that drop a tendril off the surface. It falls under\n"
+            "gravity and drapes over the painted mesh rather than through it, like ivy hanging\n"
+            "off a ledge. Past the painted part it falls freely.",
+        )
+    )
+    hang.add_param(
+        chunk.Slider(
+            "hang_length",
+            "Hang Length %",
+            min_value=1.0,
+            max_value=50.0,
+            default_value=12.0,
+            flags=_PF.LABELED,
+            tooltip="How long the longest hanging tendrils are, as a percentage of the painted\n"
+            "region. Each tendril grows to its own length, down to a third of this.",
+        )
+    )
+    hang.add_param(
+        chunk.Slider(
+            "hang_curl",
+            "Curl",
+            min_value=0.0,
+            max_value=360.0,
+            default_value=0.0,
+            flags=_PF.LABELED,
+            tooltip="How far the end of each tendril curls round, in degrees. 0 hangs straight\n"
+            "down. 90 swings the end out, 180 turns it back up like a hook, 360 rolls it\n"
+            "into a loop. Each tendril curls its own amount, down to 60% of this.",
+        )
+    )
+    hang.add_param(
+        chunk.Slider(
+            "hang_curl_length",
+            "Curl Length %",
+            min_value=5.0,
+            max_value=100.0,
+            default_value=35.0,
+            flags=_PF.LABELED,
+            tooltip="How much of each tendril curls, from its end, as a percentage of its\n"
+            "length. Low makes a tight hook at the tip, high a long loose J.",
+        )
+    )
+    chunk_api.add_param(hang)
 
     # --- shape ---
     shape = _collapsed(chunk.Group("shape_grp", "Shape", icon="curve", flags=_GF))
@@ -1623,7 +2458,7 @@ def main():
         )
     )
     shape.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "smooth",
             "Smoothing",
             min_value=0,
@@ -1662,6 +2497,43 @@ def main():
     )
     leaf.add_param(
         chunk.Slider(
+            "leaf_spread",
+            "Spread",
+            min_value=0.0,
+            max_value=6.0,
+            default_value=1.0,
+            flags=_PF.LABELED,
+            tooltip="How far each leaf sits to the side of the stem, as a multiple of Thickness.\n"
+            "Leaves alternate left and right; zero puts them all down the middle.",
+        )
+    )
+    leaf.add_param(
+        chunk.Slider(
+            "leaf_bare",
+            "Bare Base %",
+            min_value=0.0,
+            max_value=90.0,
+            default_value=0.0,
+            flags=_PF.LABELED,
+            tooltip="No leaves on the oldest part of each vine: the share of its growth, from the\n"
+            "root, left bare. Old ivy stems lose their leaves; 30 to 50 reads as mature.",
+        )
+    )
+    leaf.add_param(
+        chunk.Slider(
+            "leaf_young",
+            "Tip Leaf Size",
+            min_value=0.05,
+            max_value=1.0,
+            default_value=0.45,
+            flags=_PF.LABELED,
+            tooltip="How big the leaves at a growing tip are, against the full-grown ones further\n"
+            "back. Each leaf point carries its size, and a Scatter Points chunk instancing\n"
+            "on them scales each leaf by it. 1 makes every leaf the same size.",
+        )
+    )
+    leaf.add_param(
+        chunk.Slider(
             "leaf_size",
             "Point Size",
             min_value=0.25,
@@ -1682,7 +2554,7 @@ def main():
             "Influence",
             min_value=1.0,
             max_value=40.0,
-            default_value=12.0,
+            default_value=24.0,
             flags=_PF.LABELED,
             tooltip="How far a node reaches for attractors, as a multiple of Step. Larger makes\n"
             "long, purposeful runs; smaller makes a dense, wandering mat.",
@@ -1694,14 +2566,14 @@ def main():
             "Kill Distance",
             min_value=0.5,
             max_value=10.0,
-            default_value=2.0,
+            default_value=5.0,
             flags=_PF.LABELED,
             tooltip="How close a vine has to come before that part of the paint counts as\n"
             "covered, as a multiple of Step. It sets how far apart branches settle.",
         )
     )
     advanced.add_param(
-        chunk.Spinbox(
+        chunk.Slider(
             "max_points",
             "Max Points",
             min_value=16,
@@ -1723,6 +2595,7 @@ def main():
         chunk.ColorPicker("leaf_color", "Leaf Color", default_value=(0.35, 0.62, 0.22))
     )
     chunk_api.add_param(display)
+    chunk_api.add_callback(_loaded, notice_alias=chunk.ChunkNoticeAlias.CHUNK_LOADED)
 
     return chunk_api
 
@@ -1742,9 +2615,6 @@ def config():
         description="""
         Grows climbing vines over the painted part of a mesh, with points for leaves along them.
 
-        Vine — grows climbing vines across the part of a mesh a Scatter Brush
-        painted.
-
         Wire a Scatter Brush's Density Field output into this chunk's Density
         Field input, with both pointed at the same mesh, and vines fill exactly
         what was painted. Wire its Painted Points output into Painted Points as
@@ -1754,16 +2624,27 @@ def config():
         cloud carrying a surface normal per point. That cloud is the same shape
         the brush publishes, so feeding it to a Scatter Points chunk's Painted
         Points input instances real leaf geometry along the vine, laid flat on
-        the surface.
+        the surface. Every curve point carries a "growth" primvar, 0 at the
+        roots to 1 at the last tip, for shaders that animate the vine growing.
 
         Parameters:
-          - Surface Mesh: the mesh the vines climb.
+          - Surface Mesh: the meshes the vines climb; several, or a pattern.
+          - Growth %: how far the vines have grown, 0 to 100. Cuts them at one
+            moment of their growth; changing it does not grow them again.
+          - Animate Growth / Start Frame / End Frame: write the growth as time
+            samples, from nothing to Growth %.
           - Auto Step / Step: the length of one growth step — how smoothly a
             vine curves. It does not change how thick one is.
           - Density: how thickly the vines fill what was painted.
           - Climb: pull toward the up axis — the plant's phototropism.
+          - Meander: long, smooth side-to-side swings, so vines wind rather than
+            run in parallel.
           - Wander: randomness per step.
           - Roots: how many vines to start when no painted points are wired.
+          - Hang % / Hang Length %: tendrils that fall off the vine tips and
+            drape over the mesh, like ivy hanging off a ledge.
+          - Curl / Curl Length %: how far the end of each tendril curls round,
+            out and back up, and how much of it curls.
           - Thickness %: width at the base, as a share of the painted region,
             so the defaults hold at any scene scale. Lift, leaf spacing and
             leaf size are all multiples of it.

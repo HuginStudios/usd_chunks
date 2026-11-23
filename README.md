@@ -50,6 +50,9 @@ Built for anyone whose pipeline runs on USD:
   ([Remesh](chunks/modelling/remesh_proxy.py) → [Bake](chunks/modelling/bake_textures.py)),
   and asset libraries rebuilt with `batch`.
 
+Each of these has a script you can run, from CAD to a rendered image:
+[Pipeline examples](docs/pipeline-examples.md).
+
 - **One network, every host.** The same network opens as a node graph in usdview, Houdini
   or Blender, and cooks from the terminal with no UI at all.
 - **Native USD, no proprietary format.** A node is a prim, a wire is a USD connection, and each
@@ -145,16 +148,26 @@ Built for anyone whose pipeline runs on USD:
 
 The docs for each release are at <https://huginstudios.github.io/usd_chunks/>.
 
-1. **[Install it](docs/install.md):**
+1. **Install it.**
+
+   **Blender** (4.2 or newer): download `usd_chunks_blender-<version>.zip` from the
+   [Releases page](https://github.com/HuginStudios/usd_chunks/releases) and don't unzip it.
+   In Blender, go to **Edit > Preferences > Add-ons**, open the **⌄** menu at the top right,
+   choose **Install from Disk...** and pick the zip. There is nothing else to install. Then
+   switch any area to **USDChunks Editor**, click **New** and press Shift+A to add a chunk.
+   See [Blender](docs/blender.md) for more.
+
+   **usdview:**
    ```
    git clone https://github.com/HuginStudios/usd_chunks.git C:\src\usd_chunks
    python -m pip install -e C:\src\usd_chunks
    set PXR_PLUGINPATH_NAME=C:\src\usd_chunks\usd_chunks\hosts\usdview
    usdview anything.usda
    ```
-   The install page covers PowerShell and macOS/Linux, every environment variable, and
-   what to do if something doesn't show up. Using Houdini or Blender? See [Houdini](docs/houdini.md) and
-   [Blender](docs/blender.md).
+   [The install page](docs/install.md) covers PowerShell and macOS/Linux, every environment
+   variable, and what to do if something doesn't show up.
+
+   **Houdini:** see [Houdini](docs/houdini.md).
 2. **[Use the node graph](docs/node-graph-basics.md)**: add and connect your first chunk.
 3. **[Output, View and ChunkGroup](docs/core-chunks.md)**: the chunks that organise a
    graph. Output is what a graph delivers, View is where you look, ChunkGroup is a subnet.

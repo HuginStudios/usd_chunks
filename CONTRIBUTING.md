@@ -129,7 +129,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). A ta
 The tag runs `.github/workflows/release.yml`. It stops if the tag doesn't match the version
 in `pyproject.toml` or has no section in `CHANGELOG.md`. Otherwise it publishes that
 version's docs to <https://huginstudios.github.io/usd_chunks/> and makes a GitHub Release
-with the changelog section as its notes and the wheel attached. The docs site has a
+with the changelog section as its notes, and the wheel and the Blender add-on zip
+attached. The docs site has a
 version picker in the header, and its front page opens the newest release.
 
 The docs are served from the `gh-pages` branch, which the workflow writes. That needs

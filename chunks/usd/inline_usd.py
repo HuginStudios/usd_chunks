@@ -50,5 +50,6 @@ def config():
         Writes hand-typed .usda text into the scene, as a layer over the chunk's own.
 
         Write .usda code directly in to the text param. The resulting layer overrides the chunk layer
+        Animate any value with keyframes: `.timeSamples` on an `over`.
         """,
     )

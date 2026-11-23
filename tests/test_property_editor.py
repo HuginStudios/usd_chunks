@@ -218,6 +218,25 @@ def test_a_widget_edit_keeps_the_types_in_the_list():
         assert _get(stage, "/a", "exposure") == pytest.approx(1.5)
 
 
+def test_a_rel_edit_creates_the_relationship_where_it_is_missing():
+    """`rel name = "targets"` makes the relationship, as a typed edit makes an attribute:
+    a new joint's physics:body1, say. It was read as an unknown value type and skipped."""
+    with Scene() as scene:
+        stage = scene.get_stage()
+        _spheres(stage, "/a", "/b")
+        joint = stage.DefinePrim("/joint", "PhysicsFixedJoint")
+        editor = scene.create.property_editor()
+        editor.get_param("prim").value = "/joint"
+
+        editor.get_param("edits").value = 'rel physics:body1 = "/a"\nrel targets = "/a, /b"'
+
+        assert joint.GetRelationship("physics:body1").GetTargets() == [Sdf.Path("/a")]
+        assert joint.GetRelationship("targets").GetTargets() == [Sdf.Path("/a"), Sdf.Path("/b")]
+        assert not joint.GetAttribute("physics:body1"), "a relationship, not an attribute"
+        spec = editor.get_edit_context().GetPrimAtPath("/joint")
+        assert spec.relationships["physics:body1"], "in the chunk's own layer"
+
+
 def test_an_unknown_type_writes_nothing():
     with Scene() as scene:
         stage = scene.get_stage()

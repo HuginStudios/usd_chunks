@@ -189,29 +189,9 @@ def _collect_triangles(prim):
     if not prim or not prim.IsValid():
         return _TriangleSoup.empty()
 
-    parts = []
-    for p in Usd.PrimRange(prim):
-        mesh = UsdGeom.Mesh(p)
-        points = mesh.GetPointsAttr().Get()
-        if not points:
-            continue
-        counts = mesh.GetFaceVertexCountsAttr().Get()
-        indices = mesh.GetFaceVertexIndicesAttr().Get()
-        if not counts or not indices:
-            continue
-        triangles, _, _ = mesh_math.fan_triangulate(counts, indices)
-        if not len(triangles):
-            continue
-        fan = tuple(triangles.T)
-        parts.append(_TriangleSoup.from_arrays(mesh_math.world_points(p, points), *fan))
-
-    if len(parts) == 1:
-        return parts[0]
+    parts = [soup for p in Usd.PrimRange(prim) if (soup := _mesh_soup(p)) is not None]
     if parts:
-        return _TriangleSoup(*(
-            np.concatenate([getattr(part, name) for part in parts])
-            for name in ("v0", "v1", "v2", "n")
-        ))
+        return _joined(parts)
 
     # Fallback: a flat quad on the top face of the bounding box.
     bbox_cache = UsdGeom.BBoxCache(0, [UsdGeom.Tokens.default_])
@@ -236,6 +216,32 @@ def _collect_triangles(prim):
         corners[[2, 3]],
         np.asarray([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
     )
+
+
+def _mesh_soup(prim):
+    """*prim*'s own faces as a world-space `_TriangleSoup`, or None when it has none."""
+    mesh = UsdGeom.Mesh(prim)
+    points = mesh.GetPointsAttr().Get()
+    if not points:
+        return None
+    counts = mesh.GetFaceVertexCountsAttr().Get()
+    indices = mesh.GetFaceVertexIndicesAttr().Get()
+    if not counts or not indices:
+        return None
+    triangles, _, _ = mesh_math.fan_triangulate(counts, indices)
+    if not len(triangles):
+        return None
+    return _TriangleSoup.from_arrays(mesh_math.world_points(prim, points), *tuple(triangles.T))
+
+
+def _joined(parts):
+    """One `_TriangleSoup` of several."""
+    if len(parts) == 1:
+        return parts[0]
+    return _TriangleSoup(*(
+        np.concatenate([getattr(part, name) for part in parts])
+        for name in ("v0", "v1", "v2", "n")
+    ))
 
 
 def _triangle_bounds(triangles):
@@ -340,9 +346,11 @@ class _AvoidSet:
 
     Each point may carry a radius of its own (half a curve's width there), added to the
     distance: a wide run of water is kept clear edge to edge, not centre to centre.
+
+    A *footprint* (`_Footprint`) adds the ground under meshes: a point there is near too.
     """
 
-    def __init__(self, points, distance, radii=None, extra_max=0.0):
+    def __init__(self, points, distance, radii=None, extra_max=0.0, footprint=None):
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         radii = np.zeros(len(points)) if radii is None else np.asarray(radii, dtype=np.float64)
         self._dist = distance + (float(radii.max()) if len(radii) else 0.0)
@@ -350,9 +358,15 @@ class _AvoidSet:
         # One cell spans the furthest a point can reach, so a query only ever looks one cell out.
         self._cell = max(self._dist + extra_max, 1e-6)
         self._points, self._radii = points, radii
+        self._footprint = footprint
         # Each built on first use: the grid by near(), the tree by near_many().
         self._grid: dict | None = None
         self._tree = None
+
+    @property
+    def active(self):
+        """Whether anything can be near: a reach past zero, or ground to keep off."""
+        return self._dist > 0.0 or self._footprint is not None
 
     def _key(self, pt):
         c = self._cell
@@ -361,6 +375,12 @@ class _AvoidSet:
     def near_many(self, pts, extra, kdtree):
         """near() for (N, 3) *pts*, each with its own *extra*, through a *kdtree* (scipy's
         cKDTree) of the points: the same test, as one query rather than a call per point."""
+        out = self._near_points(pts, extra, kdtree)
+        if self._footprint is not None and len(pts):
+            out |= self._footprint.near_many(pts, self._base + np.maximum(extra, 0.0), kdtree)
+        return out
+
+    def _near_points(self, pts, extra, kdtree):
         out = np.zeros(len(pts), dtype=bool)
         if self._dist <= 0.0 or not len(self._points) or not len(pts):
             return out
@@ -383,6 +403,10 @@ class _AvoidSet:
         return out
 
     def near(self, pt, extra=0.0):
+        if self._footprint is not None:
+            reach = np.asarray([self._base + max(extra, 0.0)])
+            if self._footprint.near_many(np.asarray([pt], dtype=np.float64), reach, None)[0]:
+                return True
         if self._dist <= 0.0:
             return False
         if self._grid is None:
@@ -461,6 +485,146 @@ def _avoid_points(stage, paths, step):
     if not out:
         return np.zeros((0, 3)), np.zeros(0)
     return np.concatenate(out), np.concatenate(out_r)
+
+
+class _Footprint:
+    """The ground under a set of meshes, seen from above: what Keep Away From keeps off
+    besides their points.
+
+    A mesh's points mark only its corners, so a scatter kept away from a house still filled
+    its floor. The faces are drawn into a grid once, looking down the up axis. A point is
+    near when its cell is covered, or when it is within its reach of the covered area's edge;
+    both in the ground plane, so height doesn't count. A face seen edge-on from above -- a
+    wall, a fence panel -- covers nothing, so a fenced yard stays open while the ground under
+    a roof does not.
+    """
+
+    #: Cells along the footprint's longer side: a 10 m house in 2 cm cells.
+    DIVISIONS = 512
+
+    def __init__(self, soup, up_idx):
+        self._a, self._b = (i for i in range(3) if i != up_idx)
+        self._tree = None
+        tri_a = np.stack([soup.v0[:, self._a], soup.v1[:, self._a], soup.v2[:, self._a]], axis=1)
+        tri_b = np.stack([soup.v0[:, self._b], soup.v1[:, self._b], soup.v2[:, self._b]], axis=1)
+        span = max(float(np.ptp(tri_a)), float(np.ptp(tri_b))) if len(tri_a) else 0.0
+        area = ((tri_a[:, 1] - tri_a[:, 0]) * (tri_b[:, 2] - tri_b[:, 0])
+                - (tri_a[:, 2] - tri_a[:, 0]) * (tri_b[:, 1] - tri_b[:, 0]))
+        # Edge-on faces (walls) come out at rounding-error size, not exactly zero.
+        flat = np.abs(area) > 1e-9 * span * span
+        tri_a, tri_b = tri_a[flat], tri_b[flat]
+        self.empty = not len(tri_a)
+        if self.empty:
+            return
+        lo = np.array([tri_a.min(), tri_b.min()])
+        hi = np.array([tri_a.max(), tri_b.max()])
+        self._cell = cell = max(float((hi - lo).max()) / self.DIVISIONS, 1e-9)
+        # An empty cell all round, so every covered cell has four neighbours to look at.
+        self._lo, self._hi = lo - cell, hi + cell
+        shape = tuple(int(n) for n in np.ceil((self._hi - self._lo) / cell).astype(np.int64) + 1)
+        self._grid = grid = self._rasterise(tri_a, tri_b, shape)
+        inner = np.zeros_like(grid)
+        inner[1:-1, 1:-1] = grid[:-2, 1:-1] & grid[2:, 1:-1] & grid[1:-1, :-2] & grid[1:-1, 2:]
+        ia, ib = np.nonzero(grid & ~inner)
+        self._edge = self._lo + (np.stack([ia, ib], axis=1) + 0.5) * cell
+
+    def _rasterise(self, tri_a, tri_b, shape):
+        """The cells whose centre a triangle covers, plus each triangle's own centre cell so
+        a face smaller than a cell still counts.
+
+        Row by row rather than cell by cell: each triangle crosses a row's centre line in
+        one span, found from its edges, and a running sum along the row fills every span at
+        once. Testing each cell against each triangle cost 120 ms on the House chunk.
+        """
+        cell, lo = self._cell, self._lo
+        grid = np.zeros(shape, dtype=bool)
+        ca = np.clip(((tri_a.mean(axis=1) - lo[0]) / cell).astype(np.int64), 0, shape[0] - 1)
+        cb = np.clip(((tri_b.mean(axis=1) - lo[1]) / cell).astype(np.int64), 0, shape[1] - 1)
+        grid[ca, cb] = True
+        # The rows whose centre line crosses each triangle.
+        a0 = np.maximum(np.ceil((tri_a.min(axis=1) - lo[0]) / cell - 0.5), 0).astype(np.int64)
+        a1 = np.minimum(np.floor((tri_a.max(axis=1) - lo[0]) / cell - 0.5), shape[0] - 1).astype(np.int64)
+        rows = np.maximum(a1 - a0 + 1, 0)
+        if not rows.sum():
+            return grid
+        tri = np.repeat(np.arange(len(rows)), rows)
+        row = a0[tri] + np.arange(int(rows.sum())) - np.repeat(np.cumsum(rows) - rows, rows)
+        x = lo[0] + (row + 0.5) * cell
+        # Where the row's line meets each edge that spans it: the span is the lowest to the
+        # highest of those.
+        low = np.full(len(tri), np.inf)
+        high = np.full(len(tri), -np.inf)
+        ta, tb = tri_a[tri], tri_b[tri]
+        for p, q in ((0, 1), (1, 2), (2, 0)):
+            pa, qa, pb, qb = ta[:, p], ta[:, q], tb[:, p], tb[:, q]
+            run = qa - pa
+            hit = (np.minimum(pa, qa) <= x) & (x <= np.maximum(pa, qa)) & (run != 0.0)
+            at = pb + (x - pa) / np.where(hit, run, 1.0) * (qb - pb)
+            low = np.where(hit, np.minimum(low, at), low)
+            high = np.where(hit, np.maximum(high, at), high)
+        b0 = np.maximum(np.ceil((low - lo[1]) / cell - 0.5), 0)
+        b1 = np.minimum(np.floor((high - lo[1]) / cell - 0.5), shape[1] - 1)
+        real = np.isfinite(low) & (b0 <= b1)
+        row, b0, b1 = row[real], b0[real].astype(np.int64), b1[real].astype(np.int64)
+        # +1 where a span starts, -1 just past where it ends; a cell is covered while the
+        # running sum along its row is above zero.
+        wide = shape[1] + 1
+        marks = np.bincount(row * wide + b0, minlength=shape[0] * wide)
+        marks -= np.bincount(row * wide + b1 + 1, minlength=shape[0] * wide)
+        grid |= np.cumsum(marks.reshape(shape[0], wide), axis=1)[:, :-1] > 0
+        return grid
+
+    def near_many(self, pts, reach, kdtree):
+        """True where a point of (N, 3) *pts* is on the footprint, or within its own *reach*
+        of the footprint's edge. *kdtree* is scipy's cKDTree, or None for a slow scan."""
+        flat = np.asarray(pts, dtype=np.float64)[:, [self._a, self._b]]
+        ia = np.floor((flat[:, 0] - self._lo[0]) / self._cell).astype(np.int64)
+        ib = np.floor((flat[:, 1] - self._lo[1]) / self._cell).astype(np.int64)
+        ok = (ia >= 0) & (ib >= 0) & (ia < self._grid.shape[0]) & (ib < self._grid.shape[1])
+        out = np.zeros(len(flat), dtype=bool)
+        out[ok] = self._grid[ia[ok], ib[ok]]
+        reach = np.broadcast_to(np.maximum(reach, 0.0), (len(flat),))
+        widest = float(reach.max()) if len(reach) else 0.0
+        if widest <= 0.0 or not len(self._edge):
+            return out
+        # The edge is held as cell centres, up to ~0.7 cell inside the true one: a little
+        # more reach, so a point is never let closer than asked.
+        slack = 0.75 * self._cell
+        cand = np.flatnonzero(~out & np.all(flat >= self._lo - widest - slack, axis=1)
+                              & np.all(flat <= self._hi + widest + slack, axis=1))
+        if not len(cand):
+            return out
+        if kdtree is None:
+            dist = np.sqrt(((flat[cand, None, :] - self._edge[None]) ** 2).sum(axis=-1)).min(axis=1)
+        else:
+            if self._tree is None:
+                self._tree = kdtree(self._edge)
+            dist, _ = self._tree.query(flat[cand], k=1, distance_upper_bound=widest + slack)
+        out[cand] = dist < reach[cand] + slack
+        return out
+
+
+def _avoid_footprint(stage, paths, up_idx):
+    """The `_Footprint` of every mesh under *paths*, or None when they cover no ground.
+
+    An instancer's prototypes are skipped: they are drawn where its instances are, not
+    where they stand, and the instances already count as points.
+    """
+    parts = []
+    for path in paths:
+        root = stage.GetPrimAtPath(path) if path else None
+        if not root:
+            continue
+        it = iter(Usd.PrimRange(root))
+        for prim in it:
+            if prim.IsA(UsdGeom.PointInstancer):
+                it.PruneChildren()
+            elif prim.IsA(UsdGeom.Mesh) and (soup := _mesh_soup(prim)) is not None:
+                parts.append(soup)
+    if not parts:
+        return None
+    footprint = _Footprint(_joined(parts), up_idx)
+    return None if footprint.empty else footprint
 
 
 def _draw_scale(rng, lo, hi, bias):
@@ -1341,6 +1505,92 @@ def _painted_points(stage, points_path, up=None):
     return positions, facing[:len(positions)]
 
 
+def _painted_ids(stage, points_path, count):
+    """A painted cloud's ids, (count,) int64, or None when it has none to match its points.
+
+    A Vine gives each leaf the same id at every Growth %, so what a leaf looks like can be
+    tied to the leaf rather than to where it falls in a list that grows.
+    """
+    if not count or not points_path or stage is None:
+        return None
+    prim = stage.GetPrimAtPath(points_path)
+    if not prim or not prim.IsA(UsdGeom.Points):
+        return None
+    ids = UsdGeom.Points(prim).GetIdsAttr().Get()
+    if ids is None or len(ids) != count:
+        return None
+    return np.asarray(ids, dtype=np.int64)
+
+
+def _pick_by_id(weights, ids, seed):
+    """A prototype index per id, drawn by weight from a hash of (seed, id): the same id picks
+    the same prototype however many other points there are."""
+    weights = np.maximum(np.asarray(weights, dtype=np.float64), 0.0)
+    if not len(weights) or weights.sum() <= 0.0:
+        return np.zeros(len(ids), dtype=np.int64)
+    with np.errstate(over="ignore"):
+        x = np.asarray(ids, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15) + np.uint64(seed & 0xFFFFFFFF)
+        x ^= x >> np.uint64(30)
+        x *= np.uint64(0xBF58476D1CE4E5B9)
+        x ^= x >> np.uint64(27)
+        x *= np.uint64(0x94D049BB133111EB)
+        x ^= x >> np.uint64(31)
+    u = (x >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+    edges = np.cumsum(weights) / weights.sum()
+    return np.minimum(np.searchsorted(edges, u, side="right"), len(weights) - 1).astype(np.int64)
+
+
+#: Per-point primvars a painted cloud may carry. Vine writes both on its leaf points.
+#: direction: which way the Up Along Surface axis points on that instance, instead of up the
+#: surface -- the way a leaf leaves its stem. scale: multiplies that instance's scale.
+_PAINTED_DIRECTION = "direction"
+_PAINTED_SCALE = "scale"
+
+
+def _painted_extras(stage, points_path, count):
+    """A painted cloud's direction and scale primvars: ((count, 3) or None, (count,) or None).
+
+    Either is None when the cloud does not carry it, one value per point, at the default time.
+    """
+    prim = stage.GetPrimAtPath(points_path) if points_path and stage is not None else None
+    if not prim or not prim.IsValid() or not count:
+        return None, None
+    primvars = UsdGeom.PrimvarsAPI(prim)
+
+    def read(name, width):
+        primvar = primvars.GetPrimvar(name)
+        values = primvar.Get() if primvar and primvar.HasValue() else None
+        if values is None or len(values) != count:
+            return None
+        return np.asarray(values, dtype=np.float64).reshape((count, width) if width > 1 else (count,))
+
+    return read(_PAINTED_DIRECTION, 3), read(_PAINTED_SCALE, 1)
+
+
+def _painted_hidden(stage, points_path):
+    """For an animated painted cloud: {time: indices of its points missing at that time}.
+
+    The cloud's default value says which points there are; each time sample says which of
+    them exist yet, matched by the cloud's `ids` -- the points of a growing vine are not in
+    the same order, or at quite the same place, from frame to frame. A cloud that is not
+    animated, or has no ids to match by, gives {}: every instance always shows.
+    """
+    prim = stage.GetPrimAtPath(points_path) if points_path and stage is not None else None
+    if not prim or not prim.IsA(UsdGeom.Points):
+        return {}
+    cloud = UsdGeom.Points(prim)
+    times = cloud.GetPointsAttr().GetTimeSamples()
+    every = cloud.GetIdsAttr().Get()
+    if not times or every is None or not len(every):
+        return {}
+    every = np.asarray(every, dtype=np.int64)
+    hidden = {}
+    for time in times:
+        present = np.asarray(cloud.GetIdsAttr().Get(time) or [], dtype=np.int64)
+        hidden[time] = np.flatnonzero(~np.isin(every, present)).astype(np.int64)
+    return hidden
+
+
 def _density_mask(prim, primvar_name=None):
     """A weight function over the painted surface, or None when nothing is painted.
 
@@ -1937,7 +2187,7 @@ _ALIGN_UP_AXES = {
 }
 
 
-def _twist_up(base, normals, axis, up):
+def _twist_up(base, normals, axis, up, toward=None):
     """The turn about each instance's own up axis that points *axis* up the surface.
 
     After base, the prototype's up axis lies along the normal and *axis* somewhere in the
@@ -1950,6 +2200,9 @@ def _twist_up(base, normals, axis, up):
         normals: (N, 3) unit normals.
         axis: (3,) the prototype axis, at right angles to its up axis.
         up: (3,) world (and prototype) up.
+        toward: (N, 3) directions to point *axis* along instead of world up, one per
+            instance -- a painted cloud's direction primvar, such as the way each leaf
+            leaves its stem. None for world up.
 
     Returns:
         (N, 4) quaternions about the prototype's up axis, to apply before base.
@@ -1958,7 +2211,8 @@ def _twist_up(base, normals, axis, up):
     length = np.linalg.norm(n, axis=1, keepdims=True)
     n = np.divide(n, length, out=np.zeros_like(n), where=length > 1e-12)
     turned = _rotate_arrays(base, np.broadcast_to(np.asarray(axis, dtype=np.float64), n.shape))
-    target = up[None, :] - np.einsum("ij,j->i", n, up)[:, None] * n
+    aim = np.broadcast_to(up, n.shape) if toward is None else np.asarray(toward, dtype=np.float64)
+    target = aim - np.einsum("ij,ij->i", n, aim)[:, None] * n
     length = np.linalg.norm(target, axis=1)
     on_slope = length > 1e-6
     target[on_slope] /= length[on_slope, None]
@@ -1968,7 +2222,8 @@ def _twist_up(base, normals, axis, up):
     return np.column_stack([np.cos(half), up[None, :] * np.sin(half)[:, None]])
 
 
-def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng, align_up="Off"):
+def _orientations(count, mode, normals, protos, assignment, world_up, axis, amount_deg, rng, align_up="Off",
+                  toward=None):
     """The loop's _compute_orientation then _apply_random_rotation, for every instance at once.
 
     The random numbers come off *rng* one Python call at a time, in the loop's order -- a
@@ -1989,6 +2244,7 @@ def _orientations(count, mode, normals, protos, assignment, world_up, axis, amou
             of one per instance, as painted points seed each their own.
         align_up: Align to Normal only: the prototype axis turned up the surface ("+X", ...),
             or "Off".
+        toward: (count, 3) directions that axis follows instead of up the surface, or None.
 
     Returns:
         (count, 4) float64 quaternions, (real, i, j, k).
@@ -2026,7 +2282,8 @@ def _orientations(count, mode, normals, protos, assignment, world_up, axis, amou
         base = _align_quats(up, normals)
         turn_axis = np.asarray(_ALIGN_UP_AXES.get(align_up, (0.0, 0.0, 0.0)))
         if np.abs(np.cross(turn_axis, up)).sum() > 1e-6:  # an axis along up has nothing to turn
-            base = _quat_mul_arrays(base, _twist_up(base, np.asarray(normals, dtype=np.float64), turn_axis, up))
+            base = _quat_mul_arrays(
+                base, _twist_up(base, np.asarray(normals, dtype=np.float64), turn_axis, up, toward))
     elif random_mode:
         u1, u2, u3 = shoemake.T
         s1, s2 = np.sqrt(1 - u1), np.sqrt(u1)
@@ -2708,6 +2965,37 @@ _POINT_ARRAYS = ("positions", "orientations", "scales", "protoIndices", "points"
                  "widths", "curveVertexCounts", "faceVertexCounts", "faceVertexIndices")
 
 
+#: What a painted cloud carries beyond its default points that changes the cook: the ids it
+#: is matched by, every time sample of its points (see `_painted_hidden`), and the direction
+#: and scale each point may carry (see `_painted_extras`).
+_PAINTED_ANIMATED = ("points", "ids", f"primvars:{_PAINTED_DIRECTION}", f"primvars:{_PAINTED_SCALE}")
+
+
+def _hash_painted(stage, paths) -> str:
+    """A digest of what `_hash_prims` leaves out of a painted cloud: its ids and time samples.
+
+    An animated cloud (a Vine growing its leaves) has the same default points as a still one,
+    and hashing those alone handed it the still cloud's cached cook -- every instance showing
+    from the first frame.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    for path in paths:
+        prim = stage.GetPrimAtPath(path) if path else None
+        if not prim:
+            continue
+        for name in _PAINTED_ANIMATED:
+            attr = prim.GetAttribute(name)
+            if not attr:
+                continue
+            if attr.HasValue() and attr.Get() is not None:
+                h.update(f"{name}:default".encode())
+                h.update(np.asarray(attr.Get()).tobytes())
+            for time in attr.GetTimeSamples():
+                h.update(f"{name}@{time!r}".encode())
+                h.update(np.asarray(attr.Get(time)).tobytes())
+    return h.hexdigest()
+
+
 def _hash_prims(stage, paths, prune_instancers=False, primvar=None) -> str:
     """One digest of every prim under *paths* a reader here reads: its type, world
     transform and point arrays, and *primvar* where it has it. *prune_instancers* skips an
@@ -2778,7 +3066,7 @@ def cache_key(node):
         ("surface", _hash_prims(scratch, surfaces, primvar=node.get_param("density_primvar").value or None)),
         ("avoid", _hash_prims(scratch, paths("avoid_prims"))),
         ("near", _hash_prims(scratch, paths("near_prims"), prune_instancers=True)),
-        ("placed", _hash_prims(scratch, paths("points_prim"))),
+        ("placed", _hash_prims(scratch, paths("points_prim")), _hash_painted(scratch, paths("points_prim"))),
         ("prototypes", tuple(
             (p.src_path, repr(p.variants), _layer_stamps(scratch.GetPrimAtPath(p.src_path)))
             for p in _resolve_prototypes(node, scratch) if scratch.GetPrimAtPath(p.src_path)
@@ -2926,6 +3214,8 @@ def execute(node):
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
     placed, placed_normals = _painted_points(scratch_stage, points_input, world_up)
+    placed_ids = _painted_ids(scratch_stage, points_input, len(placed))
+    placed_toward, placed_scale = _painted_extras(scratch_stage, points_input, len(placed))
     sizes = None  # scales the sampler already drew, when spacing follows scale
 
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
@@ -3039,8 +3329,9 @@ def execute(node):
             avoid = None
             if avoid_paths:
                 pts_, radii_ = _avoid_points(scratch_stage, avoid_paths, max(avoid_distance, spacing, 1e-6) * 0.5)
-                avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5)
-                if avoid._dist <= 0.0:
+                avoid = _AvoidSet(pts_, avoid_distance, radii_, extra_max=spacing * 0.5,
+                                  footprint=_avoid_footprint(scratch_stage, avoid_paths, up_idx))
+                if not avoid.active:
                     avoid = None
             if len(surf_tris) and sampling == "Tiles" and spacing > 0 and max_slope <= 90.0:
                 # Sampling: Tiles -- the same rules from a laid blue-noise tile (opt-in: a
@@ -3083,10 +3374,21 @@ def execute(node):
         # Exact mix: quota per prototype, then shuffled so the shares are spread over the
         # scatter instead of arriving in blocks.
         # A numpy shuffle: random.shuffle, an element at a time, was a sixth of a big cook.
-        quota = _quota([p.weight for p in protos], count)
-        assignment = np.zeros(count, dtype=np.int64)
-        assignment[:sum(quota)] = np.repeat(np.arange(len(quota)), quota)
-        np.random.default_rng(seed + 31).shuffle(assignment)
+        #
+        # Not for points that carry ids (a Vine's leaves): each one draws its own prototype
+        # from its id. A shuffle over the count gave every leaf a new one whenever the vine
+        # grew a leaf, and a growing vine flickered.
+        keys = placed_ids if placed and placed_ids is not None else None
+        if keys is not None:
+            assignment = _pick_by_id([p.weight for p in protos], keys, seed + 31)
+            quota = np.bincount(assignment, minlength=len(protos)).tolist()
+        else:
+            quota = _quota([p.weight for p in protos], count)
+            assignment = np.zeros(count, dtype=np.int64)
+            assignment[:sum(quota)] = np.repeat(np.arange(len(quota)), quota)
+            np.random.default_rng(seed + 31).shuffle(assignment)
+        # What a placed point's own draws are seeded by: its id, or its place in the list.
+        point_keys = [int(k) for k in keys] if keys is not None else range(count)
 
         scale_rng = random.Random(seed + 13)
         orient_rng = random.Random(seed + 7)
@@ -3122,11 +3424,13 @@ def execute(node):
         if arrays:
             if placed:
                 # Seeded per point, as the loop does: see there.
-                scale_rngs = [random.Random(seed + 13 + i) for i in range(count)]
-                orient_rng = [random.Random(seed + 7 + i) for i in range(count)]
+                scale_rngs = [random.Random(seed + 13 + k) for k in point_keys]
+                orient_rng = [random.Random(seed + 7 + k) for k in point_keys]
             else:
                 scale_rngs = itertools.repeat(scale_rng, count)
             s_all = sizes if sizes else [_draw_scale(r, scale_min, scale_max, scale_bias) for r in scale_rngs]
+            if placed and placed_scale is not None:
+                s_all = list(np.asarray(s_all, dtype=np.float64) * placed_scale)
             normals_np = _vectors(normals, count)
             positions_np = _vectors(positions, count).astype(np.float32)
             if abs(normal_offset) > 1e-9:
@@ -3135,7 +3439,8 @@ def execute(node):
             out_positions = Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions_np))
             out_indices = Vt.IntArray.FromNumpy(np.asarray(assignment, dtype=np.int32))
             quats = _orientations(count, orient_mode, normals_np, protos, assignment, world_up,
-                                  rand_axis, rand_amount, orient_rng, align_up)
+                                  rand_axis, rand_amount, orient_rng, align_up,
+                                  placed_toward if placed else None)
             # Through float32 as the loop's Gf.Quatf did, then half, (i, j, k, real) for Vt.
             out_orients = Vt.QuathArray.FromNumpy(
                 np.ascontiguousarray(quats[:, [1, 2, 3, 0]].astype(np.float32).astype(np.float16)))
@@ -3148,9 +3453,10 @@ def execute(node):
         # orient generator is only drawn from for the turn here, so the draws are the loop's.
         loop_quats = None
         if count and not (fast or arrays) and scatter_mode != "Stack" and orient_mode == "Align to Normal":
-            loop_rngs = [random.Random(seed + 7 + i) for i in range(count)] if placed else orient_rng
+            loop_rngs = [random.Random(seed + 7 + k) for k in point_keys] if placed else orient_rng
             loop_quats = _orientations(count, orient_mode, _vectors(normals, count), protos, assignment,
-                                       world_up, rand_axis, rand_amount, loop_rngs, align_up)
+                                       world_up, rand_axis, rand_amount, loop_rngs, align_up,
+                                       placed_toward if placed else None)
 
         for i in range(0 if fast or arrays else count):
             pidx = int(assignment[i])
@@ -3165,9 +3471,11 @@ def execute(node):
                 # a point from the middle, or reorder them, and every point after it silently
                 # changes scale and rotation. Painting is an editing workflow, so the look is
                 # pinned to the index.
-                scale_rng = random.Random(seed + 13 + i)
-                orient_rng = random.Random(seed + 7 + i)
+                scale_rng = random.Random(seed + 13 + point_keys[i])
+                orient_rng = random.Random(seed + 7 + point_keys[i])
             s = sizes[i] if sizes else _draw_scale(scale_rng, scale_min, scale_max, scale_bias)
+            if placed and placed_scale is not None:
+                s *= float(placed_scale[i])
             nrm = normals[i]
 
             if scatter_mode == "Stack":
@@ -3221,6 +3529,12 @@ def execute(node):
         instancer.GetProtoIndicesAttr().Set(out_indices)
         instancer.GetScalesAttr().Set(out_scales)
         instancer.GetOrientationsAttr().Set(out_orients)
+        if placed and scatter_mode != "Stack":
+            # An animated cloud -- a Vine growing its leaves -- shows each instance only once
+            # its point exists. One instance per painted point, in order, so a point's index
+            # in the cloud is its instance's id.
+            for time, hidden in _painted_hidden(scratch_stage, points_input).items():
+                instancer.GetInvisibleIdsAttr().Set(Vt.Int64Array.FromNumpy(hidden), time)
 
         if proxy_mode != "Off":
             # The viewport draws proxy, a final render draws render: usdview shows the
@@ -3571,8 +3885,9 @@ def main():
             "Keep Away From",
             # PRIM_PATHS: a cook reads these prims, so an edit to them must re-run it.
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_PATHS,
-            tooltip="Surface mode: prims whose points (curves along their length) instances "
-            "stay clear of -- e.g. a Trails output. Comma-separate several.",
+            tooltip="Surface mode: prims instances stay clear of -- their points, curves "
+            "along their length, and the ground under a mesh (a house's floor, not a fenced "
+            "yard). E.g. a Trails output or a building. Comma-separate several.",
         )
     )
     dist_grp.add_param(
@@ -3581,7 +3896,7 @@ def main():
             "Keep Away Distance",
             default_value=0.0,
             tooltip="How far an instance's edge stays from Keep Away From -- from a curve's "
-            "edge where it has widths.",
+            "edge where it has widths, and from the edge of the ground under a mesh.",
         )
     )
     dist_grp.add_param(
@@ -3845,7 +4160,10 @@ def main():
             "it points straight up and on a slope uphill. A strand modelled hanging along -X\n"
             "takes +X: it then hangs down whatever wall it is on. Off: the prototype is\n"
             "only tipped onto the surface, and how it is turned on it depends on which\n"
-            "way the surface faces. Surfaces facing straight up or down are left as Off.",
+            "way the surface faces. Surfaces facing straight up or down are left as Off.\n"
+            "Painted points that carry a direction (a Vine's leaf points do) point this axis\n"
+            "along it instead: set it to a leaf's tip axis and each leaf points away from\n"
+            "its stem.",
         )
     )
     var_grp.get_param("orient_mode").add_callback(_on_orient_changed)
@@ -3963,13 +4281,14 @@ def config():
         # param's default, so its layout doesn't move on reopen).
         new_values={"sampling": "Tiles"},
         description=(
-            "Scatters instances of one or more prototypes across a mesh as a PointInstancer.\n"
+            "Scatters rocks, trees, grass or any prototypes across a mesh as a PointInstancer.\n"
             "\n"
             "Prototypes are a list: each row takes a prim (globs and %collection allowed), a share of the mix\n"
             "as a percentage, and its own scale multiplier. A variant selection can be written\n"
             "into the path -- /props/crayon{color=red} -- and {color=*} expands to one\n"
             "prototype per variant in that set, splitting the row's share between them. Mix\n"
-            "percentages are exact quotas, not probabilities.\n"
+            "percentages are exact quotas, not probabilities -- except on points with ids (a\n"
+            "Vine's leaves), where each point keeps its own pick as the cloud grows.\n"
             "\n"
             "Modes:\n"
             "  Surface  area-weighted sampling on the faces, Poisson-disk spacing.\n"

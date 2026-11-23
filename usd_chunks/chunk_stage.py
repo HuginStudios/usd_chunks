@@ -360,6 +360,11 @@ def _push_driven_values(stage: Usd.Stage, param, layer: Sdf.Layer | None = None)
     # USD refuses to author into a muted layer; set_chunks_muted re-pushes on un-mute.
     if value is None or layer is None or stage.IsLayerMuted(layer.identifier):
         return
+    # Nor into one this stage doesn't hold: during a diff cook the chunk's layer is a scratch
+    # layer on the cook's own stage (chunk_cook.cooking_into). The framework authors every
+    # driven value again once the cook is done (ChunkBase.reauthor_driven_attrs).
+    if not stage.HasLocalLayer(layer):
+        return
     driven_var_selections = getattr(param, "_driven_var_selections", {})
     for path in paths:
         # Inside the recorded variant before the lookup: a prim that only exists in that
@@ -1696,6 +1701,28 @@ class ChunkStageSync(metaclass=RegistrySingleton):
             self._reloading = False
         self._loaded_prim_paths.clear()
         self._chunk_prim_paths.clear()
+
+    def reload_chunks(self) -> None:
+        """Reload Chunks: read the chunk modules again and rebuild the graph from the stage.
+
+        The stage already holds every chunk's prim, params and wires, so the chunks are
+        dropped and loaded back from it, as File > Open does, with each module's file read
+        afresh. Rebuilding chunks from their modules instead put every param back to its
+        default and lost the wires.
+
+        The chunks' layers go before the layer manager starts over: it would otherwise
+        forget them, and each reload left them in the stack. discarding_stage keeps taking
+        them off from rescanning the stage, which found the chunks' prims and built them
+        again mid-teardown.
+        """
+        if not self._scene or not self._stage:
+            return
+        stage = self._stage
+        with self.discarding_stage(), chunk_registry.ChunkLayerManager().holding_deletes():
+            self._teardown_chunks()
+        chunk_registry.ChunkRegistry().unload_modules()
+        self._loaded_stage = None  # the same stage: reload_for_stage would skip it
+        self.reload_for_stage(stage)
 
     def reload_for_stage(self, stage: Usd.Stage) -> None:
         """Reinitialize for a newly opened stage (File > Open).

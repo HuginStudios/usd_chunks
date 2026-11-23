@@ -15,6 +15,178 @@ This file starts with the first release; development before that is in the commi
   file every 2 minutes, and offered back (Recover or Discard) when it is opened again after a
   crash. Save Scene deletes the quick saves; turn it off in **Chunks > Auto Quick Save**, or
   for everyone with `USD_CHUNKS_AUTOSAVE_MINUTES=0`.
+- Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
+  [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
+  street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
+  configurator, and a batch over a folder. Each saves its network, exports USD and renders
+  a picture. They are built from chunks. `example_assets.py` fetches the free assets they
+  use, once.
+- Height Field chunk: marks a band of height on meshes. Use it as a Scatter Points' Density
+  Field to keep trees below a tree line, or its Face Subset to give a shore sand. Show Field
+  tints the band so you can see it.
+- Edge Field chunk: marks the sharp edges or the inner corners of meshes. Use it as a Scatter
+  Points' Density Field to drop rubble along edges, or read it in a material for worn paint
+  or dirt in corners. Multiply With a Noise Field breaks it into patches; Show Field tints it.
+- Bind Material has a Strength. Weaker than Descendants lets a face subset keep its own
+  material: bind a tree to bark, and its leaves stay leaves.
+- The build-network skill has a chunks-by-task page: every chunk by the job it does, with
+  when to pick it over its neighbours. Agents now look for a chunk that builds an object (Fence,
+  House) before they model it from boxes.
+- Vine › Hanging has Curl and Curl Length %. The end of each hanging tendril curls round,
+  out and back up, like a hook or a loop. Curl is 0 by default, so tendrils hang as before.
+
+### Changed
+
+- `usdchunks list <words>` finds chunks by task words, best first: whole words only ("rain"
+  no longer lists every fence for "terrain"), every word of the query, the name counting most.
+  Scatter Points is found for rocks, trees and grass, Inline USD for keyframes.
+
+- Vine's hanging tendrils grow to different lengths, Hang Length the longest and a third of it
+  the shortest, and carry two leaves in three at 80% of the size. All the same length and
+  leaved like the wall, they hung like a fringe cut straight, in clumps.
+
+### Fixed
+
+- A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
+  and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
+  Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
+  that id, so on a Vine's leaves the mix is a share, not an exact quota.
+  Dragging Growth % places the grown vine's leaves once and only cuts them after that.
+- Scatter Points' Keep Away From keeps instances off the ground under a mesh, not only off
+  its points: rocks no longer land inside a house. Keep Away Distance counts from the edge
+  of that ground. A fence covers no ground from above, so a fenced yard still fills.
+- Chunks > Reload Chunks in usdview keeps the network and runs your edited code. It built
+  fresh chunks instead: every param went back to its default, wires were lost, and the new
+  chunks went into a second root group, so the graph looked empty. The old module also stayed
+  loaded, so edits to `main()` and `execute()` never ran. It now reads the edited files again
+  and rebuilds the graph from the stage, as File > Open does.
+  **Breaking:** `ChunkRegistry.reload_modules()` is gone; call
+  `chunk_stage.ChunkStageSync().reload_chunks()` instead.
+- CAD Import instances a part used more than once even when it has a colour, as most STEP
+  parts do.
+- CAD Import in `chunk.change_block()` keeps the location the script gave. It used one made
+  from the file name.
+- A Light's colour set when it is made can be changed later. It was written where the
+  Light could never change it again.
+- A run with a Light in it no longer logs `ERROR Could not send notice ... is not in the
+  local LayerStack`.
+- URDF Import writes each link's whole inertia, scaled with Scale. It wrote only part of it,
+  and usdchecker rejected every link.
+- Prim can make a PhysicsScene, a physics joint, RenderSettings or RenderProduct. Asking for
+  one gave an Xform.
+- Render in Command mode finds files next to a network made with `Scene.new(path=...)`.
+  They were missing from the render.
+- Reset Transform resets every prim you give it, not just the first.
+- Property Editor can make a new relationship: `rel physics:body1 = "/World/robot/base"`.
+  The edit was skipped.
+- A reopened Vine hides what its saved values make useless again: Start/End Frame with Animate
+  off, Step with Auto Step on. A test now reopens every chunk with the open cache on and checks
+  it shows the same params as before.
+- A menu value in another case or with underscores now picks its item:
+  `light(light_type="distant_light")` makes a DistantLight. It made a DiskLight without a word,
+  and the build skill showed that call. A value that names no item still falls back to the
+  first one, now with a warning.
+- A reopened Shape chunk (USD Cube, Sphere ...) shows its own params again. A USD Cube showed
+  Axis and hid its Size: with the open cache on, the reopened chunk never cooked, and nothing else
+  put its params back.
+- `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
+  what it needs, instead of listing no params as if it took none.
+
+## [1.0.0-rc.2] - 2026-11-19
+
+### Added
+
+- Vine has a Growth % slider: how far the vines have grown, from the roots to fully grown.
+  Every vine is cut at the same moment, so a low value is a young vine. Changing it does
+  not grow the vine again. Each curve point also carries a `growth` primvar, 0 at the roots
+  to 1 at the last tip, so a shader can animate the vine growing.
+- Vine grows over every mesh picked in Surface Mesh, or matched by a pattern like
+  `/World/Walls/*`, and crosses from one to the next where they touch. It read only the
+  first. Roots, Min Branch, Smoothing and Max Points are sliders now; saved values load as
+  they were.
+- Vine leaves alternate left and right of the stem (Spread), instead of all sitting on top
+  of it and hiding it. Bare Base % leaves the oldest part of each vine without leaves, as
+  on mature ivy. The leaf points carry the same `growth` primvar as the curves. Set Spread
+  to 0 for the old placement.
+- Vine can hang tendrils off its tips (Hanging group: Hang %, Hang Length %). They fall
+  under gravity, drape over the painted mesh instead of passing through it, and stop at
+  the lowest point of the surface. Off by default.
+- Vine can write its growth as an animation (Animation group: Animate Growth, Start Frame,
+  End Frame): nothing at the start, Growth % at the end, one time sample per frame. Each
+  frame is what Growth % draws at that point. A 100-frame animation on a 131k-triangle
+  rock takes 0.6 s.
+- Curves to Mesh sweeps animated curves into an animated mesh: every time sample of the
+  curves is swept and written at that time. A Vine with Animate Growth on now grows as a
+  mesh too. A `growth` primvar on the curves is carried onto the mesh, one value per point.
+- Leaves grow in with an animated vine. With Animate Growth on, Vine's leaf points are the
+  grown vine's leaves, each from the frame the vine reaches it, with a stable id; Scatter
+  Points hides each leaf instance until its point exists (`invisibleIds`). Before, every
+  leaf showed from the first frame.
+- `examples/scripts/ivy_wall.py` and a Vines page in the docs: ivy on a stone wall, painted,
+  grown, swept to a mesh, shaded and lit, ready to render in a renderer that draws no curves
+  (Aurora). `animate=True` grows it over 48 frames.
+- Vine's leaves point away from their stem and are smaller toward each growing tip (Tip Leaf
+  Size). The leaf points carry a `direction` and a `scale` primvar; Scatter Points points
+  the Up Along Surface axis along a painted point's direction, when it has one, and
+  multiplies its scale by the painted scale.
+
+### Changed
+
+- Vine's hanging tendrils sway in long loose curves, and the leaves on them face every way
+  round the strand. They hung dead straight with every leaf facing out the same way, which
+  read as a flat plastic ribbon. The same seed hangs differently than before.
+- Vine cooks faster and grows the same vines. Changing Thickness, Taper, Lift, Smoothing,
+  Form, the leaf settings or the colours no longer grows the vine again: on a
+  131k-triangle rock, 830 ms → 80 ms. A full grow with a fine step: 3.9 s → 1.2 s.
+- **Breaking:** Vine grows winding, branching stems by default instead of evenly spaced
+  parallel ones. A new Meander slider swings them from side to side in long curves, and
+  the defaults changed: Meander 0.8, Climb 0.15, Density 0.2, Influence 24, Kill Distance
+  5. A saved Vine left at the old defaults grows the new way. To keep the old look, set
+  Meander 0, Climb 0.35, Density 0.5, Influence 12 and Kill Distance 2.
+- Curves to Mesh sweeps vines faster and makes the same mesh: every strand goes through
+  one array pass instead of one at a time. A 20,000-point vine (793 strands): 290 ms →
+  80 ms.
+- **Breaking:** Curves to Mesh hides the curves it sweeps (Hide Curves, on by default), so a
+  renderer that draws curves (Storm, V-Ray) no longer shows the vine twice. Turn Hide Curves
+  off to keep them showing. Sides and Segments are sliders now.
+
+### Fixed
+
+- Vine's hanging tendrils hang down to the foot of the mesh they grow on. They stopped at the
+  lowest painted point, so ivy painted on the arches of a wall could not hang below the
+  arches.
+- Blender: after installing a chunk's packages, the status bar names the package and how
+  many chunks cooked again ("Installed scipy; 4 chunk(s) recooked"). It said "0 chunk node
+  type(s) now available", which read like a failure.
+- Blender: the dialog that offers to install a chunk's packages names the packages without
+  their version ranges, and the nodes in the open network that wait for them: "OK to
+  install scipy for scatter_points (Bushes, Ferns, Grass, Trees)?". It showed
+  `scipy>=1.11,<2` and the module name only. The sidebar's Missing dependencies box too.
+- Blender: with `USD_CHUNK_AUTO_INSTALL=1`, a chunk's missing packages install in the
+  background, with progress in the status bar, and the chunks recook after. pip ran while
+  the network opened and froze Blender for the whole download, with nothing on screen
+  (biome example: open 22 s → 2.7 s). A host can take an install over the same way with
+  the new `SceneSender.install_later()`.
+- Installing a chunk's packages no longer installs again what the host Python already has.
+  Installing scipy for Scatter Points in Blender also put a second numpy into the
+  dependency dir; now pip is asked first what is really missing, and only that is
+  installed (the folder: 189 MB → 134 MB). With a pip older than 22.2 it installs as
+  before.
+- Vine no longer runs into Max Points on curved surfaces. A node whose attractors sat
+  behind it sprouted a short stub every growth step, 50 to 80 from one node, and the stubs
+  used up the points before the paint was covered. A node now grows at most four branches.
+  Vines on rocks and other curved meshes cover more and cook faster (a dense rock:
+  3 s → 1.1 s); the same seed grows a slightly different vine than before.
+- Vine no longer roots its vines on the underside of what it grows on. A brush stroke along
+  the foot of a wall also paints its bottom face, buried in the ground; that was the lowest
+  paint, so the vines started there and grew out of sight. Asking for more roots than fit
+  no longer starts two vines on the same point.
+- Curves to Mesh always writes its mesh, empty when there is nothing to sweep. Before
+  anything was painted for a Vine above it, it wrote nothing, so a material bound to the
+  Mesh output warned and did not bind. Curves of different types picked together (linear
+  and cubic) are each swept as what they are; all were swept as the last one's type.
+
+## [1.0.0-rc.1] - 2026-11-19
 
 ### Changed
 
@@ -29,6 +201,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A version tag now makes a GitHub release with the Blender add-on zip attached. Two
+  workflows each tried to make the release for the same tag and both failed, so
+  `v1.0.0-rc` got no release and no zip.
 - A param a chunk disabled before its panel was opened (a slider greyed out because a
   switch is off) now shows greyed out. Sliders, checkboxes and menus showed live until the
   state next changed, and a disabled slider's handle now dims so it reads as off.

@@ -746,6 +746,24 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         """
         return all(self.should_install_package(p) for p in packages)
 
+    def install_later(self, packages: Sequence[str], chunk_name: str) -> bool:
+        """Whether the host takes over an install the user agreed to ahead of time.
+
+        With USD_CHUNK_AUTO_INSTALL on, the ChunkDependencyManager installs a loading
+        chunk's missing packages without asking. By default it runs pip right there, while
+        the chunk loads, and the host waits. A host that can install in the background and
+        cook the chunk again afterwards returns True and starts that instead; the chunk then
+        loads without the packages for now.
+
+        Args:
+            packages: The requirement strings to install, e.g. "scipy>=1.11,<2".
+            chunk_name: The chunk module that needs them.
+
+        Returns:
+            bool: True if the host installs them later; False to install them now.
+        """
+        return False
+
     def run_install(self, packages: Sequence[str], chunk_name: str, run: Callable) -> Any:
         """Run a pip install the user has agreed to, showing whatever progress the host can.
 

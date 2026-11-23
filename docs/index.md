@@ -19,15 +19,18 @@ screen.
    and use USD's `${NAME}` variables.
 5. [Scripting](scripting.md): build a network from Python with `Scene`, in a script or
    in usdview.
-6. [Chunks, params and groups](chunk-basics.md): what a Chunk is, an example, and a list of
+6. [Pipeline examples](pipeline-examples.md): CAD to render, a product configurator,
+   URDF for Isaac Sim, batch jobs, scatter, breakage, buildings and water, each a script
+   you can run.
+7. [Chunks, params and groups](chunk-basics.md): what a Chunk is, an example, and a list of
    params and flags.
-7. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
+8. [Writing a chunk](writing-a-chunk.md): a chunk module's `main()`, `config()`,
    `execute()` and `commit()`.
-8. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
+9. [Building a chunk at runtime](runtime-chunks.md): try an idea in the Python
    interpreter before making it a module.
-9. [Making a chunk fast](fast-chunks.md): author specs in one change block, do the maths
-   in numpy, and what doesn't help (threads).
-10. [Undo and redo](undo.md): what Ctrl+Z covers (chunk edits only, by design), on which
+10. [Making a chunk fast](fast-chunks.md): author specs in one change block, do the maths
+    in numpy, and what doesn't help (threads).
+11. [Undo and redo](undo.md): what Ctrl+Z covers (chunk edits only, by design), on which
     hosts, and what to use for the rest.
 
 > In short: a chunk is a Python module. `main()` sets up its params, `execute(node)` does

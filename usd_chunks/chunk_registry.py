@@ -66,10 +66,12 @@ import base64
 import hashlib
 import inspect
 import importlib.abc
+import json
 import logging
 import pickle
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from dataclasses import dataclass
 from timeit import default_timer as timer
@@ -247,6 +249,39 @@ def _run_pip(args, on_line=None) -> tuple[int, str]:
         if on_line is not None and line.strip():
             on_line(line.strip())
     return proc.wait(), "".join(lines)
+
+
+def _resolve_missing(requirements, on_line=None) -> list[str] | None:
+    """What pip would install for `requirements`, counting what the running Python has.
+
+    A dry run with a JSON report (pip 22.2 or newer). Packages the host already has, and
+    those in the dependency dir (on PYTHONPATH once the manager is initialized), are left
+    out: numpy for scipy, in Blender.
+
+    Args:
+        requirements: Requirement strings.
+        on_line: Called with each line pip prints, as for _run_pip.
+
+    Returns:
+        The packages to install as "name==version" pins, empty when everything is there
+        already; None when pip could not say.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        report = os.path.join(tmp, "report.json")
+        args = [python_executable(), "-m", "pip", "install", "--dry-run", "--quiet",
+                "--report", report, *requirements]
+        returncode, output = _run_pip(args, on_line)
+        if returncode != 0:
+            logger.info("pip could not resolve %s ahead of the install:\n%s",
+                        ", ".join(requirements), output.strip())
+            return None
+        try:
+            with open(report, encoding="utf-8") as f:
+                items = json.load(f).get("install", [])
+            return [f"{i['metadata']['name']}=={i['metadata']['version']}" for i in items]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            logger.info("pip's install report for %s could not be read", ", ".join(requirements))
+            return None
 
 
 def _legacy_dependency_dirs(base: str) -> list[str]:
@@ -476,7 +511,9 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         The scene is asked once for all of them (should_install_packages), naming the chunk
         that needs them; nothing is installed without its yes. With USD_CHUNK_AUTO_INSTALL
         set falsey, or a scene that cannot ask, the missing packages are named in a warning
-        instead. Only what pip actually installed is cached.
+        instead. With it set truthy, a scene that installs in the background (install_later)
+        takes them over, and they count as missing until it has. Only what pip actually
+        installed is cached.
 
         Args:
             requirements: Requirement strings, ranges allowed.
@@ -521,7 +558,13 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         # Asked about once per process: a "no" stands until restart -- see _declined.
         askable = [p for p in missing if p not in self._declined]
         mode = _install_mode()
-        if askable and mode != "never" and (
+        later = []
+        if askable and mode == "always" and self.install_later(askable, chunk_name):
+            # The host installs them in the background and cooks the chunk again after.
+            later = askable
+            logger.info("Chunk %s needs %s: installing in the background",
+                        chunk_name or "module", ", ".join(askable))
+        elif askable and mode != "never" and (
             mode == "always" or self.should_install_packages(askable, chunk_name)
         ):
             if self.install(askable, chunk_name):
@@ -529,14 +572,14 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         else:
             type(self)._declined.update(askable)
 
-        if missing:
+        if unhandled := [p for p in missing if p not in later]:
             # Say what is missing and how to get it, rather than failing later with an
             # import error from inside the chunk's module.
-            quoted = " ".join(f'"{p}"' for p in missing)
+            quoted = " ".join(f'"{p}"' for p in unhandled)
             logger.warning(
                 "Chunk %s needs %s, which is not installed. Install it with:\n"
                 "    %s -m pip install -t \"%s\" %s",
-                chunk_name or "module", ", ".join(missing), python_executable(), self.package_dir, quoted,
+                chunk_name or "module", ", ".join(unhandled), python_executable(), self.package_dir, quoted,
             )
         return missing
 
@@ -553,11 +596,21 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if not self.initialized or not packages:
             return False
         packages = list(packages)
-        args = [python_executable(), "-m", "pip", "install", "-t", self.package_dir]
-        args.extend(packages)
+        target = [python_executable(), "-m", "pip", "install", "-t", self.package_dir]
 
         def run(on_line=None):
-            return _run_pip(args, on_line)
+            # With -t, pip ignores what the running Python already has and installs every
+            # dependency again: scipy brought a second numpy into the dependency dir, next
+            # to Blender's own. So ask pip first what it would install with the host's
+            # packages (and the dependency dir, on PYTHONPATH) counted, and install just
+            # that, pinned, without dependencies. If that resolve fails -- an old pip with
+            # no --report, say -- install the plain way.
+            pins = _resolve_missing(packages, on_line)
+            if pins is None:
+                return _run_pip(target + packages, on_line)
+            if not pins:
+                return 0, ""
+            return _run_pip(target + ["--no-deps"] + pins, on_line)
 
         scene = ChunkRegistry().scene
         returncode, output = scene.run_install(packages, chunk_name, run) if scene else run()
@@ -612,6 +665,15 @@ class ChunkDependencyManager(metaclass=RegistrySingleton):
         if not reg.scene or not self.initialized:
             return False
         return reg.scene.should_install_packages(list(packages), chunk_name)
+
+    def install_later(self, packages, chunk_name: str = "") -> bool:
+        """Whether the scene installs `packages` in the background; False with no scene."""
+        # getattr: a registry not initialized yet has no scene attribute at all.
+        scene = getattr(ChunkRegistry(), "scene", None)
+        if not scene or not self.initialized:
+            return False
+        install_later = getattr(scene, "install_later", None)
+        return bool(install_later and install_later(list(packages), chunk_name))
 
     def update_cache(self):
         """Record every installed package: what Python can import, then `pip list` on top."""
@@ -1273,6 +1335,8 @@ class ChunkModule:
         self.module_file = Path(module_file)
 
         self.loaded = False
+        #: Why the last load failed (a missing package, an import error), None once it loads.
+        self.load_error: str | None = None
         # self.loaded_chunks: weakref.WeakValueDictionary[str, ChunkBase] = weakref.WeakValueDictionary()
         self.func: Callable[[], core.ChunkBase | list[core.ChunkBase]] | None = None
 
@@ -1364,7 +1428,10 @@ class ChunkModule:
             if not self.has_main():
                 return False
 
-            if mod := sys.modules.get(self.module_name):
+            # A module imported under this name some other way is kept. The one this
+            # ChunkModule read before is not: Reload Chunks reads the file again, and keeping
+            # the old one ran the old main() and execute().
+            if (mod := sys.modules.get(self.module_name)) and mod is not self.module:
                 self.module = mod
                 return True
 
@@ -1416,8 +1483,11 @@ class ChunkModule:
 
         try:
             self.func = getattr(self.module, "main")
-        except Exception:
+        except Exception as exc:
             # This module failed to load. Set to file_name so we can try loading it again later
+            # Kept for whoever asks what the chunk takes (usdchunks show), so it can say why not.
+            self.load_error = (f"it needs {', '.join(missing)}, which is not installed" if missing
+                               else f"{type(exc).__name__}: {exc}")
             if missing:
                 # The import of what was declined is what failed: say that, not the
                 # traceback -- install_packages has already said how to install it.
@@ -1441,6 +1511,7 @@ class ChunkModule:
             return False
 
         self.loaded = True
+        self.load_error = None
         return True
 
     def load(self) -> Sequence[core.ChunkBase]:
@@ -2213,24 +2284,15 @@ class ChunkRegistry(metaclass=RegistrySingleton):
                     self.register_module(mod)
                 mod.load()
 
-    def reload_modules(self):
-        """Reload every module, recreating as many chunks of each as the scene held."""
-        loaded_config_names = defaultdict(int)
-        for c in self.scene.get_chunks():
-            if conf := c.get_config():
-                loaded_config_names[conf.module] += 1
+    def unload_modules(self):
+        """Unload every loaded module, so the next load of each reads its file again.
 
-        self.scene.clear()
-
+        The chunks already made stay as they are. Reload Chunks
+        (chunk_stage.ChunkStageSync.reload_chunks) calls this, then builds them again.
+        """
         for mod in self.get_chunk_modules():
             if mod.loaded:
                 mod.unload()
-            for i in range(loaded_config_names.get(mod.module_name, 0)):
-                if i == 0:
-                    chunks = mod.load()
-                else:
-                    chunks = mod.create()
-                self.scene.add_chunks(chunks)
 
 
 def is_chunk_internal_layer(layer: Sdf.Layer) -> bool:
