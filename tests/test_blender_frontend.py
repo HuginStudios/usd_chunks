@@ -933,10 +933,11 @@ def test_a_label_param_is_drawn_as_its_text_not_a_field(view):
     label, so the readout read "not built ... | 8.5 x 4.7 m" and could be typed into."""
     node = _add(view, "house")
     readout = node.get_chunk().get_param("readout")
-    readout.value = "8.5 x 4.7 m"
+    readout.value = "8.5 x 4.7 m · Hip roof\n19 windows"
     layout = _Layout()
     assert chunk_blender.draw_param(node, layout, readout)
-    assert layout.calls == [("label", "8.5 x 4.7 m")]
+    # One Blender label per line: a label draws a single line.
+    assert layout.calls == [("label", "8.5 x 4.7 m · Hip roof"), ("label", "19 windows")]
 
     readout.value = ""
     layout = _Layout()
