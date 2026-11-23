@@ -698,18 +698,35 @@ def test_blenders_own_collapse_arrow_opens_and_folds_the_params(view):
     chunk = view.chunks[move.name]
 
     move.hide = False  # what a click on the arrow does
-    bg.follow_hide_toggles(view)
+    assert bg.follow_hide_toggles(view)
     move = _node(view, "Move")
     assert not chunk.has_state(ChunkFlags.State.COLLAPSED)
     assert len(_shown(move.inputs)) > 1, "open: every param's socket"
+    _flush(view)  # the tick between two clicks
+    assert not _node(view, "Move").hide
 
+    move = _node(view, "Move")
     move.hide = True
-    bg.follow_hide_toggles(view)
+    assert bg.follow_hide_toggles(view)
     move = _node(view, "Move")
     assert chunk.has_state(ChunkFlags.State.COLLAPSED)
     assert [s.name for s in _shown(move.inputs)] == [bg._PLUS]
     view.reload()
     assert _node(view, "Move").hide, "folded with the arrow survives a reload"
+
+
+def test_a_collapse_from_the_model_is_not_taken_back_before_the_tree_catches_up(view):
+    """A collapse made on the chunk (a script, undo) reaches node.hide on the next flush.
+    Until then the two disagree, and that is the tree lagging, not the arrow: the poll must
+    not undo it."""
+    move = _node(view, "Move")
+    chunk = view.chunks[move.name]
+    chunk.set_state(ChunkFlags.State.COLLAPSED)
+    assert not _node(view, "Move").hide, "precondition: the tree has not caught up yet"
+    assert not bg.follow_hide_toggles(view)
+    assert chunk.has_state(ChunkFlags.State.COLLAPSED)
+    _flush(view)
+    assert _node(view, "Move").hide
 
 
 def test_the_add_ons_poll_follows_the_collapse_arrow(view, monkeypatch):

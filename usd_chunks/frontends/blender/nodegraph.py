@@ -1059,6 +1059,10 @@ def follow_hide_toggles(view=None) -> bool:
     wherever it disagrees with the bit -- the bit is set or cleared and the sockets follow,
     as collapse_selected_or_all does for H.
 
+    Not while the tree is still catching up with the model: a collapse made on the chunk (a
+    script, undo) reaches node.hide only on the next flush, and taking node.hide as the
+    truth before that would undo it.
+
     Called from the add-on's poll (the arrow has no callback of its own to hang this on).
 
     Args:
@@ -1069,12 +1073,13 @@ def follow_hide_toggles(view=None) -> bool:
     """
     view = view or active_view()
     tree = view.tree if view is not None else None
-    if tree is None:
+    if tree is None or view._flush_scheduled or view._reload_pending:
         return False
     changed = False
     for node in tree.nodes:
         chunk = view.chunks.get(node.name)
-        if chunk is None or node.hide == chunk.has_state(ChunkFlags.State.COLLAPSED):
+        if (chunk is None or node.name in view._dirty
+                or node.hide == chunk.has_state(ChunkFlags.State.COLLAPSED)):
             continue
         if node.hide:
             chunk.set_state(ChunkFlags.State.COLLAPSED)
