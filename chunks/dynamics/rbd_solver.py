@@ -2636,8 +2636,11 @@ def _sim_articulated_gen_mj(
     # The colliders build on the worker (the slow part on a big Mesh collider); the links
     # read the stage as they go, so the rest of the build comes back to the main thread.
     colliders = _read_colliders(collision_prims)
+    # An animated collider (a door swinging shut, a paddle sweeping a table) is a mocap body:
+    # its pose every frame, read here on the main thread, re-poses it as the rigid path does.
+    poses = _collider_poses(colliders, start_frame, frame_count)
     yield sim_bake.WORKER
-    collider_spec = _articulated_colliders(
+    collider_spec, mocap_names = _articulated_colliders(
         colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
         collider_thickness, progress=progress,
     )
@@ -2650,6 +2653,9 @@ def _sim_articulated_gen_mj(
     if built is None:
         return None
     model, data, ordered = built
+    collider_tracks = _mocap_tracks(
+        [(int(model.body_mocapid[_mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, name)]), prim)
+         for name, prim in mocap_names], poses)
     if free_root and (init_vel or ang_vel):
         for root in roots:
             jid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, f"{root.name}_free")
@@ -2689,6 +2695,7 @@ def _sim_articulated_gen_mj(
     # Everything below is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
     yield sim_bake.WORKER
     for frame in range(frame_count):
+        _set_mocap(data, collider_tracks, frame)
         for name, bid in ids.items():
             pos = data.xpos[bid]
             quat = data.xquat[bid]
@@ -2728,13 +2735,13 @@ def _sim_articulated_gen_mj(
 
 def _articulated_colliders(colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop,
                            collider_mode, collider_thickness, progress=None):
-    """The collider spec an articulated asset is built on."""
+    """The collider spec an articulated asset is built on, and its animated colliders' mocap
+    bodies as [(body name, prim)] -- re-posed every frame, or they would stand still."""
     contact_tc = max(2.0 * (dt / substeps), 0.01)
-    spec, _ = _collider_spec(
+    return _collider_spec(
         colliders, up_idx, friction, contact_tc,
         1.0, hfield_res, floor_drop, collider_mode, collider_thickness, progress=progress,
     )
-    return spec
 
 
 def build_articulated_spec(
@@ -2774,7 +2781,7 @@ def build_articulated_spec(
     spec = collider_spec if collider_spec is not None else _articulated_colliders(
         collision_prims, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
         collider_thickness,
-    )
+    )[0]
     # MuJoCo's compiler defaults to interpreting angles as DEGREES. Joint limits are
     # converted to radians when the USD joint is parsed, so leaving this alone applies the
     # conversion twice and a 90-degree door limit compiles as 1.6 degrees -- a hinge that
@@ -2866,7 +2873,10 @@ def build_articulated_spec(
         logger.warning("Articulated scene compile failed: %s", exc)
         return None
 
-    excluded = _exclude_initial_overlaps(spec, model)
+    # Only pairs of the mechanism's own links. The colliders sit in bodies of their own, not
+    # the world body, so left unfiltered a link that starts inside one -- an animated collider
+    # at its rest pose, a link posed into the table -- lost that contact for the whole solve.
+    excluded = _exclude_initial_overlaps(spec, model, only={link.name for link in ordered})
     if excluded:
         try:
             model = spec.compile()
