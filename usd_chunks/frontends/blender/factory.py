@@ -620,6 +620,16 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
     lofted-ID-property fallback, and having it in one place is what keeps a lofted param
     drawable on a socket at all.
     """
+    if PT.LABEL in param.get_type():
+        # Read-only text, as Qt shows it: the value alone, one label per line (a Blender
+        # label draws a single line). Drawn as a property it was an editable field captioned
+        # with the param's own label ("not built yet | 8.5 x 4.7 m"). Nothing to read, no row.
+        if not param.value:
+            return False
+        col = layout.column(align=True)
+        for line in str(param.value).splitlines():
+            col.label(text=line)
+        return True
     # OUTPUT is computed, so it is shown but not editable. active=False greys it the way
     # Blender greys any driven value, which reads correctly to a Blender user.
     layout.active = not param.has_flag(_OUTPUT)

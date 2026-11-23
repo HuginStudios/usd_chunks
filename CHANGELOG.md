@@ -88,6 +88,9 @@ This file starts with the first release; development before that is in the commi
 - Blender: opening a folded node with the arrow in its header shows its params. Before, the
   node opened empty except for its status line, and the next reload folded it again; only H
   opened it properly.
+- Blender: a chunk's read-only text, like the Swedish House's size readout or a download
+  status, shows as plain text. It was an editable field with the param's name in front
+  ("not built yet | 8.5 x 4.7 m").
 - CAD Import, Reference and Payload keep their location when you pick a new version of the
   same file from another folder: `widget.stp` stays at `/widget` instead of moving to
   `/widget1`, so the chunks downstream that read `/widget` keep working.
