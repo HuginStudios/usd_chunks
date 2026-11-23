@@ -40,6 +40,19 @@ def test_a_chosen_location_stays_when_the_file_changes(tmp_path) -> None:
         assert location.value == "/Asset"
 
 
+def test_a_new_version_with_the_same_name_keeps_the_location(tmp_path) -> None:
+    """crate.usda from another folder is still /crate: the cooked /crate is this chunk's own."""
+    first = _asset(tmp_path / "crate.usda")
+    (tmp_path / "v2").mkdir()
+    second = _asset(tmp_path / "v2" / "crate.usda")
+    with Scene() as scene:
+        ref = scene.create.reference(file_path=first)
+        scene.set_output(ref)
+        assert scene.get_stage().GetPrimAtPath("/crate")
+        ref.get_param("file_path").value = second
+        assert ref.get_param("primpath_location").value == "/crate"
+
+
 def test_a_glob_suggests_no_location(tmp_path) -> None:
     """A pattern names many files (usdchunks batch fills it per run), so no one name."""
     with Scene() as scene:

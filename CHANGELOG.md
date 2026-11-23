@@ -37,6 +37,11 @@ This file starts with the first release; development before that is in the commi
   targets, at most 10 degrees, so it lands on the goal.
 - `sim_bake.run(..., inline=True)` runs a bake straight through on the calling thread even
   where a worker is available, for a solve short enough to finish inside its cook.
+- Blender: **Add Chunk Folder** in the USDChunks sidebar adds a folder of chunks (your own
+  library, say) to `USD_CHUNK_DIRS` from inside Blender. Its chunks join the Add menu at once
+  and the folder is kept in the add-on's new **Chunk Folders** preference. **Add
+  Renderer...** in the viewport's Renderer menu does the same for a Hydra render delegate
+  (Aurora, ...) built against Blender's USD; it is listed after a restart.
 - Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
   [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
   street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
@@ -80,6 +85,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- CAD Import, Reference and Payload keep their location when you pick a new version of the
+  same file from another folder: `widget.stp` stays at `/widget` instead of moving to
+  `/widget1`, so the chunks downstream that read `/widget` keep working.
+- Blender: a file param a chunk makes while it cooks, like a Dome Light's texture file, has
+  a browse button instead of a bare text field. A path Blender writes relative to the
+  .blend (`//sky.exr`, with the Relative Paths preference on) now reaches the param absolute,
+  since USD cannot resolve it.
 - RBD Solver simulates every articulated prim in its selection in one world, with the plain
   rigid bodies: two mechanisms touching one part touch it and each other. Each was solved on
   its own, the bodies joining only the first, so the second passed through what the first
@@ -89,8 +101,6 @@ This file starts with the first release; development before that is in the commi
   showed the simulated motion with the animation played on top of it.
 - RBD Solver no longer drops the contact between an articulated link and a collider it
   starts inside: a link posed into the table passed straight through it.
-- RBD Solver moves an animated collider (a sweeping paddle, a door swinging shut) when an
-  articulated asset is in the solve too; it used to stay where it started.
 - A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
   and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
   Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
@@ -135,6 +145,9 @@ This file starts with the first release; development before that is in the commi
   put its params back.
 - `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
   what it needs, instead of listing no params as if it took none.
+- RBD Solver moves an animated collider (a sweeping paddle, a door swinging shut) when it
+  simulates a jointed asset. The collider stayed where it started, and one whose rest pose
+  overlapped the asset never touched it at all.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

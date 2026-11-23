@@ -2889,8 +2889,8 @@ def _sim_articulated_gen_mj(
         if entry is not None and (key is None or entry["key"] != key):
             entry = None
     colliders = _read_colliders(collision_prims)
-    # An animated collider (a conveyor belt, a door swinging shut) is a mocap body: its pose
-    # every frame, read here on the main thread, re-poses it as the rigid path does.
+    # An animated collider (a door swinging shut, a paddle sweeping a table) is a mocap body:
+    # its pose every frame, read here on the main thread, re-poses it as the rigid path does.
     poses = _collider_poses(colliders, start_frame, frame_count)
     if entry is not None:
         model, zeros, mocap_names = entry["model"], entry["zeros"], entry["mocap"]
@@ -3306,9 +3306,9 @@ def build_articulated_spec(
         logger.warning("Articulated scene compile failed: %s", exc)
         return None
 
-    # Only pairs of the mechanism's own links. The colliders sit in a body of their own, not
-    # the world body, so left unfiltered a link that starts inside one -- a link posed
-    # into the table -- lost that contact and passed straight through.
+    # Only pairs of the mechanism's own links. The colliders sit in bodies of their own, not
+    # the world body, so left unfiltered a link that starts inside one -- an animated collider
+    # at its rest pose, a link posed into the table -- lost that contact for the whole solve.
     excluded = _exclude_initial_overlaps(spec, model, only={link.name for link in ordered})
     if excluded:
         try:

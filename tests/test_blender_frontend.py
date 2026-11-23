@@ -2318,3 +2318,32 @@ def test_every_chunk_that_builds_gets_a_node_class(view):
         if built:
             missing.append(name)
     assert missing == []
+
+
+def _dome_file_param(view):
+    """A Light chunk cooked as a DomeLight, and its texture file param: one its cook makes."""
+    node = _add(view, "light")
+    light = node.get_chunk()
+    light.get_param("light_type").value = "DomeLight"
+    light.execute()
+    params = [p for p in chunk_blender.iter_drawable(light, include_hidden=True)
+              if ChunkFlags.ParamType.FILE in p.get_type()]
+    assert params, "a DomeLight has a texture file"
+    return node, light, params[0]
+
+
+def test_a_file_param_a_cook_makes_gets_a_browse_button(view):
+    """A DomeLight's texture file drew as bare text: a param made in a cook is an ID
+    property on the node, and only a colour got a subtype there."""
+    node, light, param = _dome_file_param(view)
+    chunk_blender.sync_to_node(node, light)
+    key = chunk_blender.prop_key(param)
+    assert node.id_properties_ui(key).as_dict()["subtype"] == "FILE_PATH"
+
+
+def test_a_blend_relative_path_reaches_the_param_absolute(view):
+    """Blender's browser writes '//sky.exr' with Relative Paths on; USD cannot resolve it."""
+    _node_, _light, param = _dome_file_param(view)
+    chunk_blender._write_param(param, "//sky.exr")
+    assert param.value == bpy.path.abspath("//sky.exr")
+    assert not param.value.startswith("//")
