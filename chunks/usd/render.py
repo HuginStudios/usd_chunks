@@ -1011,6 +1011,7 @@ def main():
         chunk.LineEdit(
             "camera", "Camera",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+            prim_types=("Camera",),
         ),
         chunk.Slider("image_width", "Image Width", default_value=960, is_int=True, min_value=0, max_value=16384,
                      tooltip="Width in pixels; the height follows the camera's aperture.\n"

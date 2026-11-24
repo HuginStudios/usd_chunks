@@ -2,7 +2,7 @@
 
 `test_scatter_density.py` covers the reading end with a hand-authored primvar. This covers the
 writing end, and -- more importantly -- that the two agree. They are separate chunks that talk
-only through `primvars:scatterDensity`, so a disagreement about interpolation, space or
+only through the field the brush names (`primvars:scatterDensity_<brush>`), so a disagreement about interpolation, space or
 clamping would leave each half passing its own tests while painting did nothing.
 
 Nothing here draws or clicks. `apply_stroke` takes world-space samples, which is exactly what
@@ -37,6 +37,9 @@ chunk_registry.ChunkRegistry().initialize(_DummyScene(), "pytest")
 
 brush_mod = importlib.import_module("chunks.modelling.scatter_brush")
 scatter_mod = importlib.import_module("chunks.modelling.scatter_points")
+#: The field the brushes here paint. Each brush paints its own, named after the chunk; every
+#: brush in this file is the only one on its stage and is called ScatterBrush.
+FIELD = brush_mod._field_name(brush_mod.main())
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +88,7 @@ def _brush(stage, target="/World/Floor", **params):
 
 
 def _weights(stage, path="/World/Floor"):
-    primvar = UsdGeom.PrimvarsAPI(stage.GetPrimAtPath(path)).GetPrimvar(brush_mod.DENSITY_PRIMVAR)
+    primvar = UsdGeom.PrimvarsAPI(stage.GetPrimAtPath(path)).GetPrimvar(FIELD)
     if not primvar or not primvar.HasValue():
         return None
     return [float(v) for v in primvar.ComputeFlattened()]
@@ -275,7 +278,7 @@ def test_what_the_brush_paints_is_what_scatter_reads() -> None:
         _stroke(c, (5.0, 5.0, 0.0))
 
     prim = stage.GetPrimAtPath("/World/Floor")
-    mask = scatter_mod._density_mask(prim, brush_mod.DENSITY_PRIMVAR)
+    mask = scatter_mod._density_mask(prim, FIELD)
     assert mask is not None, "scatter could not see what the brush painted"
 
     assert mask(Gf.Vec3f(5.0, 5.0, 0.0), None) > 0.5
@@ -292,7 +295,7 @@ def test_painting_a_corner_puts_the_instances_in_that_corner() -> None:
     prim = stage.GetPrimAtPath("/World/Floor")
     positions, _ = scatter_mod._scatter_on_triangles(
         scatter_mod._collect_triangles(prim), 200, random.Random(5), 0,
-        mask=scatter_mod._density_mask(prim, brush_mod.DENSITY_PRIMVAR),
+        mask=scatter_mod._density_mask(prim, FIELD),
     )
 
     assert positions, "the painted region should hold instances"
@@ -311,7 +314,7 @@ def test_an_unpainted_brush_places_nothing_rather_than_everything() -> None:
     prim = stage.GetPrimAtPath("/World/Floor")
     positions, _ = scatter_mod._scatter_on_triangles(
         scatter_mod._collect_triangles(prim), 100, random.Random(5), 0,
-        mask=scatter_mod._density_mask(prim, brush_mod.DENSITY_PRIMVAR),
+        mask=scatter_mod._density_mask(prim, FIELD),
     )
     assert positions == []
 
@@ -372,7 +375,7 @@ def _table(stage, root="/Kitchen_set/KitchenTable_1"):
 def _painted_meshes(stage, root="/Kitchen_set/KitchenTable_1"):
     found = {}
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
-        primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar(brush_mod.DENSITY_PRIMVAR)
+        primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar(FIELD)
         if primvar and primvar.HasValue():
             found[prim.GetName()] = [float(v) for v in primvar.ComputeFlattened()]
     return found
@@ -440,7 +443,7 @@ def test_scatter_reads_a_hierarchy_the_brush_painted() -> None:
     for _ in range(3):
         _stroke(c, (5.0, 5.0, 0.0))
 
-    mask = scatter_mod._density_mask(stage.GetPrimAtPath("/Kitchen_set/KitchenTable_1"), brush_mod.DENSITY_PRIMVAR)
+    mask = scatter_mod._density_mask(stage.GetPrimAtPath("/Kitchen_set/KitchenTable_1"), FIELD)
 
     assert mask is not None
     assert mask(Gf.Vec3f(5.0, 5.0, 0.0), None) > 0.5
@@ -1185,7 +1188,7 @@ def test_a_reloaded_brush_puts_its_paint_back_on_the_surface() -> None:
     # the per-chunk layer that held the paint is not part of a chunk-only save.
     for spec_layer in stage.GetLayerStack():
         prim_spec = spec_layer.GetPrimAtPath(Sdf.Path("/World/Floor"))
-        spec = prim_spec.properties.get("primvars:" + brush_mod.DENSITY_PRIMVAR) if prim_spec else None
+        spec = prim_spec.properties.get("primvars:" + FIELD) if prim_spec else None
         if spec is not None:
             prim_spec.RemoveProperty(spec)
     assert _weights(stage) is None

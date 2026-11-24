@@ -724,7 +724,7 @@ def main():
                        "<name>_finished.png. An .exr is written linear and unclipped, with\n"
                        "exposure and balance applied and the display steps (contrast,\n"
                        "saturation, lift) left out."),
-        chunk.LineEdit("camera", "Camera", flags=_PF.LABELED | _PF.PRIM_SELECTION,
+        chunk.LineEdit("camera", "Camera", flags=_PF.LABELED | _PF.PRIM_SELECTION, prim_types=("Camera",),
                        tooltip="The camera the image was rendered from. Empty: the stage's Render\n"
                        "Settings camera, else the first camera."),
     ])
@@ -734,7 +734,7 @@ def main():
         chunk.Checkbox("sky_enabled", "Fill Sky", default_value=True,
                        tooltip="Put the dome image behind the render where it is transparent. Some\n"
                        "renderers (hdVRay) leave the dome out of the camera background."),
-        chunk.LineEdit("dome", "Dome Light", flags=_PF.LABELED | _PF.PRIM_SELECTION,
+        chunk.LineEdit("dome", "Dome Light", flags=_PF.LABELED | _PF.PRIM_SELECTION, prim_types=("DomeLight",),
                        tooltip="Empty: the first Dome Light on the stage."),
         chunk.FileBrowser("backplate", extensions=[".exr", ".hdr", ".png", ".jpg"],
                           tooltip="Show this image instead of the dome's. Empty: the dome's own."),
@@ -772,7 +772,7 @@ def main():
     ])
     sun = chunk.Group("Sun", icon="sun", flags=_GF)
     sun.add_params([
-        chunk.LineEdit("sun", "Sun", flags=_PF.LABELED | _PF.PRIM_SELECTION,
+        chunk.LineEdit("sun", "Sun", flags=_PF.LABELED | _PF.PRIM_SELECTION, prim_types=("DistantLight",),
                        tooltip="The Distant Light that is the sun. Empty: the first one on the stage."),
         chunk.Slider("rays", "Light Shafts", min_value=0.0, max_value=4.0, default_value=1.2),
         chunk.Slider("bloom", "Bloom", min_value=0.0, max_value=2.0, default_value=0.2),
