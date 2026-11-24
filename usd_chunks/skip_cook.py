@@ -719,8 +719,11 @@ def _install_watching() -> None:
             if _watches and (watch := _watch_for(stage)) is not None:
                 prim = Sdf.Path(str(path)).GetPrimPath().StripAllVariantSelections()
                 if not prim.IsAbsolutePath():
-                    # Not a prim path at all -- a name wired into a path param ("edges"). The
-                    # stage finds nothing there, so there is nothing read to record.
+                    # Not a prim path: empty, or a name wired into a path param ("edges").
+                    # What the chunk meant to read is unknown, so it reads the whole stage, as
+                    # an empty path always ended up doing. Kept out of the mask: a relative
+                    # path's parents never reach the root.
+                    watch.outside.add(Sdf.Path.absoluteRootPath)
                     return original(stage, path, *args, **kwargs)
                 watch.points.add(prim)
                 if not _covered(prim, watch.mask) and prim not in watch.parents:
