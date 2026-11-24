@@ -510,6 +510,8 @@ def gizmo_stroke(node, gizmo, samples):
     stage = node.get_stage()
     if stage is None:
         return False
+    if not _in_view(node, stage):
+        return False
 
     output = node.get_param("output").value
     if output == _OUTPUT_POINTS:
@@ -583,6 +585,33 @@ def _stamp(points, centres, radius, strength, mode, weights):
         weights[under] = _blend(mode, weights[under], amount)
         moved = under if moved is None else np.concatenate((moved, under))
     return moved
+
+
+#: Whether _in_view has said why this brush cannot paint, since it was last in view.
+_SAID_NOT_IN_VIEW = "_scatter_brush_said_not_in_view"
+
+
+def _in_view(node, stage):
+    """Whether this brush is cooked into the stage, so a stroke can land; says why not, once.
+
+    Only the chunks feeding the active Output or View are cooked. A brush outside that chain
+    -- the second of two brushes made one after the other, when the Output was wired to the
+    other -- is blocked: its stroke-start and stroke-end callbacks, Fill, Clear and Show Paint
+    do nothing, and authoring into its layer, which is not on the stage, raised from inside
+    the stroke and lost it. The stroke is declined instead.
+    """
+    layer = node.get_edit_context()
+    if layer is None or chunk_utils.is_editable(stage, layer):
+        setattr(node, _SAID_NOT_IN_VIEW, False)
+        return True
+    if not getattr(node, _SAID_NOT_IN_VIEW, False):
+        setattr(node, _SAID_NOT_IN_VIEW, True)
+        logger.warning(
+            "%s is not in the chain that ends at the Output, so it cannot paint. Wire it into "
+            "that chain, or set it as the Output, then paint.",
+            node.name,
+        )
+    return False
 
 
 def _place_points(node, stage, samples):

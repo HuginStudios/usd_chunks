@@ -85,6 +85,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Painting a Scatter Brush that is not in the chain the Output cooks says why and does
+  nothing, instead of failing inside the stroke with a traceback ("Layer ... is not in the
+  local LayerStack") and losing it. It happened with two brushes made one after the other,
+  when the Output was wired to the second: wire the brush in, or set it as the Output.
 - Making or opening a Camera no longer warns "camera_preset: '' is not one of [...]; using
   'Iphone 13 Pro'". The camera was right (an X-T5); the warning read like the wrong body.
 - Blender: ticking Allow Online Access in the "Missing chunk dependencies" dialog no longer
