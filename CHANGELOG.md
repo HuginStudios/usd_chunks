@@ -85,6 +85,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Making or opening a Camera no longer warns "camera_preset: '' is not one of [...]; using
+  'Iphone 13 Pro'". The camera was right (an X-T5); the warning read like the wrong body.
 - Blender: ticking Allow Online Access in the "Missing chunk dependencies" dialog no longer
   declines the install. The box holding the switch disappeared, so the dialog shrank under
   the mouse and the click on Install landed outside it. The box now stays and says that
