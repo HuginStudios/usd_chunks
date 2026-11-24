@@ -499,10 +499,12 @@ def main():
     # add camera type
     cameras = _get_camera_data()
     cam_presets = [cam.get("model") for cam in cameras]
-    menu = chunk.Menu("camera_preset", "Camera Preset", menu_items=cam_presets)
+    # Default to Fuji X-T5, given as the default rather than set after: a Menu built with
+    # items and no default starts at "", which is not an item, and every new Camera warned
+    # "'' is not one of [...]; using 'Iphone 13 Pro'" before the X-T5 replaced it.
+    default_preset = "X-T5" if "X-T5" in cam_presets else (cam_presets[0] if cam_presets else None)
+    menu = chunk.Menu("camera_preset", "Camera Preset", menu_items=cam_presets, default_value=default_preset)
     menu.cameras = cameras
-    # Default to Fuji X-T5.
-    menu.value = "X-T5"
     menu.add_callback(set_format_list, send_on_create=False)
     chunk_api.add_param(menu)
     formats = chunk.Menu("formats", "Formats")

@@ -85,6 +85,8 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Making or opening a Camera no longer warns "camera_preset: '' is not one of [...]; using
+  'Iphone 13 Pro'". The camera was right (an X-T5); the warning read like the wrong body.
 - Blender: opening a folded node with the arrow in its header shows its params. Before, the
   node opened empty except for its status line, and the next reload folded it again; only H
   opened it properly.
