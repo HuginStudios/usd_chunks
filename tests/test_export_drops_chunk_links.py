@@ -7,7 +7,8 @@ it did not have. Links to prims that stay, like a material's shader wires, are k
 
 from __future__ import annotations
 
-from pxr import Sdf, Usd
+import pytest
+from pxr import Sdf, Usd, UsdGeom
 
 from usd_chunks import Scene, chunk_naming
 
@@ -43,4 +44,6 @@ def test_export_drops_links_into_removed_chunks(tmp_path) -> None:
         "links to prims that stay are kept"
 
     stage = Usd.Stage.Open(layer)
-    assert stage.GetPrimAtPath("/set/cam").GetAttribute("focalLength").Get() == 35.0
+    # The value is kept: 35 mm, which USD holds in tenths of a scene unit.
+    focal = stage.GetPrimAtPath("/set/cam").GetAttribute("focalLength").Get()
+    assert focal * 100.0 * UsdGeom.GetStageMetersPerUnit(stage) == pytest.approx(35.0)

@@ -85,6 +85,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- **Breaking:** a Camera's lens is written in the stage's units. USD keeps focal length and
+  aperture in tenths of a scene unit, and the chunk wrote its millimetres as they are, so in
+  a scene in metres (every new one) a 50 mm lens was a 5 m lens. The framing was right but
+  depth of field blurred about 100 times too much: f/2.8 needed an f-stop of 280. The camera
+  prim now gets 0.5 for 50 mm in metres (centimetre scenes are unchanged), and Blender's
+  mirror camera reads it back as 50 mm. If you set an f-stop like 280 to make up for it, set
+  the real one again.
 - A new Camera's sensor reaches the camera prim. The default preset is an X-T5 (23.5 x 15.7
   mm), but the prim kept USD's 20.955 x 15.29 until you moved a Sensor slider, so the camera
   framed wider than the chunk showed and its image had another aspect. Any lens value left

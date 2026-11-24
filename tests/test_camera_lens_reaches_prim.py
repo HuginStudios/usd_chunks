@@ -21,9 +21,15 @@ def _prim(scene, camera):
     return UsdGeom.Camera(scene.get_stage().GetPrimAtPath(camera.get_param("primpath_location").value))
 
 
+#: Kept in tenths of a scene unit on the prim, millimetres in the params.
+IN_MM = ("focalLength", "horizontalAperture", "verticalAperture")
+
+
 def _on_prim(scene, camera):
+    """The prim's lens, in the params' units."""
     prim = _prim(scene, camera)
-    return {name: prim.GetPrim().GetAttribute(name).Get() for name in LENS}
+    mm = 100.0 * UsdGeom.GetStageMetersPerUnit(scene.get_stage())
+    return {name: prim.GetPrim().GetAttribute(name).Get() * (mm if name in IN_MM else 1.0) for name in LENS}
 
 
 def _in_params(camera):
@@ -54,6 +60,5 @@ def test_an_edited_lens_still_drives_the_prim() -> None:
 
         scene.set(camera, horizontalAperture=36.0, focalLength=85.0)
 
-        prim = _prim(scene, camera)
-        assert prim.GetHorizontalApertureAttr().Get() == pytest.approx(36.0)
-        assert prim.GetFocalLengthAttr().Get() == pytest.approx(85.0)
+        assert _on_prim(scene, camera)["horizontalAperture"] == pytest.approx(36.0)
+        assert _on_prim(scene, camera)["focalLength"] == pytest.approx(85.0)

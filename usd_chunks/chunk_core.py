@@ -1956,6 +1956,28 @@ class ChunkUsdAttributeSupport(AttributesBase):
         metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
     )
 
+    #: What a number is multiplied by on its way to the attributes this param drives
+    #: (connect_usd_attr), when the param and the attribute count in different units: a
+    #: Camera's lens is millimetres in its params and tenths of a scene unit on the prim.
+    driven_scale: float = attrs.field(
+        default=1.0,
+        init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
+
+    def driven_value(self, value: Any) -> Any:
+        """The value as the driven attributes take it: a number times driven_scale.
+
+        Args:
+            value: The param's resolved value.
+
+        Returns:
+            The value scaled, or unchanged when it is not a number or the scale is 1.
+        """
+        if self.driven_scale == 1.0 or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return value
+        return value * self.driven_scale
+
     # Lifecycle connection -- fires update_usd_prop when param value changes.
     _usd_prop_connection: chunk_notice.NoticeConnection | None = attrs.field(
         default=None,
@@ -2121,6 +2143,7 @@ class ChunkUsdAttributeSupport(AttributesBase):
         """
         if val is None or not self._driven_attr_paths:
             return
+        val = self.driven_value(val)
         chunk_layer = self.get_edit_context()
         # USD refuses to author into a muted layer (a chunk gated off by a Switch or a
         # filter); chunk_stage.set_chunks_muted re-pushes these values on un-mute.
