@@ -18,6 +18,9 @@ This file starts with the first release; development before that is in the commi
   longer matches the stage's root, so Mute Prim, Prune Prim, Variant, Semantics, Inherit
   and others stop with nothing to do instead of an error. Scatter Points' readout now says
   when Painted Points isn't a prim path.
+- Scatter Points says when its Density Primvar does nothing: a name the surface doesn't carry
+  (it placed evenly without a word), or a field that is 0 everywhere (it placed nothing and
+  blamed the surface mesh and prototype paths).
 - Blender, Flet, ImGui: a wire from one node's chunk port dropped on a folded node's "+"
   chains the node. The "+" sits right under the chunk port (in Blender, 1 px apart at Home
   zoom), and the drop only said "nothing there takes that wire".

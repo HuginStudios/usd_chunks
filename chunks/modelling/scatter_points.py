@@ -1491,6 +1491,28 @@ def _painted_points_problem(stage, points_path) -> str:
     return ""
 
 
+def _density_problem(prim, primvar_name) -> str:
+    """Why the Density Primvar gives no weight, for the readout; empty when it is fine or empty.
+
+    A name the surface doesn't carry is ignored (everywhere weighs the same), and a field that
+    is 0 everywhere places nothing. Both looked like a working scatter, or a broken path.
+    """
+    if not primvar_name or not prim or not prim.IsValid():
+        return ""
+    found = False
+    for p in Usd.PrimRange(prim):
+        primvar = UsdGeom.PrimvarsAPI(p).GetPrimvar(primvar_name)
+        if not p.IsA(UsdGeom.Mesh) or not primvar or not primvar.HasValue():
+            continue
+        found = True
+        values = primvar.ComputeFlattened()
+        if values is not None and len(values) and float(np.max(np.asarray(values, dtype=np.float64))) > 0.0:
+            return ""
+    if not found:
+        return f"Density Primvar '{primvar_name}' isn't on the surface: placed evenly"
+    return f"Density Primvar '{primvar_name}' is 0 everywhere: nothing to place"
+
+
 def _painted_points(stage, points_path, up=None):
     """Points a brush placed by hand, with the surface normal recorded at each.
 
@@ -3230,7 +3252,8 @@ def execute(node):
     # Read here, used at the dispatch below. Nothing about a painted cloud depends on the
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
-    points_problem = _painted_points_problem(scratch_stage, points_input)
+    notes = [n for n in (_painted_points_problem(scratch_stage, points_input),
+                         _density_problem(surface_prim, node.get_param("density_primvar").value)) if n]
     placed, placed_normals = _painted_points(scratch_stage, points_input, world_up)
     placed_ids = _painted_ids(scratch_stage, points_input, len(placed))
     placed_toward, placed_scale = _painted_extras(scratch_stage, points_input, len(placed))
@@ -3565,7 +3588,7 @@ def execute(node):
 
     triangles = sum(q * _triangle_count(stage.GetPrimAtPath(p.path)) for p, q in zip(protos, quota) if q)
     _report(node, protos, quota, count, scatter_mode, pack_levels, missing, triangles, surface_missing,
-            points_problem)
+            notes)
 
 
 def _into_parent_space(stage, inst_path, positions, orients, scales):
@@ -3641,7 +3664,7 @@ def _millions(n: int) -> str:
 
 
 def _report(node, protos, quota, count, mode, levels, missing=(), triangles=0, surface_missing="",
-            points_problem=""):
+            notes=()):
     """Fill the readout label + the output params other chunks can read.
 
     Prototype paths that matched nothing are named, and logged: a typo in one row otherwise
@@ -3661,7 +3684,8 @@ def _report(node, protos, quota, count, mode, levels, missing=(), triangles=0, s
     suffix = f", {levels} levels" if mode == "Stack" and levels > 1 else ""
     fallback = len(protos) == 1 and protos[0].label == _FALLBACK_LABEL
     head = f"{count} instances · {mode}{suffix}" + (" · no prototype found, drawing the default cube" if fallback else "")
-    text = head if mix else f"{head}\nnothing placed — check the surface mesh and prototype paths"
+    # With a note, the note says why nothing was placed.
+    text = head if mix or notes else f"{head}\nnothing placed — check the surface mesh and prototype paths"
     if triangles:
         text += f"\n{_millions(triangles)} triangles expanded"
     if triangles > _TRIANGLE_BUDGET:
@@ -3674,9 +3698,9 @@ def _report(node, protos, quota, count, mode, levels, missing=(), triangles=0, s
     if surface_missing:
         text += f"\nsurface not found: {surface_missing}"
         logger.warning("%s: surface prim not found: %s", node.name, surface_missing)
-    if points_problem:
-        text += f"\n{points_problem}"
-        logger.warning("%s: %s", node.name, points_problem)
+    for note in notes:
+        text += f"\n{note}"
+        logger.warning("%s: %s", node.name, note)
     if missing:
         text += "\nnot found: " + ", ".join(missing)
         logger.warning("%s: prototype path(s) not found: %s", node.name, ", ".join(missing))
