@@ -10,7 +10,7 @@ from __future__ import annotations
 import importlib.util
 
 import pytest
-from pxr import Sdf, Usd, UsdGeom
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
 from usd_chunks import Scene
 
@@ -60,6 +60,13 @@ def _motorise(stage) -> None:
     attr.default = 5.0
 
 
+def _anchor(stage) -> None:
+    """Fix the base to the world, as an arm on its mount. Free, the base rocks on the floor and
+    the settle stops at its frame cap mid-rock, wherever the motion happens to be."""
+    anchor = UsdPhysics.FixedJoint.Define(stage, "/World/robot/base/anchor")
+    anchor.CreateBody1Rel().SetTargets(["/World/robot/base"])
+
+
 def _animated(stage) -> bool:
     prim = stage.GetPrimAtPath("/World/robot/upper")
     return any(a.GetNumTimeSamples() for a in prim.GetAttributes())
@@ -101,6 +108,7 @@ def test_a_new_pose_reuses_the_model_and_settles_as_a_fresh_one_would(urdf) -> N
     with Scene.new() as scene:
         _z_up(scene.get_stage())
         _motorise(scene.get_stage())
+        _anchor(scene.get_stage())
         robot = scene.create.urdf_import(primpath_location="/World/robot", file_path=urdf)
         pose = scene.create.pose_articulation(robot, prim_path="/World/robot", upper=30.0)
         rbd = scene.create.rbd_solver(pose, prim_path="/World/robot", live_settle=True)

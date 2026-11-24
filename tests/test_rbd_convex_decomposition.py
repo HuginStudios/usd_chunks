@@ -68,6 +68,7 @@ def test_a_convex_hull_collider_is_still_one_hull():
     assert _contains(verts, np.zeros(3))
 
 
+@pytest.mark.skipif(not rbd._HAS_MUJOCO, reason="needs mujoco")
 def test_the_split_is_the_same_every_time():
     _stage, prim = _two_prongs("convexDecomposition")
     mesh = UsdGeom.Mesh(prim)
@@ -77,6 +78,7 @@ def test_the_split_is_the_same_every_time():
     assert all(np.array_equal(a, b) for a, b in zip(first, second))
 
 
+@pytest.mark.skipif(not rbd._HAS_MUJOCO, reason="needs mujoco")
 def test_a_mesh_is_split_once_and_split_again_when_it_changes(monkeypatch):
     """The split is most of a solve's cost on a robot's link meshes, and a bake used to redo it every time:
     it is kept by the mesh's content, placed by each call's own matrix, and redone for an edited mesh."""

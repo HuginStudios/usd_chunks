@@ -579,3 +579,22 @@ def test_picking_another_file_still_renames_a_filled_in_location(step_file, tmp_
         cad.get_param("primpath_location").value = "/World/Mine"
         cad.get_param("file_path").value = step_file
         assert cad.get_param("primpath_location").value == "/World/Mine", "a location set by hand stays"
+
+
+@needs_ocp
+def test_a_revision_with_the_same_name_keeps_the_location(step_file, tmp_path) -> None:
+    """A new revision of widget.stp, from another folder, is still /widget, not /widget_1.
+
+    The cooked /widget is this chunk's own import; counting it as taken moved the root, and
+    every chunk downstream that reads /widget lost the assembly.
+    """
+    revision = tmp_path / "rev2" / "widget.stp"
+    revision.parent.mkdir()
+    shutil.copy(step_file, revision)
+    with Scene.new() as scene:
+        cad = scene.create.cad_import(file_path=step_file)
+        scene.set_output(cad)
+        assert scene.get_stage().GetPrimAtPath("/widget")
+        cad.get_param("file_path").value = str(revision)
+        assert cad.get_param("primpath_location").value == "/widget"
+        assert scene.get_stage().GetPrimAtPath("/widget/Widget/left")

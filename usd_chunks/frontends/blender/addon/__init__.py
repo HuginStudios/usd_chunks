@@ -42,6 +42,7 @@ from pxr import Sdf, Usd
 from usd_chunks import chunk_registry, configure_logging
 from usd_chunks.chunk_scene import SceneSender
 from usd_chunks import chunk_stage
+from usd_chunks.frontends.blender import chunk_dirs
 from usd_chunks.frontends.blender import delegates
 from usd_chunks.frontends.blender import nodegraph as bg
 from usd_chunks.graph import engine as chunk_graph
@@ -368,6 +369,7 @@ def _poll_new_trees() -> float:
             # been touched THIS session. Reopen the file rather than blanking a real network.
             _open_stage(_stage_for_tree(tree), tree=tree)
         _follow_shown_tree()
+        bg.follow_hide_toggles()
     except Exception:  # a timer that raises is unregistered for good
         logger.exception("usd_chunks: could not switch to the chunk network on screen")
     return 0.1  # reschedule in 0.1s -- this is the latency between "+ New" and Shift+A working
@@ -755,7 +757,7 @@ def missing_types_message(view) -> str:
     count = sum(len(paths) for paths in missing.values())
     names = ", ".join(sorted(missing))
     return (f"{count} chunk(s) have no module ({names}) -- "
-            "is their folder on USD_CHUNK_DIRS?")
+            "add their folder with Add Chunk Folder, then reopen the network")
 
 
 # ---------------------------------------------------------------------------
@@ -1248,6 +1250,7 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
         view = get_view()
         layout.operator(USDCHUNKS_OT_new_network.bl_idname, icon="ADD")
         layout.operator(USDCHUNKS_OT_open_network.bl_idname, icon="FILE_FOLDER")
+        layout.operator(USDCHUNKS_OT_add_chunk_folder.bl_idname, icon="NEWFOLDER")
         row = layout.row(align=True)
         row.operator(USDCHUNKS_OT_save_network.bl_idname, icon="FILE_TICK")
         row.operator(USDCHUNKS_OT_save_network.bl_idname, text="",
@@ -1271,7 +1274,8 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
             box.label(text=f"{count} chunk(s) have no module", icon="ERROR")
             for name in sorted(missing):
                 box.label(text=f"{name}  ({len(missing[name])})")
-            box.label(text="Add their folder to USD_CHUNK_DIRS")
+            box.operator(USDCHUNKS_OT_add_chunk_folder.bl_idname, icon="NEWFOLDER")
+            box.label(text="then reopen the network")
         layout.separator()
         layout.operator(USDCHUNKS_OT_auto_layout.bl_idname, icon="GRAPH")
         row = layout.row(align=True)
@@ -1309,21 +1313,196 @@ class USDCHUNKS_PT_panel(bpy.types.Panel):
             layout.label(text=view.status)
 
 
-def _register_delegates(_prefs=None, _context=None) -> list[str]:
+def _register_delegates() -> list[str]:
     """Make the delegates in USD_CHUNKS_HYDRA_DELEGATES and the preference available.
 
-    Also the preference's update callback, so a folder typed in takes effect at once: the
-    Renderer menu asks USD for its delegates every time it opens.
+    Also run when the preference changes (_on_folders_changed). A folder typed in is registered at once, but USD
+    lists its renderers only once per session (the first time anything asks, which the
+    viewport does at start), so one added later shows in the Renderer menu after a restart.
     """
     folders = delegates.split_folders(os.environ.get(delegates.ENV_VAR, ""))
-    addon_entry = bpy.context.preferences.addons.get(__package__)
-    if addon_entry is not None:
-        folders += delegates.split_folders(addon_entry.preferences.hydra_delegate_folders)
+    prefs = _addon_prefs()
+    if prefs is not None:
+        folders += delegates.split_folders(prefs.hydra_delegate_folders)
     return delegates.register_folders(folders)
 
 
+#: The extension's id in blender_manifest.toml.
+_EXTENSION_ID = "usd_chunks"
+
+
+def addon_package(modules=None) -> str:
+    """The name Blender knows this add-on by: what its preferences are filed under.
+
+    Installed from the release zip, the add-on is the extension ``bl_ext.<repo>.usd_chunks``,
+    a shim that calls register() here; Blender has imported it by then. Registered any other
+    way (a startup script, a junctioned add-on), it is this package.
+    """
+    modules = sys.modules if modules is None else modules
+    for name in modules:
+        if name.startswith("bl_ext.") and name.endswith("." + _EXTENSION_ID)                 and name.count(".") == 2:
+            return name
+    return __package__
+
+
+def _addon_prefs():
+    entry = bpy.context.preferences.addons.get(USDCHUNKS_AP_preferences.bl_idname)
+    return entry.preferences if entry is not None else None
+
+
+def _register_chunk_folders() -> list[str]:
+    """Put the Chunk Folders preference on USD_CHUNK_DIRS, and their chunks in the Add menu.
+
+    Also run when the preference changes (_on_folders_changed). Removing a folder from the preference takes
+    effect on the next start: a chunk module already registered stays for this session.
+    """
+    prefs = _addon_prefs()
+    return _add_chunk_folders(delegates.split_folders(prefs.chunk_folders) if prefs else [])
+
+
+def _add_chunk_folders(folders) -> list[str]:
+    """chunk_dirs.add_folders, then the Add menu and the missing-chunks list brought up to date."""
+    added = chunk_dirs.add_folders(folders)
+    if added and chunk_registry.ChunkRegistry().initialized:
+        bg.build_add_menu()
+        view = get_view()
+        if view is not None:
+            view.missing_types = bg.missing_chunk_types(view.stage)
+    return added
+
+
+def _on_folders_changed(_prefs, _context) -> None:
+    """Update callback of the two folder preferences: Blender wants it to return None."""
+    _register_chunk_folders()
+    _register_delegates()
+
+
+#: Said when the add-on runs without its preferences: registered by a startup script
+#: (blender_startup.py) rather than enabled in Preferences > Add-ons.
+_NOT_REMEMBERED = " (this session only: enable the add-on in Preferences to keep it)"
+
+
+class _FolderBrowser:
+    """Opens Blender's folder browser; `execute` reads the pick as `self.folder`."""
+
+    directory: bpy.props.StringProperty(subtype="DIR_PATH")
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    @property
+    def folder(self) -> str:
+        return os.path.normpath(bpy.path.abspath(self.directory)) if self.directory else ""
+
+
+class USDCHUNKS_OT_add_chunk_folder(_FolderBrowser, bpy.types.Operator):
+    """Add a folder of chunk modules: its chunks join the Add menu, and it is remembered
+    in the add-on preferences (Chunk Folders)"""
+
+    bl_idname = "usd_chunks.add_chunk_folder"
+    bl_label = "Add Chunk Folder"
+
+    def execute(self, _context):
+        prefs = _addon_prefs()
+        folder = self.folder
+        if not os.path.isdir(folder):
+            self.report({"ERROR"}, f"not a folder: {folder or '(none picked)'}")
+            return {"CANCELLED"}
+        registry = chunk_registry.ChunkRegistry()
+        before = len(registry.registered_modules)
+        if prefs is not None:
+            prefs.chunk_folders = chunk_dirs.join_folder(prefs.chunk_folders, folder)  # adds it
+        else:
+            _add_chunk_folders([folder])
+        found = len(registry.registered_modules) - before
+        if registry.initialized:
+            message = f"{folder}: {found} new chunk(s) in the Add menu"
+        else:
+            message = f"{folder} added; its chunks load with the next network"
+        self.report({"INFO"}, message + _NOT_REMEMBERED * (prefs is None))
+        return {"FINISHED"}
+
+
+class USDCHUNKS_OT_add_renderer(_FolderBrowser, bpy.types.Operator):
+    """Add a Hydra render delegate (Aurora, ...) built against Blender's USD: pick the folder
+    holding its plugInfo.json, or a resources folder with one. Remembered in the add-on
+    preferences (Hydra Delegate Folders)"""
+
+    bl_idname = "usd_chunks.add_renderer"
+    bl_label = "Add Renderer"
+
+    def execute(self, _context):
+        prefs = _addon_prefs()
+        folder = self.folder
+        if not folder or delegates.plug_info_dir(folder) is None:
+            self.report({"ERROR"},
+                        f"no plugInfo.json in {folder or '(none picked)'} or its resources folder")
+            return {"CANCELLED"}
+        declared = delegates.renderer_types(folder)
+        if not declared:
+            self.report({"ERROR"}, f"{folder}: its plugInfo.json declares no Hydra renderer")
+            return {"CANCELLED"}
+        before = {str(p) for p in viewport.available_renderers()}
+        if prefs is not None:
+            prefs.hydra_delegate_folders = chunk_dirs.join_folder(prefs.hydra_delegate_folders,
+                                                                  folder)  # registers it
+        else:
+            delegates.register_folders([folder])
+        listed = {str(p) for p in viewport.available_renderers()}
+        names = ", ".join(declared.values())
+        if all(t in before for t in declared):
+            self.report({"INFO"}, f"{names} is already in the Renderer menu")
+        elif all(t in listed for t in declared):
+            self.report({"INFO"}, f"added {names}: pick it in the Renderer menu"
+                        + _NOT_REMEMBERED * (prefs is None))
+        else:
+            # USD lists its renderers once per session, on the first query (the viewport
+            # asks at once), and has no call to look again: a delegate registered after
+            # that is only listed from the next start.
+            for plugin_type, name in declared.items():
+                if plugin_type not in listed:
+                    viewport.pending_renderers[plugin_type] = name
+            if prefs is not None:
+                self.report({"WARNING"}, f"{names} added: restart Blender to use it "
+                                         "(USD lists renderers once per session)")
+            else:
+                self.report({"WARNING"}, f"{names} registered, but USD lists renderers once "
+                                         f"per session: put {folder} on "
+                                         f"{delegates.ENV_VAR} and restart Blender")
+        return {"FINISHED"}
+
+
+def _draw_environment_folders(layout, env_var: str, folders) -> None:
+    """Greyed out under a folder field: the folders the environment already gives, read first.
+
+    They are not in the field, so without this a folder that loads looks like it came from
+    nowhere, and adding it again looks like it did nothing.
+    """
+    if not folders:
+        return
+    col = layout.column(align=True)
+    col.enabled = False
+    split = col.split(factor=0.25)
+    split.label(text=f"From {env_var}:")
+    names = split.column(align=True)
+    for folder in folders:
+        names.label(text=folder)
+
+
 class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
+    # Set again in register(), to the extension's name when installed as one (addon_package):
+    # Blender draws and keeps only the preferences filed under the enabled add-on's name.
     bl_idname = __package__
+
+    chunk_folders: bpy.props.StringProperty(
+        name="Chunk Folders",
+        description=(
+            "Folders of chunk modules, added to USD_CHUNK_DIRS for this session; their chunks "
+            "join the Add menu. Separate several with ';'. A removed folder goes on restart"),
+        default="",
+        update=_on_folders_changed,
+    )
 
     hydra_delegate_folders: bpy.props.StringProperty(
         name="Hydra Delegate Folders",
@@ -1331,17 +1510,28 @@ class USDCHUNKS_AP_preferences(bpy.types.AddonPreferences):
             "Render delegates for the live view, built against Blender's USD: each folder "
             "holds plugInfo.json or a resources folder with one. Separate several with ';'"),
         default="",
-        update=_register_delegates,
+        update=_on_folders_changed,
     )
 
     def draw(self, _context):
-        self.layout.prop(self, "hydra_delegate_folders")
-        self.layout.label(text="Pick one in the 3D viewport: N panel > USDChunks > Renderer",
-                          icon="INFO")
+        layout = self.layout
+        row = layout.row(align=True)
+        row.prop(self, "chunk_folders")
+        row.operator(USDCHUNKS_OT_add_chunk_folder.bl_idname, text="", icon="NEWFOLDER")
+        _draw_environment_folders(layout, chunk_dirs.ENV_VAR, chunk_dirs.environment_folders())
+        row = layout.row(align=True)
+        row.prop(self, "hydra_delegate_folders")
+        row.operator(USDCHUNKS_OT_add_renderer.bl_idname, text="", icon="NEWFOLDER")
+        _draw_environment_folders(layout, delegates.ENV_VAR,
+                                  delegates.split_folders(os.environ.get(delegates.ENV_VAR, "")))
+        layout.label(text="Pick a renderer in the 3D viewport: N panel > USDChunks > Renderer",
+                     icon="INFO")
 
 
 _CLASSES = (
     USDCHUNKS_AP_preferences,
+    USDCHUNKS_OT_add_chunk_folder,
+    USDCHUNKS_OT_add_renderer,
     USDCHUNKS_OT_open_network,
     USDCHUNKS_OT_new_network,
     USDCHUNKS_OT_save_network,
@@ -1496,6 +1686,7 @@ def register() -> None:
     if exit_pre is not None and forget_unloaded_modules not in exit_pre:
         exit_pre.append(forget_unloaded_modules)
     bg.register()
+    USDCHUNKS_AP_preferences.bl_idname = addon_package()
     for cls in dependencies.CLASSES + _CLASSES:
         bg._register_once(cls)
     # On the tree, not in a global: two trees can edit two networks, and the path has to
@@ -1528,6 +1719,11 @@ def register() -> None:
         bpy.app.handlers.undo_post.append(_on_undo)
     if _on_undo not in bpy.app.handlers.redo_post:
         bpy.app.handlers.redo_post.append(_on_undo)
+    # Before any network opens: the registry scans USD_CHUNK_DIRS when it starts.
+    try:
+        _register_chunk_folders()
+    except Exception:  # a bad folder must not take the add-on down with it
+        logger.exception("could not add the chunk folders")
     # Before the viewport: its Renderer menu lists whatever delegates USD knows by then.
     try:
         _register_delegates()

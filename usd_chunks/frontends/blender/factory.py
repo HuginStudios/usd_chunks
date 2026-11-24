@@ -64,6 +64,19 @@ _OUTPUT = ChunkFlags.ParamFlags.OUTPUT
 _writing: set = set()
 
 
+def _as_param_value(param, value):
+    """A UI value as the param should hold it.
+
+    A file path Blender made relative to the .blend ("//textures/sky.exr", what its file
+    browser writes when the Relative Paths preference is on and the file is saved) means
+    nothing to USD, which resolves an asset path against the layer, so a file param gets
+    it absolute.
+    """
+    if isinstance(value, str) and value.startswith("//") and PT.FILE in param.get_type():
+        return bpy.path.abspath(value)
+    return value
+
+
 def _write_param(param, value) -> None:
     """Push a UI value into the chunk param, once.
 
@@ -77,6 +90,7 @@ def _write_param(param, value) -> None:
         return
     _writing.add(key)
     try:
+        value = _as_param_value(param, value)
         if param.value != value:
             param.value = value
     except Exception:  # pragma: no cover - a chunk's setter may reject a value
@@ -527,6 +541,12 @@ def sync_to_node(node, chunk) -> None:
                 if PT.COLOR_PICKER in param.get_type():
                     # A swatch, not three bare numbers: what a declared colour draws as.
                     node.id_properties_ui(key).update(subtype="COLOR", min=0.0, max=1.0)
+                elif PT.FILE in param.get_type():
+                    # A browse button, as a declared file param has (property_for): a
+                    # light's texture file is a param its cook makes, so it lands here.
+                    spec = chunk_widget_api.file_dialog_spec(param)
+                    node.id_properties_ui(key).update(
+                        subtype="DIR_PATH" if spec.directory else "FILE_PATH")
                 # Seen as mirrored, not edited: sync_lofted pushes only a user's change.
                 _lofted_seen[(node.as_pointer(), key)] = _plain(node[key])
         except Exception:
@@ -600,6 +620,16 @@ def draw_param(node, layout, param, text: str | None = None) -> bool:
     lofted-ID-property fallback, and having it in one place is what keeps a lofted param
     drawable on a socket at all.
     """
+    if PT.LABEL in param.get_type():
+        # Read-only text, as Qt shows it: the value alone, one label per line (a Blender
+        # label draws a single line). Drawn as a property it was an editable field captioned
+        # with the param's own label ("not built yet | 8.5 x 4.7 m"). Nothing to read, no row.
+        if not param.value:
+            return False
+        col = layout.column(align=True)
+        for line in str(param.value).splitlines():
+            col.label(text=line)
+        return True
     # OUTPUT is computed, so it is shown but not editable. active=False greys it the way
     # Blender greys any driven value, which reads correctly to a Blender user.
     layout.active = not param.has_flag(_OUTPUT)

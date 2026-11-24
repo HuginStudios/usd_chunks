@@ -142,6 +142,8 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
     items: bpy.props.CollectionProperty(type=USDCHUNKS_PG_missing_dependency)
     #: Install what is queued without the dialog: USD_CHUNK_AUTO_INSTALL is on.
     auto: bpy.props.BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+    #: Online access was off when the dialog opened, so it shows the switch (see draw).
+    opened_offline: bpy.props.BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
     _thread: threading.Thread | None = None
     _timer = None
@@ -167,6 +169,7 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
             for item in self.items:
                 item.install = True
             return self.execute(context)
+        self.opened_offline = not _online()
         return context.window_manager.invoke_props_dialog(
             self, width=460, title="Missing chunk dependencies", confirm_text="Install"
         )
@@ -178,9 +181,15 @@ class USDCHUNKS_OT_install_dependencies(bpy.types.Operator):
 
     def draw(self, context):
         col = self.layout.column()
-        if not _online():
+        # Drawn for as long as the dialog is open once it opened offline, with its text
+        # changed when the switch goes on. Dropping the box then shrank the dialog under the
+        # mouse: Install moved up and away, the click landed outside, and that cancels.
+        if self.opened_offline or not _online():
             box = col.box()
-            box.label(text="Installing needs Blender's online access, which is off.", icon="ERROR")
+            if _online():
+                box.label(text="Online access is on. Install is ready.", icon="CHECKMARK")
+            else:
+                box.label(text="Installing needs Blender's online access, which is off.", icon="ERROR")
             box.prop(context.preferences.system, "use_online_access")
             col.separator()
         if len(self.items) == 1:

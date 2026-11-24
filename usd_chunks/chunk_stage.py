@@ -355,7 +355,7 @@ def _push_driven_values(stage: Usd.Stage, param, layer: Sdf.Layer | None = None)
     paths = getattr(param, "_driven_attr_paths", None)
     if not paths:
         return
-    value = param.value
+    value = param.driven_value(param.value) if hasattr(param, "driven_value") else param.value
     layer = layer or param.get_edit_context()
     # USD refuses to author into a muted layer; set_chunks_muted re-pushes on un-mute.
     if value is None or layer is None or stage.IsLayerMuted(layer.identifier):
@@ -3751,8 +3751,12 @@ def suggest_location_from_file(param) -> None:
     current = location.raw_value or ""
     if chunk_glob.is_pattern(path) or (current and current != _suggested_locations.get(chunk)):
         return
-    name = Tf.MakeValidIdentifier(Path(path).stem)
-    location.value = _suggested_locations[chunk] = chunk_utils.get_unique_path(param.get_scene_stage(), f"/{name}")
+    suggestion = f"/{Tf.MakeValidIdentifier(Path(path).stem)}"
+    # A file with the same name (a new version from another folder) keeps the location: the
+    # prim already there is this chunk's own, not a clash.
+    if suggestion != current:
+        suggestion = chunk_utils.get_unique_path(param.get_scene_stage(), suggestion)
+    location.value = _suggested_locations[chunk] = suggestion
 
 
 def hold_asset_layers(node, paths: Iterable[str]) -> None:

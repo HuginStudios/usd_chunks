@@ -13,8 +13,10 @@ You need Blender 4.2 or newer. Tested with Blender 5.1 and 5.2 on Windows.
    choose **Install from Disk...** and pick the zip.
 
 That is all: usd_chunks and its chunks are inside the zip, and Blender has its own USD.
-To use your own chunks as well, set `USD_CHUNK_DIRS` to their folders before starting
-Blender.
+To use your own chunks as well, click **Add Chunk Folder** in the USDChunks tab of the
+editor's sidebar (N) and pick their folder. Its chunks join the Add menu at once, and the
+add-on remembers the folder in its preferences (**Chunk Folders**). Setting `USD_CHUNK_DIRS`
+before starting Blender works too.
 
 **Try it:** switch any area to **USDChunks Editor**, click **New**, and press Shift+A to add
 a chunk.
@@ -100,10 +102,13 @@ The live view draws with Storm, the renderer Blender ships. Another Hydra render
 can draw it instead, if it was built against **Blender's own USD**: a build for any other
 USD won't load inside Blender.
 
-1. In **Edit > Preferences > Add-ons > USDChunks Editor**, set **Hydra Delegate Folders**
-   to the delegate's folder: the one with its `plugInfo.json`, or with a `resources`
-   folder that has it. Separate several folders with `;`.
-2. In the 3D viewport, open the sidebar (N) and pick it in **USDChunks > Renderer**.
+1. In the 3D viewport, open the sidebar (N), open **USDChunks > Renderer** and choose
+   **Add Renderer...**. Pick the delegate's folder: the one with its `plugInfo.json`, or
+   with a `resources` folder that has it. The add-on remembers it in its preferences
+   (**Hydra Delegate Folders**, where you can also type folders, separated by `;`).
+2. Restart Blender. USD lists its renderers once per session, so a renderer added while
+   Blender runs shows in the menu from the next start; until then the menu says so.
+3. Pick it in **USDChunks > Renderer**.
 
 A launcher can set `USD_CHUNKS_HYDRA_DELEGATES` to the same list instead. The add-on reads
 it when it starts.
@@ -120,8 +125,9 @@ another Blender version's folder. Run step 1, then turn the add-on off and on ag
 
 **A node is red and says "Missing chunk type".** The network uses a chunk that no folder
 on `USD_CHUNK_DIRS` has, such as one from your own chunk library. Its node keeps its wires
-and the values saved in the file. Add the folder to `USD_CHUNK_DIRS` and restart Blender.
-The USDChunks tab in the sidebar lists every missing type.
+and the values saved in the file. The USDChunks tab in the sidebar lists every missing
+type: click **Add Chunk Folder** there, pick the folder that has them, and open the network
+again.
 
 **A chunk is missing from Shift+A.** It needs a pip package that isn't installed. Use the
 chunk and Blender asks to install it. That needs **Allow Online Access** on, in **Edit >

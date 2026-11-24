@@ -12,6 +12,7 @@ when it starts. No ``bpy`` here, so this is tested outside Blender.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -80,6 +81,31 @@ def plug_info_dir(folder: str) -> Path | None:
         if (candidate / "plugInfo.json").is_file():
             return candidate
     return None
+
+
+def renderer_types(folder: str) -> dict[str, str]:
+    """The Hydra renderers a delegate folder declares: {plugin type: display name}.
+
+    Read from its plugInfo.json (the types whose bases include HdRendererPlugin), so it is
+    known before, and without, USD loading the plugin. Empty when there is no plugInfo.json
+    or it cannot be read. plugInfo.json allows '#' comment lines; they are dropped first.
+    """
+    info = plug_info_dir(folder)
+    if info is None:
+        return {}
+    try:
+        text = (info / "plugInfo.json").read_text(encoding="utf-8")
+        data = json.loads("\n".join(line for line in text.splitlines()
+                                    if not line.lstrip().startswith("#")))
+    except (OSError, ValueError):
+        logger.warning("could not read %s", info / "plugInfo.json", exc_info=True)
+        return {}
+    found = {}
+    for plugin in data.get("Plugins", []):
+        for name, decl in plugin.get("Info", {}).get("Types", {}).items():
+            if "HdRendererPlugin" in decl.get("bases", []):
+                found[name] = decl.get("displayName") or name
+    return found
 
 
 def dll_dirs(info_dir: Path) -> list[Path]:
