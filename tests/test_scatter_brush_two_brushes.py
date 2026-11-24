@@ -10,36 +10,15 @@ wrote the other brush's paint into its own layer.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from pxr import Gf, Usd, UsdGeom
 
-from usd_chunks import chunk_registry
-from usd_chunks.chunk_scene import SceneSender
-from usd_chunks.chunk_stage import initialize as chunk_usd_initialize
+from usd_chunks import Scene
 from usd_chunks.gizmo import runtime as chunk_gizmo
 
 FLOOR = "/World/Floor"
 SIZE = 20.0
 DIVISIONS = 20
-
-
-class _DummyScene(SceneSender):
-    def get_stage(self):
-        return None
-
-    def get_selected_prims(self):
-        return []
-
-
-def _scene_for(stage: Usd.Stage) -> SceneSender:
-    class _Staged(_DummyScene):
-        def get_stage(self):
-            return stage
-
-    scene = _Staged()
-    chunk_registry.ChunkRegistry().initialize(scene, "pytest")
-    chunk_registry.ChunkLayerManager().initialize(stage)
-    chunk_usd_initialize(stage, scene)
-    return scene
 
 
 def _floor(stage: Usd.Stage) -> None:
@@ -60,14 +39,8 @@ def _floor(stage: Usd.Stage) -> None:
     )
 
 
-def _add_brush(scene: SceneSender):
-    mod = chunk_registry.ChunkRegistry().get_chunk_module("scatter_brush")
-    brush = (mod.create() if mod.loaded else mod.load())[0]
-    scene.add_chunk(brush)
-    brush.get_param("surface_prim").value = FLOOR
-    brush.get_param("radius").value = 3.0
-    brush.get_param("strength").value = 1.0
-    return brush
+def _add_brush(scene: Scene):
+    return scene.create.scatter_brush(surface_prim=FLOOR, radius=3.0, strength=1.0)
 
 
 def _paint(brush, x: float, y: float) -> None:
@@ -89,24 +62,26 @@ def _xs(stage: Usd.Stage, weights: np.ndarray) -> np.ndarray:
     return points[weights > 0.0, 0]
 
 
-def _two_brushes():
-    stage = Usd.Stage.CreateInMemory()
-    _floor(stage)
-    scene = _scene_for(stage)
-    left, right = _add_brush(scene), _add_brush(scene)
-    _paint(left, 3.0, 10.0)
-    _paint(right, 17.0, 10.0)
-    return stage, left, right
+@pytest.fixture
+def two_brushes():
+    """(stage, left, right): two brushes on one floor, one painted near each end."""
+    with Scene.new() as scene:
+        stage = scene.get_stage()
+        _floor(stage)
+        left, right = _add_brush(scene), _add_brush(scene)
+        _paint(left, 3.0, 10.0)
+        _paint(right, 17.0, 10.0)
+        yield stage, left, right
 
 
-def test_each_brush_names_its_own_field() -> None:
-    _, left, right = _two_brushes()
+def test_each_brush_names_its_own_field(two_brushes) -> None:
+    _, left, right = two_brushes
 
     assert left.get_param("density_name").value != right.get_param("density_name").value
 
 
-def test_each_field_holds_only_its_own_brushs_paint() -> None:
-    stage, left, right = _two_brushes()
+def test_each_field_holds_only_its_own_brushs_paint(two_brushes) -> None:
+    stage, left, right = two_brushes
 
     left_xs = _xs(stage, _field(stage, left))
     right_xs = _xs(stage, _field(stage, right))
@@ -115,8 +90,8 @@ def test_each_field_holds_only_its_own_brushs_paint() -> None:
     assert len(right_xs) and right_xs.min() > SIZE / 2
 
 
-def test_toggling_show_paint_keeps_the_other_brushs_paint_out() -> None:
-    stage, left, right = _two_brushes()
+def test_toggling_show_paint_keeps_the_other_brushs_paint_out(two_brushes) -> None:
+    stage, left, right = two_brushes
 
     for value in (False, True, False):
         left.get_param("show_paint").value = value
