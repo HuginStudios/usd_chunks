@@ -97,6 +97,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Importing a library that walks every loaded module (PyTorch does) failed with another
+  chunk's missing dependency (`No module named 'fbx'`) once chunks were discovered. Reading a
+  chunk module's `__file__`, `__name__` or `__class__` no longer runs a chunk nobody has used.
 - Painting a Scatter Brush that is not in the chain the Output cooks says why and does
   nothing, instead of failing inside the stroke with a traceback ("Layer ... is not in the
   local LayerStack") and losing it. It happened with two brushes made one after the other,
