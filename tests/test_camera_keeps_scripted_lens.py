@@ -8,6 +8,7 @@ focalLength=35.
 from __future__ import annotations
 
 import pytest
+from pxr import UsdGeom
 
 from usd_chunks import Scene, chunk
 
@@ -19,7 +20,9 @@ def scene():
 
 
 def _focal(scene, path):
-    return scene.get_stage().GetPrimAtPath(path).GetAttribute("focalLength").Get()
+    """The prim's focal length in millimetres: USD keeps it in tenths of a scene unit."""
+    stage = scene.get_stage()
+    return stage.GetPrimAtPath(path).GetAttribute("focalLength").Get() * 100.0 * UsdGeom.GetStageMetersPerUnit(stage)
 
 
 @pytest.mark.parametrize("in_block", [False, True])

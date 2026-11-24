@@ -9,8 +9,20 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Fixed
+
+- RBD Solver with Shape Type Convex Hull collides a moved PointInstancer's instances where
+  they are drawn. Each hull carried the instancer's own transform, so under a moved or
+  rotated instancer (the Open Chess Set's pawns) the instances fell through what they should
+  land on, or spun off it.
 ### Added
 
+- CAD Import reads DXF drawings, through `ezdxf` (now in the chunk's requirements). Blocks
+  become instanced parts and their INSERTs (MINSERT arrays too) placements, and model space
+  becomes one Xform per layer, leaving out layers that are off or frozen. Meshes, polyface
+  meshes, 3D faces and flat-faced ACIS solids come in as double-sided meshes that keep the
+  file's quads and shared points, and lines, arcs, circles and splines as BasisCurves.
+  Curved ACIS solids, text, hatches and dimensions are skipped and counted in the readout.
 - RBD Solver drives joint motors: a joint whose UsdPhysics drive has a `targetPosition` and
   a stiffness becomes a position actuator, with `maxForce` as its force limit. An animated
   target (keyed, or from Pose Articulation) is followed frame by frame with gravity and
@@ -88,6 +100,51 @@ This file starts with the first release; development before that is in the commi
 - Importing a library that walks every loaded module (PyTorch does) failed with another
   chunk's missing dependency (`No module named 'fbx'`) once chunks were discovered. Reading a
   chunk module's `__file__`, `__name__` or `__class__` no longer runs a chunk nobody has used.
+- Painting a Scatter Brush that is not in the chain the Output cooks says why and does
+  nothing, instead of failing inside the stroke with a traceback ("Layer ... is not in the
+  local LayerStack") and losing it. It happened with two brushes made one after the other,
+  when the Output was wired to the second: wire the brush in, or set it as the Output.
+- Making or opening a Camera no longer warns "camera_preset: '' is not one of [...]; using
+  'Iphone 13 Pro'". The camera was right (an X-T5); the warning read like the wrong body.
+- Blender: ticking Allow Online Access in the "Missing chunk dependencies" dialog no longer
+  declines the install. The box holding the switch disappeared, so the dialog shrank under
+  the mouse and the click on Install landed outside it. The box now stays and says that
+  online access is on.
+- **Breaking:** a Camera's lens is written in the stage's units. USD keeps focal length and
+  aperture in tenths of a scene unit, and the chunk wrote its millimetres as they are, so in
+  a scene in metres (every new one) a 50 mm lens was a 5 m lens. The framing was right but
+  depth of field blurred about 100 times too much: f/2.8 needed an f-stop of 280. The camera
+  prim now gets 0.5 for 50 mm in metres (centimetre scenes are unchanged), and Blender's
+  mirror camera reads it back as 50 mm. If you set an f-stop like 280 to make up for it, set
+  the real one again.
+- A new Camera's sensor reaches the camera prim. The default preset is an X-T5 (23.5 x 15.7
+  mm), but the prim kept USD's 20.955 x 15.29 until you moved a Sensor slider, so the camera
+  framed wider than the chunk showed and its image had another aspect. Any lens value left
+  at its default had the same problem; the focal length only looked right because 50 is
+  also USD's default.
+- A new chunk fills only its first prim field from the selected prim. Every prim field took
+  it before: a Scatter Points made with the ground selected also used the ground as its
+  Grow Near and its prototype, an Inherit inherited from itself, a Collection excluded what
+  it included, and a Render Settings took a mesh as its camera. Camera, dome and sun fields
+  (Render, Render Settings, Render Product, Frustum Prune, Finish Frame) now take only a
+  camera or that light. A chunk declares this with `LineEdit(..., prim_types=("Camera",))`.
+- **Breaking:** two Scatter Brushes on one mesh keep their own paint. Every brush wrote the
+  same field, `scatterDensity`, so on a shared mesh one brush's paint won and both Scatter
+  Points (or Vines) read it: ivy painted on a cliff face regrew on the clifftop grass. Each
+  brush now paints `scatterDensity_<chunk name>` and shows that name on its Density Field
+  output. A Scatter Points or Vine wired to that output follows it, renames included. If you
+  typed `scatterDensity` into a Density Field by hand, wire it from the brush instead.
+- Blender: opening a folded node with the arrow in its header shows its params. Before, the
+  node opened empty except for its status line, and the next reload folded it again; only H
+  opened it properly.
+- Blender: a chunk's read-only text, like the Swedish House's size readout or a download
+  status, shows as plain text. It was an editable field with the param's name in front
+  ("not built yet | 8.5 x 4.7 m").
+- Blender Import brings a subdivided mesh in smooth, as Blender shows it. Blender's USD export
+  wrote a Subdivision Surface modifier as the low-poly cage plus a subdivision scheme, and the
+  viewport drew the cage, so a smooth Suzanne came out faceted. A new Blender Import applies
+  the modifier; its new Subdivision menu has **As USD subdivision** for the cage and scheme.
+  Imports saved before keep As USD subdivision, so they cook as they did.
 - CAD Import, Reference and Payload keep their location when you pick a new version of the
   same file from another folder: `widget.stp` stays at `/widget` instead of moving to
   `/widget1`, so the chunks downstream that read `/widget` keep working.

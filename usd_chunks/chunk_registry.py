@@ -1328,6 +1328,45 @@ def installed_version(package: str):
     return None
 
 
+def _seed_one_prim_field(chunk: core.ChunkBase) -> None:
+    """Keep the host's selection in the chunk's first prim field that took it, and no other.
+
+    Each prim field fills itself from the selection as main() builds it (LineEdit), so a new
+    Scatter Points with the ground selected also took the ground as its Grow Near and its
+    prototype, an Inherit inherited from itself, and a Collection excluded what it included.
+    The first such field is the chunk's target (the mesh to scatter on, the prim to move); the
+    others go back to their defaults. A field that only takes some types (prim_types: a
+    camera, a sun) is passed over unless the selection is one, and the next field gets it.
+    """
+    params = list(chunk.get_params())
+    lists = [p for p in params if isinstance(p, core.ChunkListGroupBase)]
+    # A list's own fields are the template its rows are made from: a row added later takes
+    # its value from there, so it has to be put back too.
+    templates = {id(group): list(group.children.get_params()) for group in lists}
+    for fields in templates.values():
+        params.extend(fields)
+    seeds = {id(p): getattr(p, "selection_seed", 0) for p in params}
+    first = min((seed for seed in seeds.values() if seed), default=0)
+    stale = {id(p) for p in params if seeds[id(p)] not in (0, first)}
+
+    def clear(param) -> None:
+        param.value = param.default_value if param.default_value is not None else ""
+
+    for param in params:
+        if id(param) in stale:
+            clear(param)
+            param.selection_seed = 0
+    for group in lists:
+        for field in templates[id(group)]:
+            if id(field) not in stale:
+                continue
+            # The rows made already: through the list, as the proxies get_params hands out are
+            # copies whose value does not reach the row.
+            for index in range(group.size):
+                if (row := group.get_indexed_param(field.name, index)) is not None:
+                    clear(row)
+
+
 class ChunkModule:
     """One chunk module file, as the ChunkRegistry manages it.
 
@@ -1609,6 +1648,9 @@ class ChunkModule:
         else:
             logger.warning("module %s does not have a function for creating chunks", self.module_name)
             return []
+
+        for c in loaded:
+            _seed_one_prim_field(c)
 
         if self.config:
             for c in loaded:

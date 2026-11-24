@@ -138,6 +138,6 @@ def test_the_paint_still_lands_when_there_is_nothing_to_unbind() -> None:
     # On a corner, so a vertex sits at the centre of the dab and takes the full strength.
     assert _stroke(c, (0.0, 0.0, 0.0)) is True
     weights = UsdGeom.PrimvarsAPI(stage.GetPrimAtPath("/World/Rock")).GetPrimvar(
-        brush_mod.DENSITY_PRIMVAR
+        brush_mod._field_name(c)
     )
     assert max(weights.ComputeFlattened()) > 0.9
