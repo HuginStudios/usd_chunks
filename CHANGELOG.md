@@ -91,6 +91,12 @@ This file starts with the first release; development before that is in the commi
   it included, and a Render Settings took a mesh as its camera. Camera, dome and sun fields
   (Render, Render Settings, Render Product, Frustum Prune, Finish Frame) now take only a
   camera or that light. A chunk declares this with `LineEdit(..., prim_types=("Camera",))`.
+- **Breaking:** two Scatter Brushes on one mesh keep their own paint. Every brush wrote the
+  same field, `scatterDensity`, so on a shared mesh one brush's paint won and both Scatter
+  Points (or Vines) read it: ivy painted on a cliff face regrew on the clifftop grass. Each
+  brush now paints `scatterDensity_<chunk name>` and shows that name on its Density Field
+  output. A Scatter Points or Vine wired to that output follows it, renames included. If you
+  typed `scatterDensity` into a Density Field by hand, wire it from the brush instead.
 - Blender: opening a folded node with the arrow in its header shows its params. Before, the
   node opened empty except for its status line, and the next reload folded it again; only H
   opened it properly.

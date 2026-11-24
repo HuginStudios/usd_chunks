@@ -2172,7 +2172,7 @@ def test_a_hit_sent_as_a_stroke_paints_the_floor(painted):
                                     [(Gf.Vec3d(*point), 1.0, Gf.Vec3d(*normal))])
     painter.stop_gizmo()
     primvar = UsdGeom.PrimvarsAPI(view.stage.GetPrimAtPath("/World/Floor")).GetPrimvar(
-        "scatterDensity")
+        painter.get_param("density_name").value)
     weights = list(primvar.ComputeFlattened())
     assert max(weights) > 0.0
     assert weights[0] == 0.0  # the corner at (0, 0) is outside a radius-2 brush at (5, 5)
