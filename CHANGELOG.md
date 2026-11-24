@@ -9,6 +9,12 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Fixed
+
+- RBD Solver with Shape Type Convex Hull collides a moved PointInstancer's instances where
+  they are drawn. Each hull carried the instancer's own transform, so under a moved or
+  rotated instancer (the Open Chess Set's pawns) the instances fell through what they should
+  land on, or spun off it.
 ### Added
 
 - RBD Solver drives joint motors: a joint whose UsdPhysics drive has a `targetPosition` and
