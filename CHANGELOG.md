@@ -85,6 +85,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A new Camera's sensor reaches the camera prim. The default preset is an X-T5 (23.5 x 15.7
+  mm), but the prim kept USD's 20.955 x 15.29 until you moved a Sensor slider, so the camera
+  framed wider than the chunk showed and its image had another aspect. Any lens value left
+  at its default had the same problem; the focal length only looked right because 50 is
+  also USD's default.
 - A new chunk fills only its first prim field from the selected prim. Every prim field took
   it before: a Scatter Points made with the ground selected also used the ground as its
   Grow Near and its prototype, an Inherit inherited from itself, a Collection excluded what
