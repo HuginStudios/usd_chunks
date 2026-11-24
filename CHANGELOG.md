@@ -85,6 +85,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: ticking Allow Online Access in the "Missing chunk dependencies" dialog no longer
+  declines the install. The box holding the switch disappeared, so the dialog shrank under
+  the mouse and the click on Install landed outside it. The box now stays and says that
+  online access is on.
 - Blender: opening a folded node with the arrow in its header shows its params. Before, the
   node opened empty except for its status line, and the next reload folded it again; only H
   opened it properly.
