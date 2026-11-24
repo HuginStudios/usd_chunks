@@ -51,6 +51,10 @@ _state = {"handle": None, "lights_handle": None, "engine": None, "stage_id": Non
           "renderParams": None, "gl_pick_failed": False, "render_settings": None,
           "renderer_settings": None}
 
+#: Renderers added this session that USD does not list yet, {plugin type: display name}.
+#: USD lists its renderers once, on the first query, so these show from the next start.
+pending_renderers: dict[str, str] = {}
+
 #: The draw mode names the panel offers, and what each maps to on UsdImagingGL.RenderParams.
 #: Resolved lazily (inside _draw, not at import time) because UsdImagingGL.DrawMode needs
 #: pxr already imported, and this module must not require that just to register its classes.
@@ -685,14 +689,14 @@ class USDCHUNKS_OT_toggle_picking(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def _available_renderers() -> list:
+def available_renderers() -> list:
     try:
         return list(UsdImagingGL.Engine.GetRendererPlugins())
     except Exception:
         return []
 
 
-def _renderer_display_name(plugin_id) -> str:
+def renderer_display_name(plugin_id) -> str:
     try:
         return UsdImagingGL.Engine.GetRendererDisplayName(plugin_id) or str(plugin_id)
     except Exception:
@@ -734,15 +738,20 @@ class USDCHUNKS_MT_renderer(bpy.types.Menu):
 
     def draw(self, context):
         layout = self.layout
-        plugins = _available_renderers()
+        plugins = available_renderers()
         if not plugins:
             layout.label(text="no delegates available")
-            return
         for plugin_id in plugins:
             op = layout.operator(USDCHUNKS_OT_set_renderer.bl_idname,
-                                 text=_renderer_display_name(plugin_id),
+                                 text=renderer_display_name(plugin_id),
                                  depress=(_state["renderer"] == str(plugin_id)))
             op.plugin = str(plugin_id)
+        for plugin_type, name in pending_renderers.items():
+            if plugin_type not in {str(p) for p in plugins}:
+                layout.label(text=f"{name}: restart Blender to use", icon="INFO")
+        layout.separator()
+        # By name, not by class: the operator lives beside the add-on preferences it edits.
+        layout.operator("usd_chunks.add_renderer", text="Add Renderer...", icon="ADD")
 
 
 class USDCHUNKS_PT_hydra_view(bpy.types.Panel):
@@ -782,7 +791,7 @@ class USDCHUNKS_PT_hydra_view(bpy.types.Panel):
         layout.operator("usd_chunks.brush", text="Paint (B)", icon="BRUSH_DATA")
 
         current = _state["renderer"]
-        label = _renderer_display_name(current) if current else "default"
+        label = renderer_display_name(current) if current else "default"
         layout.menu(USDCHUNKS_MT_renderer.bl_idname, text=f"Renderer: {label}")
 
         stage = active_stage()

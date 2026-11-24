@@ -15,9 +15,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / "dynamics"))
 import rbd_solver as rbd  # noqa: E402
 
 
@@ -188,3 +188,59 @@ def test_a_fully_described_asset_supplies_everything_at_once():
     assert result["shape_type"] == "Box"
     assert result["gravity"] == pytest.approx(-9.81)
     assert result["kinematic"] is False
+
+
+# --- USD as the one source: what the scene authors, the bake uses (PhysX reads the same) ---
+
+
+def _physics_scene(stage, rate=None):
+    scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+    if rate is not None:
+        scene.GetPrim().CreateAttribute("physxScene:timeStepsPerSecond", Sdf.ValueTypeNames.UInt).Set(rate)
+    return scene
+
+
+def test_substeps_come_from_the_scenes_step_rate():
+    stage, _ = _stage_with_box()
+    _physics_scene(stage, rate=192)
+    assert rbd._scene_substeps(stage, 24.0, 3) == 8
+
+
+def test_substeps_fall_back_without_a_step_rate():
+    stage, _ = _stage_with_box()
+    assert rbd._scene_substeps(stage, 24.0, 3) == 3, "no scene"
+    _physics_scene(stage)
+    assert rbd._scene_substeps(stage, 24.0, 3) == 3, "a scene that states no rate"
+
+
+def _collider_frictions(spec):
+    return {b.name: [round(g.friction[0], 6) for g in b.geoms] for b in spec.bodies if b.name.startswith("col_")}
+
+
+def test_each_collider_takes_its_own_materials_friction():
+    """A cached collider spec is patched with the friction, not rebuilt: the material's has
+    to survive that patch as well as the first build."""
+    pytest.importorskip("mujoco")
+    stage, box = _stage_with_box()
+    table = UsdGeom.Cube.Define(stage, "/World/table").GetPrim()
+    _bind_physics_material(stage, table, friction=1.3)
+
+    for _ in range(2):  # a fresh build, then a cached copy
+        spec, _ = rbd._collider_spec([table, box], 2, 0.5, 0.02, 0.1, 64, collider_mode="Box")
+        assert _collider_frictions(spec) == {"col_0": [1.3], "col_1": [0.5]}
+
+
+def test_a_links_colliders_take_their_materials_friction():
+    mujoco = pytest.importorskip("mujoco")
+    stage, _ = _stage_with_box()
+    link = UsdGeom.Xform.Define(stage, "/World/robot/link").GetPrim()
+    pad = UsdGeom.Cube.Define(stage, "/World/robot/link/pad").GetPrim()
+    shell = UsdGeom.Cube.Define(stage, "/World/robot/link/shell").GetPrim()
+    for prim in (pad, shell):
+        UsdPhysics.CollisionAPI.Apply(prim)
+    _bind_physics_material(stage, pad, friction=1.6)
+
+    spec = mujoco.MjSpec()
+    body = spec.worldbody.add_body()
+    assert rbd._add_link_geoms(spec, body, link, Gf.Matrix4d(1.0), 0.5, 0.02, 0.0) == 2
+    assert sorted(round(g.friction[0], 6) for g in body.geoms) == [0.5, 1.6]

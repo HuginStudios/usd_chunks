@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache, sim_bake
+from usd_chunks import chunk, chunk_registry, chunk_utils, cook_cache, sdf_authoring, sim_bake
 from usd_chunks.gizmo import runtime as chunk_gizmo
 from usd_chunks import chunk_stage
 
@@ -418,7 +418,7 @@ class _ColliderRead:
     rock cluster set to Mesh used to build there on the main thread, and usdview hung.
     """
 
-    __slots__ = ("prim", "path", "geometry", "bounds", "is_anim", "rest")
+    __slots__ = ("prim", "path", "geometry", "bounds", "is_anim", "rest", "friction")
 
     def __init__(self, prim: Usd.Prim):
         self.prim = prim
@@ -427,6 +427,8 @@ class _ColliderRead:
         self.bounds = _geom_bounds(prim)
         self.is_anim = any(op.GetNumTimeSamples() > 1 for op in UsdGeom.Xformable(prim).GetOrderedXformOps())
         self.rest = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
+        # Its bound physics material's friction, or None for the chunk's Friction.
+        self.friction = _material_friction(prim)
 
     @property
     def bounds_key(self) -> tuple | None:
@@ -531,8 +533,11 @@ def _add_colliders(
         gpg.solref = [contact_tc, 1.0]
         gpg.condim = 3
 
+    default_friction = friction
     for i, read in enumerate(reads):
         cp, is_anim, bounds = read.prim, read.is_anim, read.bounds
+        # The collider's own material wins; the catch plane above keeps the chunk's.
+        friction = default_friction if read.friction is None else read.friction
 
         # --- exact triangle-soup collider (the general case) ---
         soup = collider_mode in ("Auto", "Mesh")
@@ -693,17 +698,25 @@ def _bounds_key(prim: Usd.Prim) -> tuple | None:
     return tuple(float(v) for v in lo) + tuple(float(v) for v in hi)
 
 
-def _apply_contact_params(spec, friction: float, contact_tc: float) -> None:
+def _apply_contact_params(spec, friction: float, contact_tc: float, own: dict | None = None) -> None:
     """Set friction and contact stiffness on every geom of a collider-only spec.
 
     Every collider geom the builder makes -- prism, heightfield, box, catch plane -- gets
     exactly these two, so re-setting them on a cached copy reproduces a fresh build without
     rebuilding it. Only ever called on a spec that holds nothing but colliders; the dynamic
     bodies are added afterwards and set their own.
+
+    *own* maps a collider's body name (``col_<i>``) to the friction of its bound physics
+    material, which outranks *friction* for that collider's geoms, as in the build.
     """
     for g in spec.geoms:
         g.friction = [friction, 0.005, 0.0001]
         g.solref = [contact_tc, 1.0]
+    for name, value in (own or {}).items():
+        body = spec.body(name)
+        if body is not None:
+            for g in body.geoms:
+                g.friction = [value, 0.005, 0.0001]
 
 
 def _collider_spec(
@@ -777,7 +790,8 @@ def _collider_spec(
     # Always a copy, on the miss as well: the caller is about to add dynamic bodies to
     # what it gets back, and the cached spec has to stay collider-only for the next run.
     spec = cached.copy()
-    _apply_contact_params(spec, friction, contact_tc)
+    own = {f"col_{i}": r.friction for i, r in enumerate(reads) if r.friction is not None}
+    _apply_contact_params(spec, friction, contact_tc, own)
     return spec, [(f"col_{i}", prims[i]) for i in mocap_idx]
 
 
@@ -935,6 +949,63 @@ def _body_frame(prim: Usd.Prim, translate: Gf.Vec3d, rot: Gf.Rotation, shape_typ
     )
 
 
+def _add_dynamic_body(spec, name: str, joint_name: str, hull_name: str, b: dict, f: dict,
+                      contact_tc: float, collision_margin: float, lat, hull_max_verts: int):
+    """One free rigid body, as the rigid path makes it: its frame on the geometry centre, a
+    free joint, and its shape, mass and contact. Shared with the articulated path, which
+    adds the free bodies an articulated asset touches to its own model."""
+    half_extents = f["half_extents"]
+    centre = f["centre"]
+    dyn_body = spec.worldbody.add_body()
+    dyn_body.name = name
+    # The body frame sits on the geometry centre.
+    dyn_body.pos = [float(centre[0]), float(centre[1]), float(centre[2])]
+    dyn_body.quat = f["quat"]
+
+    free_jnt = dyn_body.add_joint()
+    free_jnt.type = _mj.mjtJoint.mjJNT_FREE
+    free_jnt.name = joint_name
+
+    dyn_geom = dyn_body.add_geom()
+    dyn_geom.friction = [b["friction"], 0.005, 0.0001]
+    dyn_geom.mass = b["mass"]
+    # Map restitution (0-1) to solref: lower dampratio = bouncier.
+    # solref[0] = timeconst (kept >= 2*timestep for stability), solref[1] = dampratio
+    dyn_geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, b["restitution"])) * 0.9]
+    # solimp: [dmin, dmax, width, midpoint, power]
+    dyn_geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+    # condim=3 (normal + sliding friction); condim=6's torsional/rolling
+    # constraints destabilise the singular contact at a bowl's concave bottom.
+    dyn_geom.condim = 3
+
+    shape_type = b["shape_type"]
+    mesh_pts = f["mesh_pts"]
+    if shape_type == "Sphere":
+        sphere_r = max(half_extents[lat[0]], half_extents[lat[1]])
+        radius = max(sphere_r + collision_margin, 0.001)
+        dyn_geom.type = _mj.mjtGeom.mjGEOM_SPHERE
+        dyn_geom.size = [radius, 0.0, 0.0]
+
+    elif shape_type == "Convex Hull" and mesh_pts is not None:
+        hull_ma = spec.add_mesh()
+        hull_ma.name = hull_name
+        hull_ma.uservert = mesh_pts.flatten()
+        # MuJoCo builds a convex hull internally from the vertex cloud --
+        # maxhullvert caps the output vertex count for the collision hull.
+        hull_ma.maxhullvert = max(hull_max_verts, 64) if hull_max_verts > 0 else 1024
+        if collision_margin != 0.0:
+            max_ext = max(half_extents) if max(half_extents) > 1e-6 else 1.0
+            ms = (max_ext + collision_margin) / max_ext
+            hull_ma.scale = [ms, ms, ms]
+        dyn_geom.type = _mj.mjtGeom.mjGEOM_MESH
+        dyn_geom.meshname = hull_ma.name
+
+    else:
+        adj = [max(h + collision_margin, 0.001) for h in half_extents]
+        dyn_geom.type = _mj.mjtGeom.mjGEOM_BOX
+        dyn_geom.size = adj
+
+
 def _sim_prims_gen_mj(
     bodies: list[dict],
     collision_prims: list[Usd.Prim] | None,
@@ -1037,56 +1108,8 @@ def _sim_prims_gen_mj(
         return base if i == 0 else f"{base}_{i}"
 
     for i, (b, f) in enumerate(zip(bodies, frames)):
-        half_extents = f["half_extents"]
-        centre = f["centre"]
-        dyn_body = spec.worldbody.add_body()
-        dyn_body.name = _name("dynamic", i)
-        # The body frame sits on the geometry centre.
-        dyn_body.pos = [float(centre[0]), float(centre[1]), float(centre[2])]
-        dyn_body.quat = f["quat"]
-
-        free_jnt = dyn_body.add_joint()
-        free_jnt.type = _mj.mjtJoint.mjJNT_FREE
-        free_jnt.name = _name("free_joint", i)
-
-        dyn_geom = dyn_body.add_geom()
-        dyn_geom.friction = [b["friction"], 0.005, 0.0001]
-        dyn_geom.mass = b["mass"]
-        # Map restitution (0-1) to solref: lower dampratio = bouncier.
-        # solref[0] = timeconst (kept >= 2*timestep for stability), solref[1] = dampratio
-        dyn_geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, b["restitution"])) * 0.9]
-        # solimp: [dmin, dmax, width, midpoint, power]
-        dyn_geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
-        # condim=3 (normal + sliding friction); condim=6's torsional/rolling
-        # constraints destabilise the singular contact at a bowl's concave bottom.
-        dyn_geom.condim = 3
-
-        shape_type = b["shape_type"]
-        mesh_pts = f["mesh_pts"]
-        if shape_type == "Sphere":
-            sphere_r = max(half_extents[lat[0]], half_extents[lat[1]])
-            radius = max(sphere_r + collision_margin, 0.001)
-            dyn_geom.type = _mj.mjtGeom.mjGEOM_SPHERE
-            dyn_geom.size = [radius, 0.0, 0.0]
-
-        elif shape_type == "Convex Hull" and mesh_pts is not None:
-            hull_ma = spec.add_mesh()
-            hull_ma.name = _name("hull_dyn", i)
-            hull_ma.uservert = mesh_pts.flatten()
-            # MuJoCo builds a convex hull internally from the vertex cloud --
-            # maxhullvert caps the output vertex count for the collision hull.
-            hull_ma.maxhullvert = max(hull_max_verts, 64) if hull_max_verts > 0 else 1024
-            if collision_margin != 0.0:
-                max_ext = max(half_extents) if max(half_extents) > 1e-6 else 1.0
-                ms = (max_ext + collision_margin) / max_ext
-                hull_ma.scale = [ms, ms, ms]
-            dyn_geom.type = _mj.mjtGeom.mjGEOM_MESH
-            dyn_geom.meshname = hull_ma.name
-
-        else:
-            adj = [max(h + collision_margin, 0.001) for h in half_extents]
-            dyn_geom.type = _mj.mjtGeom.mjGEOM_BOX
-            dyn_geom.size = adj
+        _add_dynamic_body(spec, _name("dynamic", i), _name("free_joint", i), _name("hull_dyn", i), b, f,
+                          contact_tc, collision_margin, lat, hull_max_verts)
 
     # --- compile ---
     try:
@@ -1197,7 +1220,8 @@ def _bake_scale(prim: Usd.Prim, xform_cache) -> tuple:
     return tuple(world.GetRow3(i).GetLength() for i in range(3))
 
 
-def _upstream_xform(prim: Usd.Prim, op_name: str) -> Gf.Matrix4d:
+def _upstream_xform(prim: Usd.Prim, op_name: str,
+                    time: Usd.TimeCode = Usd.TimeCode.Default()) -> Gf.Matrix4d:
     """Everything applying to `prim` before this chunk's own op.
 
     Read as the composed local transform with this chunk's own contribution divided back
@@ -1209,13 +1233,13 @@ def _upstream_xform(prim: Usd.Prim, op_name: str) -> Gf.Matrix4d:
     local = mine * upstream, hence upstream = mine^-1 * local.
     """
     xformable = UsdGeom.Xformable(prim)
-    local = xformable.GetLocalTransformation(Usd.TimeCode.Default())
+    local = xformable.GetLocalTransformation(time)
     if isinstance(local, tuple):
         local = local[0]
     mine = Gf.Matrix4d(1.0)
     attr = prim.GetAttribute(op_name)
     if attr and attr.IsValid():
-        current = attr.Get()
+        current = attr.Get(time)
         if current is not None:
             mine = Gf.Matrix4d(current)
     return mine.GetInverse() * local
@@ -1290,11 +1314,18 @@ def _write_prim_results(
             # depends on the timeline being parked anywhere in particular.
             xf_attr.Set(_local(all_mats[-1]) * inv_upstream)
         else:
-            sim_bake.write_samples(
-                xf_attr,
-                ((start_frame + i, _local(mat) * inv_upstream) for i, mat in enumerate(all_mats)),
-                default=_local(all_mats[0]) * inv_upstream,
-            )
+            # An animated upstream -- an Attach carrying the body along a keyed hand -- is
+            # divided out at each frame's own time, as the articulated path does. Its
+            # default-time value left the animation in, on top of the simulated motion.
+            # Read into a list before writing: write_samples authors inside a change block.
+            animated = UsdGeom.Xformable(prim).TransformMightBeTimeVarying()
+            samples = [
+                (start_frame + i, _local(mat) * (
+                    _upstream_xform(prim, op_name, Usd.TimeCode(start_frame + i)).GetInverse()
+                    if animated else inv_upstream))
+                for i, mat in enumerate(all_mats)
+            ]
+            sim_bake.write_samples(xf_attr, samples, default=_local(all_mats[0]) * inv_upstream)
     sim_bake.keep(node, layer)
     if settle_only:
         logger.debug("Settled %s", prim.GetPath())
@@ -1498,8 +1529,14 @@ def _articulated_steps(
     turb_speed: float = 1.0,
     turb_seed: int = 0,
     progress=None,
+    cache: dict | None = None,
+    extra: list | None = None,
 ) -> dict | None:
     """Run an articulated MuJoCo simulation and bake a transform per link.
+
+    `extra`: plain rigid bodies to simulate in the same world, as _run sorts them (path,
+    parent_world_inv, scale_xyz, mass, friction, restitution, shape_type) -- what the robot
+    handles. Each is written as the rigid path writes it.
 
     The counterpart of simulate_mujoco for an asset that is a mechanism rather than a
     single rigid body. Each link keeps its own baked transform, so a door's swing lands on
@@ -1510,6 +1547,16 @@ def _articulated_steps(
         return None
 
     up_idx = 1 if UsdGeom.GetStageUpAxis(stage).upper() == "Y" else 2
+    # The free bodies' starting placement, as _prims_steps reads it.
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    free = []
+    for t in extra or ():
+        prim = stage.GetPrimAtPath(t["path"])
+        if not prim or not prim.IsValid():
+            continue
+        world_xf = xform_cache.GetLocalToWorldTransform(prim)
+        free.append(dict(t, prim=prim, translate=world_xf.ExtractTranslation(),
+                         rot=world_xf.RemoveScaleShear().ExtractRotation()))
     gen = _sim_articulated_gen_mj(
         roots,
         frame_count=frame_count,
@@ -1540,6 +1587,8 @@ def _articulated_steps(
         turb_seed=turb_seed,
         settle_only=settle_only,
         progress=progress,
+        cache=cache,
+        extra=free,
     )
 
     results = yield from gen
@@ -1550,17 +1599,28 @@ def _articulated_steps(
         return None
 
     _write_articulated_results(stage, roots, layer, results, start_frame, settle_only, node)
-    logger.debug("Baked %d frames across %d links", frame_count, len(results))
+    for i, t in enumerate(free):
+        # Looked up again: the stage may have changed while the solve ran on a worker.
+        prim = stage.GetPrimAtPath(t["path"])
+        mats = results.get(f"__free_{i}")
+        if prim and prim.IsValid() and mats:
+            _write_prim_results(stage, prim, layer, t["parent_world_inv"], mats, start_frame,
+                                t["scale_xyz"], node, settle_only)
+    logger.debug("Baked %d frames across %d links and %d free bodies", frame_count, len(results), len(free))
     return results
 
 
 def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarray | None:
     """One prototype's mesh vertices, for its convex-hull collider (extracted once).
 
-    Points are gathered in the prototype's world-bound space -- the same space the
-    caller measures proto extent/centre in -- so per-instance scaling stays
-    consistent with the sphere/box path. Subsampled to *cap* points to keep the
-    per-asset hull build cheap. Returns None if the prototype has no mesh data.
+    Points are gathered relative to the prototype's PARENT -- its own transform included,
+    everything above it left out. That is the space a PointInstancer places a prototype in,
+    and the space the caller measures proto extent/centre in (ComputeLocalBound), so
+    per-instance scaling stays consistent with the sphere/box path. World space would bake
+    the instancer's own transform into every hull: under a moved instancer each collider
+    then sits that far from its instance, and the instances fall through what they land on.
+    Subsampled to *cap* points to keep the per-asset hull build cheap. Returns None if the
+    prototype has no mesh data.
     """
     if _np is None or not proto_path:
         return None
@@ -1568,13 +1628,14 @@ def _proto_hull_verts(stage: Usd.Stage, proto_path, cap: int = 200) -> _np.ndarr
     if not proto_prim:
         return None
     xc = UsdGeom.XformCache()
+    parent = proto_prim.GetParent()
     verts = []
     for c in Usd.PrimRange(proto_prim):
         mesh = UsdGeom.Mesh(c)
         pts = mesh.GetPointsAttr().Get()
         if not pts:
             continue
-        cxf = xc.GetLocalToWorldTransform(c)
+        cxf, _ = xc.ComputeRelativeTransform(c, parent)
         for p in pts:
             w = cxf.Transform(Gf.Vec3d(p[0], p[1], p[2]))
             verts.append([float(w[0]), float(w[1]), float(w[2])])
@@ -2121,7 +2182,8 @@ def clear_collision(owner, notice, sender) -> None:
 # UsdPhysics collider approximation -> this chunk's Shape Type. Only the tokens with a
 # single-geom MuJoCo equivalent are here: convexDecomposition and sdf need several geoms or
 # a signed-distance field, so they keep whatever the param says rather than being silently
-# downgraded to something that simulates differently.
+# downgraded to something that simulates differently. (An articulated asset's link colliders
+# do honour convexDecomposition: _collider_shape splits them, _convex_pieces.)
 _APPROXIMATION_TO_SHAPE = {
     "convexHull": "Convex Hull",
     "convexDecomposition": None,
@@ -2162,28 +2224,61 @@ def _authored(attr):
     return None
 
 
+def _material_friction(prim: Usd.Prim) -> float | None:
+    """The friction of the physics material bound to prim (dynamic, else static), or None.
+
+    USD is the one place a scene's physics is stated: PhysX reads the same material off
+    the same collider, so the bake and a PhysX run use the same friction. None leaves
+    it to the chunk's Friction.
+    """
+    material = _physics_material(prim)
+    if material is None:
+        return None
+    friction = _authored(material.GetDynamicFrictionAttr())
+    if friction is None:
+        friction = _authored(material.GetStaticFrictionAttr())
+    return None if friction is None else float(friction)
+
+
+def _scene_prim(stage: Usd.Stage):
+    """The stage's first UsdPhysics.Scene, or None."""
+    if not stage:
+        return None
+    for prim in stage.Traverse():
+        if prim.IsA(UsdPhysics.Scene):
+            return prim
+    return None
+
+
 def _scene_gravity(stage: Usd.Stage, fallback: float):
     """Gravity from a UsdPhysics.Scene on the stage, as the signed scalar this chunk uses.
 
     The schema states a magnitude and a direction; the solver applies a signed scalar along
     the stage up axis, so only the component along up survives the translation.
     """
-    if not stage:
+    prim = _scene_prim(stage)
+    if prim is None:
         return fallback, None
-    for prim in stage.Traverse():
-        if not prim.IsA(UsdPhysics.Scene):
-            continue
-        scene = UsdPhysics.Scene(prim)
-        magnitude = _authored(scene.GetGravityMagnitudeAttr())
-        if magnitude is None:
-            return fallback, None
-        direction = _authored(scene.GetGravityDirectionAttr())
-        up_index = {"X": 0, "Y": 1, "Z": 2}.get(UsdGeom.GetStageUpAxis(stage), 2)
-        sign = -1.0
-        if direction is not None and abs(direction[up_index]) > 1e-9:
-            sign = 1.0 if direction[up_index] > 0.0 else -1.0
-        return sign * abs(magnitude), str(prim.GetPath())
-    return fallback, None
+    scene = UsdPhysics.Scene(prim)
+    magnitude = _authored(scene.GetGravityMagnitudeAttr())
+    if magnitude is None:
+        return fallback, None
+    direction = _authored(scene.GetGravityDirectionAttr())
+    up_index = {"X": 0, "Y": 1, "Z": 2}.get(UsdGeom.GetStageUpAxis(stage), 2)
+    sign = -1.0
+    if direction is not None and abs(direction[up_index]) > 1e-9:
+        sign = 1.0 if direction[up_index] > 0.0 else -1.0
+    return sign * abs(magnitude), str(prim.GetPath())
+
+
+def _scene_substeps(stage: Usd.Stage, fps: float, fallback: int) -> int:
+    """Substeps from the physics scene's step rate (physxScene:timeStepsPerSecond), so the
+    bake steps as PhysX does on the same file; the chunk's Substeps when none is authored."""
+    prim = _scene_prim(stage)
+    rate = _authored(prim.GetAttribute("physxScene:timeStepsPerSecond")) if prim is not None else None
+    if not rate or fps <= 0.0:
+        return fallback
+    return max(1, int(round(float(rate) / fps)))
 
 
 def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
@@ -2231,9 +2326,7 @@ def _authored_physics(stage: Usd.Stage, prim: Usd.Prim, defaults: dict) -> dict:
 
         material = _physics_material(prim)
         if material is not None:
-            friction = _authored(material.GetDynamicFrictionAttr())
-            if friction is None:
-                friction = _authored(material.GetStaticFrictionAttr())
+            friction = _material_friction(prim)
             if friction is not None:
                 out["friction"] = friction
                 found.append(f"friction={friction:g}")
@@ -2289,7 +2382,7 @@ _JOINT_FIXED = "PhysicsFixedJoint"
 class _Link:
     """One rigid body in an articulated asset, and the joint attaching it to its parent."""
 
-    __slots__ = ("prim", "parent", "joint", "children", "name")
+    __slots__ = ("prim", "parent", "joint", "children", "name", "anchored")
 
     def __init__(self, prim):
         self.prim = prim
@@ -2297,14 +2390,19 @@ class _Link:
         self.joint = None
         self.children = []
         self.name = prim.GetName()
+        # Fixed to the world by a joint with no body0: a robot bolted to its mount (URDF
+        # Import's Fixed Base), or an appliance's sim-ready anchor.
+        self.anchored = False
 
 
 class _Joint:
     """A parsed UsdPhysics joint, in the terms MuJoCo needs."""
 
-    __slots__ = ("kind", "axis", "pos", "lower", "upper", "damping", "stiffness", "friction")
+    __slots__ = ("kind", "axis", "pos", "lower", "upper", "damping", "stiffness", "friction",
+                 "target", "max_force", "offset", "armature")
 
-    def __init__(self, kind, axis, pos, lower, upper, damping, stiffness, friction):
+    def __init__(self, kind, axis, pos, lower, upper, damping, stiffness, friction,
+                 target=None, max_force=None, offset=0.0, armature=None):
         self.kind = kind
         self.axis = axis
         self.pos = pos
@@ -2313,6 +2411,23 @@ class _Joint:
         self.damping = damping
         self.stiffness = stiffness
         self.friction = friction
+        # The drive's targetPosition attribute, when it has one and a stiffness to chase it
+        # with: the joint is a motor. Kept as the attribute, not a value, because an
+        # animated target is read frame by frame (_motor_tracks).
+        self.target = target
+        self.max_force = max_force
+        # How far the joint is posed from rest, in MuJoCo units: its drive's default target,
+        # which Pose Articulation writes with the pose. The model is built from
+        # the posed links, so its zero is there, and the limits move with it.
+        self.offset = offset
+        # The motor's rotor inertia seen at the joint (physxJoint:armature). A stiff drive on a
+        # light link rings faster than the solver steps without it: a joint at ~1000 N m/rad
+        # on ~1e-4 kg m^2 of link blew the solve apart.
+        self.armature = armature
+
+    @property
+    def motor(self) -> bool:
+        return self.target is not None and self.kind in ("revolute", "prismatic")
 
 
 def _joint_target(rel):
@@ -2363,27 +2478,60 @@ def _parse_joint(joint_prim):
         lower = math.radians(lower) if lower is not None else None
         upper = math.radians(upper) if upper is not None else None
 
-    # Drives: the passive half is what a settle or a destruction sim wants -- a door that
-    # swings and comes to rest. Actuators (targetPosition) are deliberately ignored; nothing
-    # here is driving the mechanism to a pose.
-    damping = stiffness = None
+    # Drives. Without a target the drive is passive -- what a settle or a destruction sim
+    # wants, a door that swings and comes to rest. With a targetPosition and a stiffness it
+    # is a motor: the joint is pulled toward the target (Pose Articulation, inverse kinematics), so
+    # an animated robot follows its animation with mass, gravity and contacts.
+    damping = stiffness = target = max_force = None
     for prefix in ("drive:X:physics:", "drive:angular:physics:", "drive:linear:physics:",
                    "drive:rotX:physics:", "drive:rotY:physics:", "drive:rotZ:physics:",
                    "drive:transX:physics:"):
         d = _authored(joint_prim.GetAttribute(prefix + "damping"))
         k = _authored(joint_prim.GetAttribute(prefix + "stiffness"))
-        if d is not None or k is not None:
+        attr = joint_prim.GetAttribute(prefix + "targetPosition")
+        has_target = bool(attr) and (attr.HasAuthoredValue() or attr.GetNumTimeSamples() > 0)
+        if d is not None or k is not None or has_target:
             damping, stiffness = d, k
+            if has_target and k is not None and k > 0.0:
+                target = attr
+                max_force = _authored(joint_prim.GetAttribute(prefix + "maxForce"))
             break
 
     friction = _authored(joint_prim.GetAttribute("physxJoint:jointFriction"))
+
+    # The pose the joint is in: its drive's default target, a motor's or not (Pose
+    # Articulation writes it with the pose either way). Degrees in USD, radians in MuJoCo.
+    offset = 0.0
+    for prefix in ("drive:angular:physics:", "drive:linear:physics:", "drive:X:physics:",
+                   "drive:rotX:physics:", "drive:rotY:physics:", "drive:rotZ:physics:",
+                   "drive:transX:physics:"):
+        value = _authored(joint_prim.GetAttribute(prefix + "targetPosition"))
+        if value is not None:
+            offset = math.radians(float(value)) if kind == "revolute" else float(value)
+            break
 
     return _Joint(
         kind,
         [float(axis_world[0]), float(axis_world[1]), float(axis_world[2])],
         [float(pos[0]), float(pos[1]), float(pos[2])],
-        lower, upper, damping, stiffness, friction,
+        lower, upper, damping, stiffness, friction, target, max_force, offset,
+        _authored(joint_prim.GetAttribute("physxJoint:armature")),
     )
+
+
+def _unique_link_names(roots) -> None:
+    """Give each link a name no other link has: the solver names MuJoCo's bodies, joints and
+    motors after them, and two copies of one asset share every link name.
+    The first keeps its name; a repeat gets _2, _3... Only the solver reads `name`; the prim
+    each link writes to is `prim`."""
+    seen = set()
+    for link in (link for root in roots for link in _iter_links(root)):
+        name, n = link.name, 1
+        while name in seen:
+            n += 1
+            name = f"{link.name}_{n}"
+        link.name = name
+        seen.add(name)
 
 
 def read_articulations(root_prim, keep_colliderless=False):
@@ -2434,6 +2582,8 @@ def read_articulations(root_prim, keep_colliderless=False):
             continue
         if body0 is None:
             # No body0 means anchored to the world; the link stays a root.
+            if str(joint_prim.GetTypeName()) == "PhysicsFixedJoint":
+                child.anchored = True
             continue
         parent = links.get(body0)
         if parent is None or parent is child:
@@ -2476,6 +2626,78 @@ def _iter_links(root):
 def _prim_scale(matrix):
     """Per-axis scale of a transform, as the lengths of its basis rows."""
     return [matrix.GetRow3(i).GetLength() for i in range(3)]
+
+
+#: Pieces a convexDecomposition collider is split into: enough that a hull no longer fills
+#: a concave part's inside, few enough to keep contacts cheap.
+_DECOMPOSITION_PIECES = 8
+
+
+def _convex_pieces(mesh, matrix, pieces=_DECOMPOSITION_PIECES):
+    """A mesh split into spatially compact groups of faces, each group's vertices (in the
+    frame `matrix` takes them to) to be hulled on its own: an approximate convex
+    decomposition, for UsdPhysics' convexDecomposition.
+
+    One convex hull of a concave part fills its hollows -- a curved part becomes a solid
+    wedge, and whatever sits in the hollow is pushed against invisible faces.
+    The faces are grouped by k-means on their centres (seeded from the farthest-apart
+    centres, so the same mesh always splits the same way); a group's hull hugs its stretch of
+    the surface. Empty when the mesh has no faces to group.
+    """
+    points = _np.asarray(mesh.GetPointsAttr().Get(), dtype=_np.float64)
+    counts = mesh.GetFaceVertexCountsAttr().Get()
+    indices = mesh.GetFaceVertexIndicesAttr().Get()
+    if points.size == 0 or not counts or not indices:
+        return []
+    indices = _np.asarray(indices, dtype=_np.int64)
+    # The grouping depends on the mesh alone, and it is most of a solve's cost (a robot's link
+    # meshes run to tens of thousands of points; a bake rebuilt them every time). Kept by the
+    # mesh's content -- an edited mesh is a new key -- with `matrix` applied after.
+    key = hashlib.blake2b(points.tobytes() + _np.asarray(counts, dtype=_np.int64).tobytes()
+                          + indices.tobytes() + str(pieces).encode(), digest_size=16).digest()
+    local = _PIECES_CACHE.get(key)
+    if local is None:
+        local = _group_pieces(points, counts, indices, pieces)
+        if len(_PIECES_CACHE) >= _PIECES_CACHE_SIZE:
+            _PIECES_CACHE.pop(next(iter(_PIECES_CACHE)))
+        _PIECES_CACHE[key] = local
+    return [(pts @ matrix[:3, :3] + matrix[3, :3]).astype(_np.float32) for pts in local]
+
+
+#: _convex_pieces' groupings by mesh content (oldest dropped first past _PIECES_CACHE_SIZE).
+_PIECES_CACHE: dict = {}
+_PIECES_CACHE_SIZE = 256
+
+
+def _group_pieces(points, counts, indices, pieces):
+    """_convex_pieces' grouping, in the mesh's own frame: each group's vertices (at most 256)."""
+    starts = _np.concatenate(([0], _np.cumsum(counts)[:-1]))
+    faces = [indices[s:s + n] for s, n in zip(starts, counts)]
+    centres = _np.array([points[f].mean(axis=0) for f in faces])
+    k = max(1, min(pieces, len(faces)))
+    # Farthest-point seeds: deterministic, and spread over the whole part.
+    seeds = [0]
+    dist = _np.linalg.norm(centres - centres[0], axis=1)
+    for _ in range(1, k):
+        seeds.append(int(dist.argmax()))
+        dist = _np.minimum(dist, _np.linalg.norm(centres - centres[seeds[-1]], axis=1))
+    means = centres[seeds]
+    for _ in range(12):
+        label = _np.linalg.norm(centres[:, None, :] - means[None, :, :], axis=2).argmin(axis=1)
+        for j in range(k):
+            members = centres[label == j]
+            if len(members):
+                means[j] = members.mean(axis=0)
+    out = []
+    for j in range(k):
+        used = _np.unique(_np.concatenate([faces[i] for i in _np.flatnonzero(label == j)] or [[]]).astype(_np.int64))
+        if len(used) < 4:
+            continue
+        pts = points[used]
+        if len(pts) > 256:
+            pts = pts[:: max(1, len(pts) // 256)][:256]
+        out.append(pts)
+    return out
 
 
 def _collider_shape(prim, to_link):
@@ -2525,14 +2747,22 @@ def _collider_shape(prim, to_link):
         points = UsdGeom.Mesh(prim).GetPointsAttr().Get()
         if not points:
             return None
-        verts = []
-        for pt in points:
-            lp = local.Transform(Gf.Vec3d(pt[0], pt[1], pt[2]))
-            verts.append([float(lp[0]), float(lp[1]), float(lp[2])])
-        if len(verts) > 256:
-            verts = verts[:: max(1, len(verts) // 256)][:256]
+        approximation = prim.GetAttribute("physics:approximation").Get()
+        if approximation == "convexDecomposition":
+            pieces = _convex_pieces(UsdGeom.Mesh(prim), _np.array(local, dtype=_np.float64))
+            if pieces:
+                return "meshes", pieces, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
+        # Thinned BEFORE transforming, then transformed as one array: the same 256 points,
+        # but an STL mesh's tens of thousands of vertices each went through Gf in a Python
+        # loop first -- 0.16 s a link, every build, which made a live settle of a meshy
+        # robot take seconds per move.
+        pts = _np.asarray(points, dtype=_np.float64)
+        if len(pts) > 256:
+            pts = pts[:: max(1, len(pts) // 256)][:256]
+        m = _np.array(local, dtype=_np.float64)
+        verts = pts @ m[:3, :3] + m[3, :3]
         # Position and rotation are already folded into the transformed vertices.
-        return "mesh", _np.array(verts, dtype=_np.float32), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
+        return "mesh", verts.astype(_np.float32), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
 
     return None
 
@@ -2561,23 +2791,31 @@ def _add_link_geoms(spec, body, link_prim, link_world_inv, friction, contact_tc,
         if shape is None:
             continue
         geom_type, size, pos, quat = shape
+        # The collider's bound physics material, else the chunk's Friction.
+        own = _material_friction(prim)
+        mu = friction if own is None else own
 
-        geom = body.add_geom()
-        if geom_type == "mesh":
-            mesh_spec = spec.add_mesh()
-            mesh_spec.name = f"hull_{link_prim.GetName()}_{count}"
-            mesh_spec.uservert = size.flatten()
-            mesh_spec.maxhullvert = 64
-            geom.type = _mj.mjtGeom.mjGEOM_MESH
-            geom.meshname = mesh_spec.name
-            geom.friction = [friction, 0.005, 0.0001]
-            geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
-            geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
-            geom.condim = 3
-            count += 1
+        if geom_type in ("mesh", "meshes"):
+            # One hull, or one per piece of a convex decomposition.
+            for verts in (size if geom_type == "meshes" else [size]):
+                geom = body.add_geom()
+                mesh_spec = spec.add_mesh()
+                # The body's name where it has one: unique in the model, where two copies of a
+                # robot share every prim name.
+                mesh_spec.name = f"hull_{body.name or link_prim.GetName()}_{count}"
+                mesh_spec.uservert = verts.flatten()
+                mesh_spec.maxhullvert = 64
+                geom.type = _mj.mjtGeom.mjGEOM_MESH
+                geom.meshname = mesh_spec.name
+                geom.friction = [mu, 0.005, 0.0001]
+                geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
+                geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
+                geom.condim = 3
+                count += 1
             continue
 
-        geom.friction = [friction, 0.005, 0.0001]
+        geom = body.add_geom()
+        geom.friction = [mu, 0.005, 0.0001]
         geom.solref = [contact_tc, 1.0 - max(0.0, min(1.0, restitution)) * 0.9]
         geom.solimp = [0.95, 0.99, 0.001, 0.5, 2]
         geom.condim = 3
@@ -2623,8 +2861,14 @@ def _sim_articulated_gen_mj(
     turb_seed: int = 0,
     settle_only: bool = False,
     progress=None,
+    cache: dict | None = None,
+    extra: list | None = None,
 ) -> Generator[int, None, dict | None]:
     """Simulate an articulated asset, yielding frame index and returning per-link matrices.
+
+    `extra`: free rigid bodies in the same world, as dicts the rigid path takes (prim,
+    translate, rot, mass, friction, restitution, shape_type). Their world matrices come back
+    under "__free_<i>".
 
     Bodies are nested to mirror the joint tree, in each link's own prim frame rather than
     on its geometry centre: joint anchors are authored in prim space, and an articulated
@@ -2633,23 +2877,59 @@ def _sim_articulated_gen_mj(
     """
     if not roots:
         return None
-    # The colliders build on the worker (the slow part on a big Mesh collider); the links
-    # read the stage as they go, so the rest of the build comes back to the main thread.
+    # Read now, on the main thread: everything after the first yield may run on a worker.
+    extra_pairs = [(b, _body_frame(b["prim"], b["translate"], b["rot"], b["shape_type"], 0))
+                   for b in (extra or ())]
+    if extra_pairs:
+        cache = None  # a kept model has no free bodies in it
+    # A live settle keeps the compiled model between cooks (`cache`, a dict the caller
+    # holds): rebuilding it -- colliders, hulls, compile -- was most of every move.
+    key = entry = None
+    if cache is not None:
+        key = _live_model_key(roots, collision_prims, (
+            gravity, friction, restitution, mass, substeps, dt, up_idx, solver_iters,
+            hfield_res, collider_mode, collider_thickness, floor_drop, free_root,
+            collision_margin))
+        entry = cache.get("entry")
+        if entry is not None and (key is None or entry["key"] != key):
+            entry = None
     colliders = _read_colliders(collision_prims)
-    yield sim_bake.WORKER
-    collider_spec = _articulated_colliders(
-        colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
-        collider_thickness, progress=progress,
-    )
-    yield sim_bake.MAIN
-    built = build_articulated_spec(
-        roots, gravity, friction, restitution, mass, substeps, dt, up_idx,
-        solver_iters, collision_prims, hfield_res, collider_mode, collider_thickness,
-        floor_drop, free_root, collision_margin, collider_spec=collider_spec,
-    )
-    if built is None:
-        return None
-    model, data, ordered = built
+    # An animated collider (a door swinging shut, a paddle sweeping a table) is a mocap body:
+    # its pose every frame, read here on the main thread, re-poses it as the rigid path does.
+    poses = _collider_poses(colliders, start_frame, frame_count)
+    if entry is not None:
+        model, zeros, mocap_names = entry["model"], entry["zeros"], entry["mocap"]
+        ordered = [link for root in roots for link in _iter_links(root)]
+        data = _mj.MjData(model)
+        _mj.mj_forward(model, data)
+    else:
+        # The colliders build on the worker (the slow part on a big Mesh collider); the links
+        # read the stage as they go, so the rest of the build comes back to the main thread.
+        yield sim_bake.WORKER
+        collider_spec, mocap_names = _articulated_colliders(
+            colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
+            collider_thickness, progress=progress,
+        )
+        yield sim_bake.MAIN
+        built = build_articulated_spec(
+            roots, gravity, friction, restitution, mass, substeps, dt, up_idx,
+            solver_iters, collision_prims, hfield_res, collider_mode, collider_thickness,
+            floor_drop, free_root, collision_margin, collider_spec=collider_spec,
+            extra=extra_pairs,
+        )
+        if built is None:
+            return None
+        model, data, ordered = built
+        zeros = None
+        if cache is not None:
+            # The model's zero is the pose it was built in, so the targets it was built at
+            # are what a later pose's targets are measured from (_motor_tracks).
+            zeros = _motor_zeros(ordered)
+            cache["entry"] = None if key is None else {"key": key, "model": model, "zeros": zeros,
+                                                       "mocap": mocap_names}
+    collider_tracks = _mocap_tracks(
+        [(int(model.body_mocapid[_mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, name)]), prim)
+         for name, prim in mocap_names], poses)
     if free_root and (init_vel or ang_vel):
         for root in roots:
             jid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, f"{root.name}_free")
@@ -2681,6 +2961,30 @@ def _sim_articulated_gen_mj(
         if bid is not None:
             root_bids.append(bid)
 
+    # The free bodies are recorded beside the links, and damped as the rigid path damps them.
+    for i in range(len(extra_pairs)):
+        ids[f"__free_{i}"] = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, f"free_body_{i}")
+        jid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, f"free_body_{i}_joint")
+        if jid >= 0:
+            dof0 = model.jnt_dofadr[jid]
+            model.dof_damping[dof0:dof0 + 3] = lin_damping
+            model.dof_damping[dof0 + 3:dof0 + 6] = ang_damping
+
+    # Motors: each one's target per frame. The joints start where frame 0 asks, not at the
+    # rest pose -- a robot animated from a reach would otherwise snap there on frame 1.
+    act_ids, qpos_adr, tracks = _motor_tracks(model, ordered, start_frame, frame_count, zeros)
+    if tracks is not None:
+        data.qpos[qpos_adr] = tracks[0]
+        data.ctrl[act_ids] = tracks[0]
+        _mj.mj_forward(model, data)
+    # A set-down goal closes the loop on a carried body: each frame it is held, the joints
+    # are shifted so it will land on the goal (_set_down_step).
+    goals = [] if tracks is None else _set_down_goals(
+        roots, ordered, model, act_ids, [str(b["prim"].GetPath()) for b, _f in extra_pairs],
+        start_frame, frame_count, up_idx)
+    offsets = [_np.zeros(len(g["columns"])) for g in goals]
+    scratch = _mj.MjData(model) if goals else None
+
     phases = _force_phases(turb_seed)
     sim_t = 0.0
     sub_dt = dt / substeps
@@ -2689,6 +2993,16 @@ def _sim_articulated_gen_mj(
     # Everything below is MuJoCo and Gf only: in a UI it runs on a worker (sim_bake).
     yield sim_bake.WORKER
     for frame in range(frame_count):
+        _set_mocap(data, collider_tracks, frame)
+        if tracks is not None:
+            here, there = tracks[frame], tracks[frame + 1]
+            for goal, dq in zip(goals, offsets):
+                if goal["first"] <= frame < goal["until"]:
+                    dq[:] = _set_down_step(model, data, scratch, goal, tracks[goal["until"]], qpos_adr, dq)
+            shift = _np.zeros(len(act_ids))
+            for goal, dq in zip(goals, offsets):
+                if frame >= goal["first"]:          # kept after release, so the arm doesn't swing back
+                    shift[goal["columns"]] += dq
         for name, bid in ids.items():
             pos = data.xpos[bid]
             quat = data.xquat[bid]
@@ -2696,7 +3010,11 @@ def _sim_articulated_gen_mj(
             mat.SetRotate(Gf.Quatd(float(quat[0]), Gf.Vec3d(float(quat[1]), float(quat[2]), float(quat[3]))))
             mat.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
             results[name].append(mat)
-        for _ in range(substeps):
+        for sub in range(substeps):
+            if tracks is not None:
+                # Eased from this frame's target to the next one's, so a motor is not
+                # yanked once a frame -- a stair-stepped target rings at the frame rate.
+                data.ctrl[act_ids] = here + (there - here) * ((sub + 1) / substeps) + shift
             # Wind pushes the free roots. A link inside a mechanism inherits the motion
             # through its joint rather than being blown independently, which is both
             # cheaper and what a hinged door on a tumbling appliance actually does.
@@ -2723,18 +3041,115 @@ def _sim_articulated_gen_mj(
             mat.SetTranslateOnly(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
             results[name].append(mat)
 
+    # A free body's frame sits on its geometry: its prim's world placement is its rest pose
+    # carried by the body's motion since the start, as the rigid path writes it.
+    for i, (_b, f) in enumerate(extra_pairs):
+        key = f"__free_{i}"
+        results[key] = [f["world_rest"] * f["rest_inv"] * m for m in results[key]]
     return results
+
+
+_SET_DOWN = "setDown:"
+_SET_DOWN_CLAMP = math.radians(10.0)    # the most a set-down correction moves a joint
+
+
+def _set_down_goals(roots, ordered, model, act_ids, free_paths, start_frame: int, frame_count: int,
+                    up_idx: int) -> list[dict]:
+    """The set-down goals on the robots (``setDown:*`` on a root prim or an ancestor, as an
+    upstream chunk writes them), in MuJoCo's terms. Main thread: they are read off the stage.
+
+    A goal names a goal point, the box, the hand link holding it, the joints to correct, the
+    frames to correct over (from the grip shutting until it opens) and a gain. A goal naming
+    a joint that is not a motor here, or a body not in this world, is skipped with a warning.
+    """
+    links = {str(link.prim.GetPath()): link for link in ordered}
+    seen, goals = set(), []
+    for root in roots:
+        prim = root.prim
+        while prim and not prim.IsPseudoRoot():
+            path = str(prim.GetPath())
+            goal = prim.GetAttribute(_SET_DOWN + "goal")
+            if path not in seen and goal and goal.HasValue():
+                seen.add(path)
+                if (found := _set_down_goal(prim, goal, links, model, act_ids, free_paths)) is None:
+                    logger.warning("set-down goal on %s names a joint or body not simulated here: skipped", path)
+                else:
+                    found.update(up=up_idx,
+                                 first=max(0, int(prim.GetAttribute(_SET_DOWN + "from").Get()) - start_frame),
+                                 until=min(frame_count, int(prim.GetAttribute(_SET_DOWN + "until").Get()) - start_frame))
+                    goals.append(found)
+            prim = prim.GetParent()
+    return goals
+
+
+def _set_down_goal(prim, goal, links, model, act_ids, free_paths) -> dict | None:
+    """One set-down goal: motor columns, hand and box body ids, the goal point and gain; None
+    when something it names is not here."""
+    stage = prim.GetStage()
+
+    def body_id(path):
+        if (link := links.get(path)) is not None:
+            return _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, link.name)
+        if path in free_paths:
+            return _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, f"free_body_{free_paths.index(path)}")
+        return -1
+
+    columns = []
+    for path in prim.GetRelationship(_SET_DOWN + "joints").GetTargets():
+        joint = stage.GetPrimAtPath(path)
+        child = _joint_target(joint.GetRelationship("physics:body1")) if joint else None
+        link = links.get(str(child)) if child else None
+        aid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_ACTUATOR, f"{link.name}_joint_motor") if link else -1
+        if aid < 0 or aid not in act_ids:
+            return None
+        columns.append(act_ids.index(aid))
+    hand = [str(p) for p in prim.GetRelationship(_SET_DOWN + "hand").GetTargets()]
+    box = [str(p) for p in prim.GetRelationship(_SET_DOWN + "box").GetTargets()]
+    hand_id = body_id(hand[0]) if hand else -1
+    box_id = body_id(box[0]) if box else -1
+    if not columns or hand_id < 0 or box_id < 0:
+        return None
+    return {"columns": _np.array(columns), "hand": hand_id, "box": box_id,
+            "goal": _np.array(goal.Get(), dtype=float), "gain": float(prim.GetAttribute(_SET_DOWN + "gain").Get())}
+
+
+def _set_down_step(model, data, scratch, goal: dict, release: _np.ndarray, qpos_adr, dq: _np.ndarray) -> _np.ndarray:
+    """One frame of a set-down correction: the motor offsets `dq` moved a `gain` share toward
+    landing the box on the goal (across the floor; its height is the move's). The box is
+    taken where it sits in the hand now and carried to the arm's pose at release (`release`
+    plus `dq`) by forward kinematics; its Jacobian over the joints comes from nudging each."""
+    hand, box = goal["hand"], goal["box"]
+    held = data.xmat[hand].reshape(3, 3).T @ (data.xpos[box] - data.xpos[hand])
+
+    def landing(motors):
+        scratch.qpos[:] = data.qpos
+        scratch.qpos[qpos_adr] = motors
+        _mj.mj_kinematics(model, scratch)
+        return scratch.xpos[hand] + scratch.xmat[hand].reshape(3, 3) @ held
+
+    q = release.copy()
+    q[goal["columns"]] += dq
+    here = landing(q)
+    jac = _np.zeros((3, len(dq)))
+    for k, c in enumerate(goal["columns"]):
+        nudged = q.copy()
+        nudged[c] += 1e-3
+        jac[:, k] = (landing(nudged) - here) / 1e-3
+    miss = goal["goal"] - here
+    miss[goal["up"]] = 0.0
+    step = jac.T @ _np.linalg.solve(jac @ jac.T + 1e-4 * _np.eye(3), miss)
+    return _np.clip(dq + goal["gain"] * step, -_SET_DOWN_CLAMP, _SET_DOWN_CLAMP)
 
 
 def _articulated_colliders(colliders, up_idx, friction, substeps, dt, hfield_res, floor_drop,
                            collider_mode, collider_thickness, progress=None):
-    """The collider spec an articulated asset is built on."""
+    """The collider spec an articulated asset is built on, and its animated colliders' mocap
+    bodies as [(body name, prim)] -- re-posed every frame, or they would stand still."""
     contact_tc = max(2.0 * (dt / substeps), 0.01)
-    spec, _ = _collider_spec(
+    return _collider_spec(
         colliders, up_idx, friction, contact_tc,
         1.0, hfield_res, floor_drop, collider_mode, collider_thickness, progress=progress,
     )
-    return spec
 
 
 def build_articulated_spec(
@@ -2755,6 +3170,7 @@ def build_articulated_spec(
     free_root: bool = True,
     collision_margin: float = 0.0,
     collider_spec=None,
+    extra=None,
 ):
     """Compile an articulated asset into a MuJoCo model.
 
@@ -2774,7 +3190,7 @@ def build_articulated_spec(
     spec = collider_spec if collider_spec is not None else _articulated_colliders(
         collision_prims, up_idx, friction, substeps, dt, hfield_res, floor_drop, collider_mode,
         collider_thickness,
-    )
+    )[0]
     # MuJoCo's compiler defaults to interpreting angles as DEGREES. Joint limits are
     # converted to radians when the USD joint is parsed, so leaving this alone applies the
     # conversion twice and a 90-degree door limit compiles as 1.6 degrees -- a hinge that
@@ -2790,6 +3206,8 @@ def build_articulated_spec(
     bodies = {}
     link_world = {}
     ordered = [link for root in roots for link in _iter_links(root)]
+    motorised = {root.name for root in roots
+                 if any(lk.joint is not None and lk.joint.motor for lk in _iter_links(root))}
 
     for link in ordered:
         world = xform_cache.GetLocalToWorldTransform(link.prim).RemoveScaleShear()
@@ -2816,7 +3234,11 @@ def build_articulated_spec(
             # RBD solver is normally asked the opposite question (drop this and see what
             # happens), so the root gets a free joint unless the caller wants the asset's
             # own anchoring honoured.
-            if free_root:
+            #
+            # Except a robot: anchored AND motorised is an arm on its mount, moved by its
+            # motors, and freed it falls over as it reaches. A robot with motors and no
+            # anchor -- something that walks -- keeps its free root.
+            if free_root and not (link.anchored and link.name in motorised):
                 root_jnt = body.add_joint()
                 root_jnt.type = _mj.mjtJoint.mjJNT_FREE
                 root_jnt.name = f"{link.name}_free"
@@ -2840,15 +3262,23 @@ def build_articulated_spec(
                     span = j.upper - j.lower
                     if j.kind != "revolute" or span < 2.0 * math.pi:
                         jnt.limited = True
-                        jnt.range = [j.lower, j.upper]
-                # MjSpec sizes damping and stiffness for a ball joint's three DOFs; a
-                # hinge or slide uses the first slot only.
-                if j.damping is not None:
-                    jnt.damping = [max(float(j.damping), 0.0), 0.0, 0.0]
-                if j.stiffness is not None:
-                    jnt.stiffness = [max(float(j.stiffness), 0.0), 0.0, 0.0]
+                        # Measured from the posed links the body is built from, not from
+                        # rest: unshifted, a pose that jumped to another solution was
+                        # clamped somewhere else entirely, its end 28 cm off.
+                        jnt.range = [j.lower - j.offset, j.upper - j.offset]
+                if j.motor:
+                    _add_motor(spec, jnt, j)
+                else:
+                    # MjSpec sizes damping and stiffness for a ball joint's three DOFs; a
+                    # hinge or slide uses the first slot only.
+                    if j.damping is not None:
+                        jnt.damping = [max(float(j.damping), 0.0), 0.0, 0.0]
+                    if j.stiffness is not None:
+                        jnt.stiffness = [max(float(j.stiffness), 0.0), 0.0, 0.0]
                 if j.friction is not None:
                     jnt.frictionloss = max(float(j.friction), 0.0)
+                if j.armature is not None:
+                    jnt.armature = max(float(j.armature), 0.0)
 
         link_mass = _authored(UsdPhysics.MassAPI(link.prim).GetMassAttr()) if link.prim.HasAPI(UsdPhysics.MassAPI) else None
         n = _add_link_geoms(spec, body, link.prim, world.GetInverse(), friction,
@@ -2859,6 +3289,21 @@ def build_articulated_spec(
         elif n:
             for g in body.geoms:
                 g.mass = mass / n
+        else:
+            _explicit_inertia(body, link.prim, link_mass or mass)
+
+    # Free rigid bodies in the same world (`extra`, (body, frame) pairs as the rigid path
+    # makes them): what the robot handles. In a solve of their own the gripper could never
+    # touch them; here a cube it closes on is held by friction alone.
+    lat = [j for j in range(3) if j != up_idx]
+    if extra:
+        # Held by friction, a body creeps out of a grip: MuJoCo's soft contacts slide a
+        # little even inside the friction cone, and a cube held between two links slid out
+        # within a second. The no-slip pass stops that, as the rigid path's does.
+        spec.option.noslip_iterations = 3
+    for i, (b, f) in enumerate(extra or ()):
+        _add_dynamic_body(spec, f"free_body_{i}", f"free_body_{i}_joint", f"free_body_{i}_hull",
+                          b, f, contact_tc, collision_margin, lat, 0)
 
     try:
         model = spec.compile()
@@ -2866,7 +3311,10 @@ def build_articulated_spec(
         logger.warning("Articulated scene compile failed: %s", exc)
         return None
 
-    excluded = _exclude_initial_overlaps(spec, model)
+    # Only pairs of the mechanism's own links. The colliders sit in bodies of their own, not
+    # the world body, so left unfiltered a link that starts inside one -- an animated collider
+    # at its rest pose, a link posed into the table -- lost that contact for the whole solve.
+    excluded = _exclude_initial_overlaps(spec, model, only={link.name for link in ordered})
     if excluded:
         try:
             model = spec.compile()
@@ -2882,6 +3330,143 @@ def build_articulated_spec(
         f", {excluded} contact pair(s) excluded" if excluded else "",
     )
     return model, data, ordered
+
+
+def _explicit_inertia(body, prim, mass: float) -> None:
+    """Give a link with no collider shape its mass and inertia directly.
+
+    A link whose colliders could not be read -- mesh colliders that never loaded, say --
+    gets no geoms, so MuJoCo infers a mass of zero and refuses the whole model with a
+    message about mjMINVAL. The asset usually states its inertia anyway (URDF Import
+    authors the <inertial> block), and where it does not, a small solid sphere's keeps
+    the mechanism simulating rather than refusing it.
+    """
+    api = UsdPhysics.MassAPI(prim) if prim.HasAPI(UsdPhysics.MassAPI) else None
+    inertia = _authored(api.GetDiagonalInertiaAttr()) if api else None
+    centre = _authored(api.GetCenterOfMassAttr()) if api else None
+    body.explicitinertial = True
+    body.mass = max(float(mass), 1e-6)
+    if inertia is not None and all(float(v) > 0.0 for v in inertia):
+        body.inertia = [float(v) for v in inertia]
+    else:
+        solid = 0.4 * body.mass * 0.05 ** 2
+        body.inertia = [solid, solid, solid]
+    if centre is not None:
+        body.ipos = [float(v) for v in centre]
+    # A principal-axes frame authored on the asset is not read here; the diagonal is taken
+    # in the link's own frame, which is what URDF Import writes when it has no rotation.
+
+
+def _motor_scale(joint) -> float:
+    """USD drive units to MuJoCo's: a revolute drive's target is in degrees and its stiffness
+    and damping are per degree, MuJoCo works in radians. A prismatic drive is in stage units
+    in both."""
+    return math.degrees(1.0) if joint.kind == "revolute" else 1.0
+
+
+def _add_motor(spec, jnt, joint) -> None:
+    """A position actuator on `jnt`: UsdPhysics' drive force, stiffness * (target - position)
+    - damping * velocity, with the drive's maxForce as the force limit.
+
+    The damping goes in the actuator, not on the joint, so a joint's drive is all in one
+    place; the implicit integrator handles an actuator's velocity term as it does a joint's.
+    The target is measured from the pose the links are authored in, as Pose Articulation
+    writes it: 0 is the rest pose.
+    """
+    scale = _motor_scale(joint)
+    kp = max(float(joint.stiffness), 0.0) * scale
+    kv = max(float(joint.damping or 0.0), 0.0) * scale
+    act = spec.add_actuator()
+    act.name = f"{jnt.name}_motor"
+    act.target = jnt.name
+    act.trntype = _mj.mjtTrn.mjTRN_JOINT
+    act.set_to_position(kp=kp, kv=kv)
+    if joint.max_force is not None and 0.0 < joint.max_force < 1e30:
+        act.forcelimited = True
+        act.forcerange = [-float(joint.max_force), float(joint.max_force)]
+
+
+def _motor_zeros(ordered) -> dict:
+    """Each motor's default target, by link name: the pose a model built now has as zero."""
+    zeros = {}
+    for link in ordered:
+        j = link.joint
+        if j is not None and j.motor:
+            value = j.target.Get(Usd.TimeCode.Default())
+            zeros[link.name] = float(value) if value is not None else 0.0
+    return zeros
+
+
+def _live_model_key(roots, collision_prims, settings) -> tuple | None:
+    """What a compiled model depends on besides the motors' targets, or None if it cannot
+    be kept.
+
+    The links' pose is left out on purpose: posing moves them on every edit, and a kept
+    model takes the new pose as its joints' offsets from the targets it was built at
+    (_motor_zeros). That only works where every moving joint is a motor. A passive one
+    moved upstream has no target saying how far, so such a mechanism is built afresh.
+    """
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    links, bases = [], []
+    for root in roots:
+        bases.append(tuple(float(v) for row in cache.GetLocalToWorldTransform(root.prim) for v in row))
+        for link in _iter_links(root):
+            j = link.joint
+            if j is not None and j.kind in ("revolute", "prismatic") and not j.motor:
+                return None
+            links.append((
+                link.name, link.parent.name if link.parent else None, link.anchored,
+                None if j is None else (j.kind, tuple(j.axis), tuple(j.pos), j.lower, j.upper,
+                                        j.stiffness, j.damping, j.max_force, j.friction),
+                # Its colliders' material friction: a kept model has it compiled in.
+                tuple(_material_friction(p) for p in Usd.PrimRange(link.prim)
+                      if p.HasAPI(UsdPhysics.CollisionAPI)),
+            ))
+    colliders = tuple((str(p.GetPath()), _bounds_key(p), _material_friction(p)) for p in (collision_prims or ()))
+    return tuple(links), tuple(bases), colliders, tuple(settings)
+
+
+def _motor_tracks(model, ordered, start_frame: int, frame_count: int, zeros: dict | None = None):
+    """Each motor's target at every frame, in MuJoCo units: (actuator ids, qpos addresses,
+    array of frame_count + 1 rows by motor).
+
+    Read on the main thread, before the solve moves to a worker where the stage must not be
+    touched. One frame past the end, so the last frame's substeps have a target to ease
+    toward. Empty when nothing is a motor.
+
+    Measured from the drive's DEFAULT value, not from zero. The model is built from the
+    links' default-time placement, so that is the joint's zero; Pose Articulation authors
+    its pose into both the transforms and the default target, and a target taken as
+    absolute would turn the joint by the pose a second time. A chunk authoring a rest
+    default of 0 reads the same either way.
+
+    `zeros` (by link name) replaces the defaults for a model kept from an earlier pose: its
+    zero is the pose it was built in, so a target is measured from the default it had then.
+    """
+    act_ids, qpos_adr, columns = [], [], []
+    times = [Usd.TimeCode(start_frame + f) for f in range(frame_count + 1)]
+    for link in ordered:
+        j = link.joint
+        if j is None or not j.motor:
+            continue
+        aid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_ACTUATOR, f"{link.name}_joint_motor")
+        jid = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_JOINT, f"{link.name}_joint")
+        if aid < 0 or jid < 0:
+            continue
+        to_mj = math.radians(1.0) if j.kind == "revolute" else 1.0
+        current = j.target.Get(Usd.TimeCode.Default())
+        current = float(current) if current is not None else 0.0
+        zero = zeros.get(link.name, current) if zeros is not None else current
+        act_ids.append(aid)
+        qpos_adr.append(int(model.jnt_qposadr[jid]))
+        column = []
+        for t in times:
+            value = j.target.Get(t)
+            column.append(((float(value) if value is not None else current) - zero) * to_mj)
+        columns.append(column)
+    if not act_ids:
+        return [], [], None
+    return act_ids, qpos_adr, _np.array(columns).T
 
 
 def _exclude_initial_overlaps(spec, model, only=None) -> int:
@@ -2963,6 +3548,10 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     written = 0
 
+    if settle_only:
+        _write_settled(stage, roots, layer, results, op_name, xform_cache, node)
+        return
+
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         for link in (found for root in roots for found in _iter_links(root)):
             mats = results.get(link.name)
@@ -2993,10 +3582,20 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
             if settle_only:
                 xf_attr.Set(mats[-1] * parent_world_inv * inv_upstream)
             else:
+                # An animated upstream -- a bake the motors are following -- is divided
+                # out at each frame's own time. Its default-time value would leave the
+                # animation in, and the link would move by it twice.
+                # Read into a list before writing: write_samples authors inside a change
+                # block, where reading the prim being written is not to be trusted.
+                animated = UsdGeom.Xformable(prim).TransformMightBeTimeVarying()
+                samples = [
+                    (start_frame + i, mat * parent_world_inv * (
+                        _upstream_xform(prim, op_name, Usd.TimeCode(start_frame + i)).GetInverse()
+                        if animated else inv_upstream))
+                    for i, mat in enumerate(mats)
+                ]
                 sim_bake.write_samples(
-                    xf_attr,
-                    ((start_frame + i, mat * parent_world_inv * inv_upstream) for i, mat in enumerate(mats)),
-                    default=mats[0] * parent_world_inv * inv_upstream,
+                    xf_attr, samples, default=mats[0] * parent_world_inv * inv_upstream,
                 )
             written += 1
 
@@ -3005,6 +3604,39 @@ def _write_articulated_results(stage, roots, layer, results, start_frame,
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             stage.SetStartTimeCode(start_frame)
             stage.SetEndTimeCode(start_frame + frames - 1)
+
+
+def _write_settled(stage, roots, layer, results, op_name, xform_cache, node) -> None:
+    """Each link's resting pose as its op's default, all links in one Sdf change block.
+
+    Every Usd call that authors sends a change notice the stage, the framework and the
+    viewport each react to. Three per link (the op order, the op, its value) made writing a
+    robot's settled pose cost more than settling it -- most of a live settle on every move.
+    So everything is read first, then written straight into the layer's specs at once.
+    """
+    pending = []
+    for link in (found for root in roots for found in _iter_links(root)):
+        mats = results.get(link.name)
+        if not mats:
+            continue
+        prim = link.prim
+        parent = prim.GetParent()
+        parent_world_inv = Gf.Matrix4d(1.0)
+        if parent and parent.IsValid() and parent.GetPath() != Sdf.Path("/"):
+            parent_world_inv = xform_cache.GetLocalToWorldTransform(parent).GetInverse()
+        order = chunk_gizmo.xform_op_order(node, prim, op_name) if node is not None else [op_name]
+        inv_upstream = _upstream_xform(prim, op_name).GetInverse()
+        pending.append((prim.GetPath(), order, mats[-1] * parent_world_inv * inv_upstream))
+
+    with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
+        writer = sdf_authoring.Writer(stage)
+        with Sdf.ChangeBlock():
+            for path, order, value in pending:
+                spec = writer.over(path)
+                sdf_authoring.attribute(spec, "xformOpOrder", Sdf.ValueTypeNames.TokenArray,
+                                        Vt.TokenArray(order), uniform=True)
+                # custom, as Prim.CreateAttribute made it before
+                sdf_authoring.attribute(spec, op_name, Sdf.ValueTypeNames.Matrix4d, value, custom=True)
 
 
 def _run(owner, notice, sender) -> None:
@@ -3035,7 +3667,8 @@ def _run(owner, notice, sender) -> None:
     frame_count = _chunk.get_param("frame_count", is_i).value
     fps = _chunk.get_param("fps", is_f).value
     gravity = sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage)
-    substeps = max(1, _chunk.get_param("substeps", is_i).value)
+    # The physics scene's step rate when one is authored, as PhysX steps it.
+    substeps = _scene_substeps(stage, fps, max(1, _chunk.get_param("substeps", is_i).value))
     start_frame = _chunk.get_param("start_frame", is_i).value
     friction = _chunk.get_param("friction", is_f).value
     restitution = _chunk.get_param("restitution", is_f).value
@@ -3047,6 +3680,12 @@ def _run(owner, notice, sender) -> None:
     ang_vel = _vec3(_chunk, "angular_velocity")
     floor_drop = _chunk.get_param("floor_drop", is_f).value
     settle_only = bool(_chunk.get_param("settle_to_rest", chunk.is_param_t(bool)).value)
+    # Live Settle: settle on every cook, inline. One preview frame, then stepping on until
+    # at rest -- the pose physics lets the robot hold, not an animation.
+    live = bool(getattr(_chunk, "_rbd_live", False))
+    if live:
+        settle_only = True
+        frame_count = 1
     forces = dict(
         wind=_vec3(_chunk, "wind"),
         turbulence=_chunk.get_param("turbulence", is_f).value,
@@ -3060,7 +3699,7 @@ def _run(owner, notice, sender) -> None:
         return
     # A fractured instancer with Breakable on bakes through the breakage path instead -- on a
     # worker thread, keeping the last bake on screen until the new one is ready.
-    if _chunk.get_param("breakable", chunk.is_param_t(bool)).value and _run_breakable(
+    if not live and _chunk.get_param("breakable", chunk.is_param_t(bool)).value and _run_breakable(
         owner, _chunk, stage, layer, prim_paths[0], collision_path_value, forces
     ):
         return
@@ -3157,8 +3796,18 @@ def _run(owner, notice, sender) -> None:
                 shape_type=authored["shape_type"],
                 gravity=authored["gravity"],
             ))
-    if rigid:
+    # An articulated asset and the plain rigid bodies share one world: they join the first
+    # articulated asset's solve, so its links can close on a cube and lift it by friction. In
+    # a solve of their own they would never touch.
+    holder = next((path for kind, path, _ in jobs if kind == "articulated"), None)
+    if rigid and holder is None:
         jobs.insert(0, ("rigid", None, None))
+    # And every articulated asset shares it too: two mechanisms touching one part have to
+    # touch it, and each other. Solved one by one, the second passed through what the
+    # first held. One job for them all, on the first one's settings.
+    articulated = [path for kind, path, _ in jobs if kind == "articulated"]
+    if len(articulated) > 1:
+        jobs = [job for job in jobs if job[0] != "articulated" or job[1] == holder]
 
     def rigid_steps():
         """The plain rigid bodies, in one world together."""
@@ -3203,9 +3852,14 @@ def _run(owner, notice, sender) -> None:
     def own_steps(kind, prim, authored):
         """An instancer's or an articulated asset's steps: a solve of its own."""
         if kind == "articulated":
+            roots = read_articulations(prim)
+            if prim.GetPath() == holder and len(articulated) > 1:
+                for other in articulated[1:]:
+                    roots += read_articulations(stage.GetPrimAtPath(other))
+                _unique_link_names(roots)
             return _articulated_steps(
                 stage,
-                read_articulations(prim),
+                roots,
                 layer,
                 frame_count,
                 fps,
@@ -3230,6 +3884,9 @@ def _run(owner, notice, sender) -> None:
                 node=_chunk,
                 **forces,
                 progress=progress,
+                # A live settle keeps each articulation's compiled model between cooks.
+                cache=_live_cache(_chunk, prim.GetPath()) if live else None,
+                extra=rigid if prim.GetPath() == holder else None,
             )
         return _instancer_steps(
             stage,
@@ -3334,7 +3991,17 @@ def _run(owner, notice, sender) -> None:
                 + (f"\n{collider_warning}" if collider_warning else ""))
         _chunk.unset_state(chunk.ChunkFlags.State.STALE)
 
-    sim_bake.run(_chunk, bake, report=lambda text: _report(_chunk, text), finish=finish, name="RBDSolver")
+    sim_bake.run(_chunk, bake, report=lambda text: _report(_chunk, text), finish=finish, name="RBDSolver",
+                 inline=live)
+
+
+def _live_cache(node, path) -> dict:
+    """The dict a live settle keeps one articulation's compiled model in, on the chunk."""
+    models = getattr(node, "_rbd_live_models", None)
+    if models is None:
+        models = {}
+        node._rbd_live_models = models
+    return models.setdefault(str(path), {})
 
 
 def _breakage():
@@ -3445,9 +4112,11 @@ def _run_breakable(owner, _chunk, stage, layer, target_path, collision_path_valu
         gravity=sim_bake.gravity(_chunk.get_param("gravity", is_f).value, stage),
         fps=fps,
         frames=frame_count,
-        substeps=max(1, _chunk.get_param("substeps", is_i).value),
+        substeps=_scene_substeps(stage, fps, max(1, _chunk.get_param("substeps", is_i).value)),
         iterations=20,
-        friction=_chunk.get_param("friction", is_f).value,
+        friction=_authored_physics(stage, target, dict(
+            gravity=0.0, mass=1.0, friction=_chunk.get_param("friction", is_f).value,
+            restitution=0.0, shape_type=""))["friction"],
         restitution=_chunk.get_param("restitution", is_f).value,
         density=1.0,
         lin_damping=_chunk.get_param("lin_damping", is_f).value,
@@ -3616,7 +4285,19 @@ def execute(node) -> None:
     Under ``usdchunks run`` or a sweep nobody can press anything, and a network that cooked
     without baking renders a motionless scene that looks entirely plausible -- so it bakes,
     or loads the cache.
+
+    Live Settle is the exception everywhere: it settles on every cook, inline, so moving
+    anything upstream (a pose handle) shows at once where physics lets it rest.
     """
+    live = node.get_param("live_settle", chunk.is_param_t(bool))
+    if live is not None and live.value and not sim_bake.is_running(node):
+        node._rbd_live = True
+        try:
+            _run(node, None, None)
+        finally:
+            node._rbd_live = False
+        node.unset_state(chunk.ChunkFlags.State.STALE)
+        return
     if sim_bake.is_unattended():
         _run(node, None, None)
         return
@@ -3729,6 +4410,18 @@ def main() -> chunk.Chunk:
             "Matters for a sim-ready asset: a prim carrying PhysicsRigidBodyAPI *and* "
             "animated transforms is contradictory, and a downstream simulator ends up "
             "fighting the keyframes.",
+        )
+    )
+    chunk_api.add_param(
+        chunk.Checkbox(
+            "live_settle",
+            "Live Settle",
+            default_value=False,
+            tooltip="Settle to rest on every cook, right away, instead of waiting for Run "
+            "Simulation. Drag a pose handle upstream and the robot lands where its motors, "
+            "gravity and contacts let it -- sagging, or stopped by the table.\n"
+            "For posing: it writes the resting pose only, no animation. Keep it to small "
+            "scenes, since the whole solve runs inside each cook.",
         )
     )
 
@@ -3884,7 +4577,8 @@ def main() -> chunk.Chunk:
             min_value=0.0,
             max_value=1.0,
             default_value=0.5,
-            tooltip="Surface friction: 0 = frictionless, 1 = grippy.",
+            tooltip="Surface friction: 0 = frictionless, 1 = grippy. A collider, body or robot link with a "
+                    "physics material bound uses the material's friction instead.",
         )
     )
     physics_grp.add_param(
@@ -4061,7 +4755,8 @@ def main() -> chunk.Chunk:
             "Substeps",
             default_value=8,
             is_int=True,
-            tooltip="Physics steps per frame. Higher = more stable/accurate but slower.",
+            tooltip="Physics steps per frame. Higher = more stable/accurate but slower. A physics "
+                    "scene's step rate (physxScene:timeStepsPerSecond) wins.",
         )
     )
     sim_grp.add_param(
@@ -4101,7 +4796,10 @@ def config() -> chunk.DefaultConfig:
         of a PointInstancer — as keyframed animation over the frame range. Several
         selected prims are solved together and collide with each other. Add colliders
         for objects to rest on or in (a heightfield is built for concave shapes like
-        bowls). Requires the 'mujoco' package.
+        bowls). A robot carrying a box can be given a set-down goal (setDown:* on its
+        prim: goal point, box, hand, joints, frames, gain): while the box is held, the
+        solver shifts the joints' drive targets so it lands on the goal. Requires the
+        'mujoco' package.
         """
         ),
         # Declared, not just described. Saying it in the description tells a person

@@ -48,6 +48,7 @@ See [example](../example.md) for a more extensive example.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 
@@ -85,6 +86,7 @@ from usd_chunks.chunk_core import (
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager
 from usd_chunks import asset_paths, chunk_cook, chunk_utils
+from usd_chunks.chunk_attributes import AttributeMetadata, CopyMode, SendMode
 
 if TYPE_CHECKING:
     from attr import Attribute
@@ -495,13 +497,33 @@ class Button(ChunkParamBase):
         self.get_attribute_sender("value").execute()
 
 
+#: Numbers each prim field as it fills itself from the selection (LineEdit.selection_seed).
+_SEED_ORDER = itertools.count(1)
+
+
 class LineEdit(ChunkParamBase[str]):
     """An editable single-line string param.
 
     Set ParamFlags.PRIM_SELECTION when the param holds Usd.Prim paths.
+
+    Attributes:
+        prim_types: The schema types a prim field takes, such as ("Camera",) or
+            ("DistantLight",). A new chunk fills the field from the selection only with prims
+            of one of these types (or with one of these API schemas applied). Empty takes any
+            prim.
     """
 
     flags: IntFlag = field(default=ChunkFlags.ParamFlags.LABELED)
+
+    prim_types: Sequence[str] = field(factory=tuple)
+
+    #: When the value came from the host's selection (`_seed_from_selection`): a number that
+    #: grows with each field seeded, so ChunkModule.create can keep the selection in the field
+    #: main() built first, and no other. 0 when the value did not come from the selection.
+    selection_seed: int = field(
+        default=0, init=False,
+        metadata=AttributeMetadata(copy_mode=CopyMode.NO_COPY, send_mode=SendMode.NO_SEND),
+    )
 
     @override
     def __attrs_post_init__(self):
@@ -525,9 +547,35 @@ class LineEdit(ChunkParamBase[str]):
         that depends on the whole stage, cooking on every edit anywhere. Without a prim
         selected the param keeps its default.
         """
-        prims = [p for p in self.get_scene().get_selected_prims() if str(p.GetPath()) != "/"]
+        prims = [
+            p for p in self.get_scene().get_selected_prims()
+            if str(p.GetPath()) != "/" and self.accepts_prim(p)
+        ]
         if prims:
             self.set_prims(prims)
+            self.selection_seed = next(_SEED_ORDER)
+
+    def accepts_prim(self, prim: Usd.Prim) -> bool:
+        """Whether a prim is one of the types this field takes (see prim_types).
+
+        Args:
+            prim: The prim.
+
+        Returns:
+            True when prim_types is empty, or the prim is one of those types or has one of
+            those API schemas applied.
+        """
+        if not self.prim_types:
+            return True
+        for name in self.prim_types:
+            schema = Usd.SchemaRegistry.GetTypeFromSchemaTypeName(name)
+            if schema.isUnknown:
+                continue
+            if Usd.SchemaRegistry.IsAppliedAPISchema(schema) and prim.HasAPI(schema):
+                return True
+            if prim.IsA(schema):
+                return True
+        return False
 
     def set_prims(self, prims: Sequence[Usd.Prim]):
         """Set the value to a comma-separated list of these prims' paths.

@@ -106,7 +106,11 @@ or `../` path there. A chunk that opens the file itself, as CAD Import does, get
 from `chunk.resolve_file(node, value)` instead of reading the value from the working
 directory.
 - `PRIM_SELECTION`, `PROP_SELECTION`: for `LineEdit`. The value is a prim or property path,
-  so the UI lets you pick it from the selection.
+  so the UI lets you pick it from the selection. A new chunk fills its first prim field
+  from the selected prims, and only that one: declare the chunk's main target first (the
+  mesh to scatter on, the prim to move). A field that takes only some prims names their
+  schema types, `prim_types=("Camera",)`; it fills only from a prim of one of those types,
+  and otherwise the next field gets the selection.
 - `PY_SYNTAX_HIGHLIGHT`, `USD_SYNTAX_HIGHLIGHT`: syntax highlighting for `TextEdit`.
 
 **State** (`ChunkFlags.State`) describes what a param is doing right now: `HIDDEN`,

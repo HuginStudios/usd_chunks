@@ -9,12 +9,60 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Fixed
+
+- Blender, Flet, ImGui: a wire from one node's chunk port dropped on a folded node's "+"
+  chains the node. The "+" sits right under the chunk port (in Blender, 1 px apart at Home
+  zoom), and the drop only said "nothing there takes that wire".
+- RBD Solver with Shape Type Convex Hull collides a moved PointInstancer's instances where
+  they are drawn. Each hull carried the instancer's own transform, so under a moved or
+  rotated instancer (the Open Chess Set's pawns) the instances fell through what they should
+  land on, or spun off it.
 ### Added
 
 - Auto quick save in usdview: an edited network is written to `shot.autosave.usda` beside its
   file every 2 minutes, and offered back (Recover or Discard) when it is opened again after a
   crash. Save Scene deletes the quick saves; turn it off in **Chunks > Auto Quick Save**, or
   for everyone with `USD_CHUNKS_AUTOSAVE_MINUTES=0`.
+- URDF Import: a Fixed Base option (on by default) anchors the base link to the world with
+  a fixed joint. Turn it off for a robot that walks or drives.
+- CAD Import reads DXF drawings, through `ezdxf` (now in the chunk's requirements). Blocks
+  become instanced parts and their INSERTs (MINSERT arrays too) placements, and model space
+  becomes one Xform per layer, leaving out layers that are off or frozen. Meshes, polyface
+  meshes, 3D faces and flat-faced ACIS solids come in as double-sided meshes that keep the
+  file's quads and shared points, and lines, arcs, circles and splines as BasisCurves.
+  Curved ACIS solids, text, hatches and dimensions are skipped and counted in the readout.
+- RBD Solver drives joint motors: a joint whose UsdPhysics drive has a `targetPosition` and
+  a stiffness becomes a position actuator, with `maxForce` as its force limit. An animated
+  target (keyed, or from Pose Articulation) is followed frame by frame with gravity and
+  contacts, and the solve starts at frame 0's target. Stiffness and damping are per degree
+  for an angular drive, as UsdPhysics defines them. A drive without a target stays passive.
+  A robot anchored to the world and driven by motors stays on its mount; one with no
+  anchor (something that walks) keeps a free base.
+- RBD Solver reads a joint's `physxJoint:armature` (the motor's rotor inertia): what lets a
+  stiff drive move light links without the solve ringing apart.
+- RBD Solver simulates an articulated asset and the plain rigid bodies selected with it in one
+  world, so its links can close on a body and lift it by friction alone (with MuJoCo's no-slip
+  pass, so a held body does not creep out). Before, an articulated asset had a solve of its own and
+  passed through everything else.
+- RBD Solver honours `convexDecomposition` on an articulated asset's collision meshes (URDF
+  Import's Collider menu): each is split into convex pieces instead of one hull, so a
+  curved part no longer simulates as a solid wedge.
+- RBD Solver: Live Settle settles to rest on every cook, inline, so posing an articulated asset
+  upstream (Pose Articulation) shows at once where its motors, gravity and contacts let it rest. It
+  writes the resting pose only, no animation, and keeps each robot's compiled model between
+  cooks, rebuilding it only when the robot, its colliders or the solver's settings change.
+- RBD Solver: a **set-down goal** (`setDown:*` on an articulated asset's prim: a goal point, a
+  body, the link holding it, the joints, the frames it is held over and a gain). Each of those
+  frames the solver predicts where the held body will land and shifts the joints' drive
+  targets, at most 10 degrees, so it lands on the goal.
+- `sim_bake.run(..., inline=True)` runs a bake straight through on the calling thread even
+  where a worker is available, for a solve short enough to finish inside its cook.
+- Blender: **Add Chunk Folder** in the USDChunks sidebar adds a folder of chunks (your own
+  library, say) to `USD_CHUNK_DIRS` from inside Blender. Its chunks join the Add menu at once
+  and the folder is kept in the add-on's new **Chunk Folders** preference. **Add
+  Renderer...** in the viewport's Renderer menu does the same for a Hydra render delegate
+  (Aurora, ...) built against Blender's USD; it is listed after a restart.
 - Pipeline examples: seven scripts in `examples/scripts/` and a short guide,
   [Pipeline examples](docs/pipeline-examples.md): a valley biome scattered by height, a
   street of houses, a forest, the SO-101 robot for Isaac Sim, CAD to render, a product
@@ -37,6 +85,23 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- **Breaking:** URDF Import reads `<limit effort velocity>`: effort becomes the joint drive's
+  `maxForce` (N m, or N on a prismatic joint, in the stage's units) and velocity PhysX's
+  `physxJoint:maxJointVelocity` (degrees a second). RBD Solver applies the max force, so a
+  robot re-imported from a file with low effort limits now has weaker motors than before.
+  To keep the old behaviour, author a larger `maxForce` downstream of the import. A zero or
+  missing value is still left out.
+- **Breaking:** RBD Solver takes friction from the physics material bound to each collider
+  and each robot link's collision prim, and its substeps from the physics scene's
+  `physxScene:timeStepsPerSecond`, so a bake and a PhysX run of the same file agree. Its
+  Friction and Substeps sliders now apply only where nothing is authored. A scene whose
+  colliders carry a physics material bakes with that material's friction; change the
+  material, not the slider.
+- RBD Solver builds mesh colliders (an imported asset's STL links) about 50 times faster; a
+  live settle of a six-joint arm went from 9 s to 50 ms a move. It splits a collider marked
+  convexDecomposition once per mesh and reuses the split (a re-solve: about 1 s, down from
+  20 s), and writes a settled pose in one change block, so a live settle
+  sends the viewport one change notice per move instead of three per link.
 - `usdchunks list <words>` finds chunks by task words, best first: whole words only ("rain"
   no longer lists every fence for "terrain"), every word of the query, the name counting most.
   Scatter Points is found for rocks, trees and grass, Inline USD for keyframes.
@@ -47,6 +112,70 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Importing a library that walks every loaded module (PyTorch does) failed with another
+  chunk's missing dependency (`No module named 'fbx'`) once chunks were discovered. Reading a
+  chunk module's `__file__`, `__name__` or `__class__` no longer runs a chunk nobody has used.
+- Painting a Scatter Brush that is not in the chain the Output cooks says why and does
+  nothing, instead of failing inside the stroke with a traceback ("Layer ... is not in the
+  local LayerStack") and losing it. It happened with two brushes made one after the other,
+  when the Output was wired to the second: wire the brush in, or set it as the Output.
+- Making or opening a Camera no longer warns "camera_preset: '' is not one of [...]; using
+  'Iphone 13 Pro'". The camera was right (an X-T5); the warning read like the wrong body.
+- Blender: ticking Allow Online Access in the "Missing chunk dependencies" dialog no longer
+  declines the install. The box holding the switch disappeared, so the dialog shrank under
+  the mouse and the click on Install landed outside it. The box now stays and says that
+  online access is on.
+- **Breaking:** a Camera's lens is written in the stage's units. USD keeps focal length and
+  aperture in tenths of a scene unit, and the chunk wrote its millimetres as they are, so in
+  a scene in metres (every new one) a 50 mm lens was a 5 m lens. The framing was right but
+  depth of field blurred about 100 times too much: f/2.8 needed an f-stop of 280. The camera
+  prim now gets 0.5 for 50 mm in metres (centimetre scenes are unchanged), and Blender's
+  mirror camera reads it back as 50 mm. If you set an f-stop like 280 to make up for it, set
+  the real one again.
+- A new Camera's sensor reaches the camera prim. The default preset is an X-T5 (23.5 x 15.7
+  mm), but the prim kept USD's 20.955 x 15.29 until you moved a Sensor slider, so the camera
+  framed wider than the chunk showed and its image had another aspect. Any lens value left
+  at its default had the same problem; the focal length only looked right because 50 is
+  also USD's default.
+- A new chunk fills only its first prim field from the selected prim. Every prim field took
+  it before: a Scatter Points made with the ground selected also used the ground as its
+  Grow Near and its prototype, an Inherit inherited from itself, a Collection excluded what
+  it included, and a Render Settings took a mesh as its camera. Camera, dome and sun fields
+  (Render, Render Settings, Render Product, Frustum Prune, Finish Frame) now take only a
+  camera or that light. A chunk declares this with `LineEdit(..., prim_types=("Camera",))`.
+- **Breaking:** two Scatter Brushes on one mesh keep their own paint. Every brush wrote the
+  same field, `scatterDensity`, so on a shared mesh one brush's paint won and both Scatter
+  Points (or Vines) read it: ivy painted on a cliff face regrew on the clifftop grass. Each
+  brush now paints `scatterDensity_<chunk name>` and shows that name on its Density Field
+  output. A Scatter Points or Vine wired to that output follows it, renames included. If you
+  typed `scatterDensity` into a Density Field by hand, wire it from the brush instead.
+- Blender: opening a folded node with the arrow in its header shows its params. Before, the
+  node opened empty except for its status line, and the next reload folded it again; only H
+  opened it properly.
+- Blender: a chunk's read-only text, like the Swedish House's size readout or a download
+  status, shows as plain text. It was an editable field with the param's name in front
+  ("not built yet | 8.5 x 4.7 m").
+- Blender Import brings a subdivided mesh in smooth, as Blender shows it. Blender's USD export
+  wrote a Subdivision Surface modifier as the low-poly cage plus a subdivision scheme, and the
+  viewport drew the cage, so a smooth Suzanne came out faceted. A new Blender Import applies
+  the modifier; its new Subdivision menu has **As USD subdivision** for the cage and scheme.
+  Imports saved before keep As USD subdivision, so they cook as they did.
+- CAD Import, Reference and Payload keep their location when you pick a new version of the
+  same file from another folder: `widget.stp` stays at `/widget` instead of moving to
+  `/widget1`, so the chunks downstream that read `/widget` keep working.
+- Blender: a file param a chunk makes while it cooks, like a Dome Light's texture file, has
+  a browse button instead of a bare text field. A path Blender writes relative to the
+  .blend (`//sky.exr`, with the Relative Paths preference on) now reaches the param absolute,
+  since USD cannot resolve it.
+- RBD Solver simulates every articulated prim in its selection in one world, with the plain
+  rigid bodies: two mechanisms touching one part touch it and each other. Each was solved on
+  its own, the bodies joining only the first, so the second passed through what the first
+  held. Two copies of one asset (the same link names) no longer clash.
+- RBD Solver on a body whose transform is animated upstream (an Attach carrying it) divides
+  that animation out frame by frame, as it already did for articulated links. The bake
+  showed the simulated motion with the animation played on top of it.
+- RBD Solver no longer drops the contact between an articulated link and a collider it
+  starts inside: a link posed into the table passed straight through it.
 - A Vine's leaves no longer flicker as Growth % changes. Each leaf keeps its place, its id
   and, through Scatter Points, its leaf shape, turn and size; leaves still grow in from Tip
   Leaf Size behind the tips. Scatter Points picks the prototype of a point with an id from
@@ -91,6 +220,9 @@ This file starts with the first release; development before that is in the commi
   put its params back.
 - `usdchunks show` on a chunk that can't load says why (the missing package or import error) and
   what it needs, instead of listing no params as if it took none.
+- RBD Solver moves an animated collider (a sweeping paddle, a door swinging shut) when it
+  simulates a jointed asset. The collider stayed where it started, and one whose rest pose
+  overlapped the asset never touched it at all.
 
 ## [1.0.0-rc.2] - 2026-11-19
 

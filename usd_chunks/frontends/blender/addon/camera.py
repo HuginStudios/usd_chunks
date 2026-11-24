@@ -26,6 +26,7 @@ import bpy
 from mathutils import Matrix
 from pxr import Gf, Usd, UsdGeom
 
+from usd_chunks import chunk_utils
 from usd_chunks.frontends.blender.addon import viewport
 
 logger = logging.getLogger(__name__)
@@ -93,9 +94,28 @@ def prim_camera(prim, time=Usd.TimeCode.Default()):
     one."""
     if prim is None or not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
         return None
-    camera = UsdGeom.Camera(prim).GetCamera(time)
+    camera = _lens_in_millimetres(UsdGeom.Camera(prim).GetCamera(time), prim.GetStage())
     world = viewport.stage_to_blender(prim.GetStage()) @ to_mathutils(camera.transform)
     return world, camera
+
+
+def _lens_in_millimetres(camera: Gf.Camera, stage) -> Gf.Camera:
+    """A perspective camera's lens and sensor in millimetres, as Blender's are.
+
+    USD keeps them in tenths of a scene unit, which is millimetres only in a centimetre
+    scene. In metres a 50 mm lens is 0.5, and taken as it was it gave Blender a 0.5 mm lens
+    (clamped to 1) with a 0.36 mm sensor.
+    """
+    if camera.projection != Gf.Camera.Perspective:
+        return camera
+    scale = chunk_utils.millimetres_per_lens_unit(stage)
+    if scale != 1.0:
+        camera.focalLength *= scale
+        camera.horizontalAperture *= scale
+        camera.verticalAperture *= scale
+        camera.horizontalApertureOffset *= scale
+        camera.verticalApertureOffset *= scale
+    return camera
 
 
 def _to_stage_camera(camera: Gf.Camera) -> Gf.Camera:

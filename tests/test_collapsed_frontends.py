@@ -71,6 +71,19 @@ def test_plus_to_plus_asks_the_output_side_then_the_input_side(view):
     assert _connections(view, f"{second}.inputs:ty") == [f"{first}.inputs:tx"]
 
 
+def test_an_exec_wire_on_an_input_plus_chains_the_node(view):
+    """The "+" sits a few pixels from the exec port; a wire meant for one lands on the other."""
+    first, second = content_nodes(view)
+    exec_in = _port(view, second, chunk_graph.EXEC_INPUT)
+    chunk_graph.disconnect(view.stage, exec_in, view.prims, view.chunks, heal=False)
+    assert not _connections(view, exec_in.attr_path)
+
+    view.join(_port(view, first, chunk_graph.EXEC_OUTPUT), chunk_graph.PlusRef(second, True))
+
+    assert view.pending_pick is None
+    assert _connections(view, exec_in.attr_path) == [f"{first}.{chunk_graph.EXEC_OUTPUT}"]
+
+
 def test_a_plus_and_a_port_of_its_own_direction_offer_nothing(view):
     first, second = content_nodes(view)
 

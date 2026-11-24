@@ -35,7 +35,8 @@ from usd_chunks.chunk_scene import SceneSender
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks import chunk_stage
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks"))
+for _folder in ("rigs", "dynamics"):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "chunks" / _folder))
 urdf_import = importlib.import_module("urdf_import")
 rbd_solver = importlib.import_module("rbd_solver")
 
@@ -441,13 +442,35 @@ class TestAuthoring:
         assert tip.IsValid(), "the welded frame should be nested under its parent"
         assert not tip.HasAPI(UsdPhysics.RigidBodyAPI)
         joints = [p for p in Usd.PrimRange(stage.GetPrimAtPath("/World/robot"))
-                  if p.IsA(UsdPhysics.Joint)]
+                  if p.IsA(UsdPhysics.Joint) and p.GetName() != "world_anchor"]
         assert [p.GetName() for p in joints] == ["joint_shoulder"]
 
     def test_the_root_link_carries_the_articulation(self, scene, tmp_path):
         stage, _ = scene
         _import(scene, TWO_LINK, tmp_path)
         assert stage.GetPrimAtPath("/World/robot/base").HasAPI(UsdPhysics.ArticulationRootAPI)
+
+    def test_a_fixed_base_is_anchored_to_the_world(self, scene, tmp_path):
+        """A fixed joint with a body1 and no body0 is UsdPhysics' bolt to the world, and
+        what the RBD Solver keeps a motorised arm on its mount by."""
+        stage, _ = scene
+        _import(scene, TWO_LINK, tmp_path)
+
+        anchor = UsdPhysics.FixedJoint(stage.GetPrimAtPath("/World/robot/base/world_anchor"))
+        assert anchor
+        assert anchor.GetBody0Rel().GetTargets() == []
+        assert anchor.GetBody1Rel().GetTargets() == [Sdf.Path("/World/robot/base")]
+        roots = rbd_solver.read_articulations(stage.GetPrimAtPath("/World/robot"))
+        assert [r.anchored for r in roots] == [True]
+
+    def test_a_free_base_has_no_anchor(self, scene, tmp_path):
+        """Something that walks: its base must stay free."""
+        stage, _ = scene
+        _import(scene, TWO_LINK, tmp_path, fixed_base=False)
+
+        assert not stage.GetPrimAtPath("/World/robot/base/world_anchor")
+        roots = rbd_solver.read_articulations(stage.GetPrimAtPath("/World/robot"))
+        assert [r.anchored for r in roots] == [False]
 
     def test_mass_and_inertia_survive(self, scene, tmp_path):
         stage, _ = scene
@@ -516,6 +539,29 @@ class TestAuthoring:
         assert [str(t) for t in joint.GetRelationship("physics:body1").GetTargets()] == [
             "/World/robot/upper"
         ]
+
+    def test_effort_and_velocity_become_max_force_and_max_joint_velocity(self, scene, tmp_path):
+        """<limit effort="10" velocity="2">: 10 N m of drive, 2 rad/s as PhysX's degrees a second."""
+        stage, _ = scene
+        _import(scene, TWO_LINK, tmp_path)
+        joint = stage.GetPrimAtPath("/World/robot/upper/joint_shoulder")
+        assert joint.GetAttribute("drive:angular:physics:maxForce").Get() == pytest.approx(10.0)
+        assert joint.GetAttribute("physxJoint:maxJointVelocity").Get() == pytest.approx(math.degrees(2.0))
+
+    def test_a_torque_limit_follows_the_stages_units(self, scene, tmp_path):
+        """N m in metres is 1e4 kg cm^2/s^2 in centimetres: a torque scales by scale squared."""
+        stage, _ = scene
+        _import(scene, TWO_LINK, tmp_path, scale=100.0)
+        joint = stage.GetPrimAtPath("/World/robot/upper/joint_shoulder")
+        assert joint.GetAttribute("drive:angular:physics:maxForce").Get() == pytest.approx(10.0 * 100.0 ** 2)
+        assert joint.GetAttribute("physxJoint:maxJointVelocity").Get() == pytest.approx(math.degrees(2.0))
+
+    def test_a_zero_effort_is_left_out_not_a_seized_joint(self, scene, tmp_path):
+        stage, _ = scene
+        _import(scene, TWO_LINK.replace('effort="10" velocity="2"', 'effort="0" velocity="0"'), tmp_path)
+        joint = stage.GetPrimAtPath("/World/robot/upper/joint_shoulder")
+        assert not joint.GetAttribute("drive:angular:physics:maxForce")
+        assert not joint.GetAttribute("physxJoint:maxJointVelocity")
 
     def test_scale_is_applied_to_lengths(self, scene, tmp_path):
         """URDF is always metres. A centimetre stage wants 100, and getting it wrong gives
