@@ -1006,12 +1006,16 @@ def _hang(nodes, projector, settings, seed):
     out onto it, so one that falls over a bulge drapes across it instead of through it. Past
     the painted region there is no surface to collide with, and it falls freely.
 
+    With Curl, the last part of each tendril (Curl Length) stops falling and turns round
+    instead, out and back up, so its end hangs as a hook or a loop rather than a plumb line.
+
     Its nodes are born after the tip, so Growth % and the growth primvar grow them last.
 
     Args:
         nodes: The pruned skeleton.
         projector: The painted surface, for collisions.
-        settings: From `_settings`: hang, hang_length, step and up are read.
+        settings: From `_settings`: hang, hang_length, hang_curl, hang_curl_length, step
+            and up are read.
         seed: The random seed; tendrils draw from their own stream, so turning Hang on does not
             change the vine they hang from.
 
@@ -1056,12 +1060,23 @@ def _hang(nodes, projector, settings, seed):
     # Each tendril its own length, Hang Length the longest: all the same, they hung in a row
     # like a fringe cut straight.
     reach = np.maximum(1, np.round(steps * rng.uniform(_SHORTEST, 1.0, len(tips))))
+    curl = _curls(reach, away, up, settings, seed)
     out = nodes.copy()
     for index in range(steps):
         wave = np.sin(phase + pace * index)[:, None]
-        direction = (direction + (-up) * _GRAVITY + sway * wave
-                     + rng.normal(scale=0.08, size=direction.shape))
+        noise = rng.normal(scale=0.08, size=direction.shape)
+        if curl is None:
+            direction = direction + (-up) * _GRAVITY + sway * wave + noise
+        else:
+            # A curling end turns at its own steady rate instead of falling and swaying, or
+            # gravity would pull the hook straight again.
+            start, axis, turn = curl
+            curling = index >= start
+            falling = (-up) * _GRAVITY + sway * wave + noise
+            direction = direction + np.where(curling[:, None], noise * 0.5, falling)
         direction /= np.maximum(np.linalg.norm(direction, axis=1), 1e-9)[:, None]
+        if curl is not None:
+            direction = _turned(direction, axis, np.where(curling, turn, 0.0))
         position = position + direction * step
         landed, normals, found = projector.project_many(position)
         inside = found & (_dot(position - landed, normals) < clearance)
@@ -1076,6 +1091,8 @@ def _hang(nodes, projector, settings, seed):
         position, direction, away = position[going], direction[going], away[going]
         sway, phase, pace, reach = sway[going], phase[going], pace[going], reach[going]
         parent, born = parent[going], born[going] + 1
+        if curl is not None:
+            curl = tuple(part[going] for part in curl)
         # Each leaf on a tendril faces its own way round the strand: all facing out the way the
         # tip left the wall, they read as a flat plastic ribbon.
         facing = _turned(away, direction, rng.uniform(-_LEAF_TURN, _LEAF_TURN, len(away)))
@@ -1085,6 +1102,45 @@ def _hang(nodes, projector, settings, seed):
 
 #: The shortest a tendril grows, as a share of Hang Length.
 _SHORTEST = 0.3
+
+#: The least a tendril curls, as a share of Curl.
+_LEAST_CURL = 0.6
+
+
+def _curls(reach, away, up, settings, seed):
+    """Where and how each tendril's end curls, or None with no Curl.
+
+    Args:
+        reach: Per tendril, how many steps it grows.
+        away: Per tendril, the surface normal at the tip it hangs from.
+        up: The stage's up axis.
+        settings: From `_settings`: hang_curl (degrees) and hang_curl_length are read.
+        seed: The random seed. Curls draw from their own stream, so Curl leaves the rest of
+            the tendril as it was.
+
+    Returns:
+        `(start, axis, turn)`: per tendril, the step its curl starts at, the axis it turns
+        about and the angle it turns each step, in radians. None when Curl is 0.
+    """
+    if settings.get("hang_curl", 0.0) <= 0.0:
+        return None
+    rng = np.random.default_rng([seed, 2])
+    count = len(reach)
+    steps = np.maximum(1, np.round(reach * settings["hang_curl_length"]))
+    # Each its own amount, so the ends do not all hook alike.
+    turn = np.radians(settings["hang_curl"]) * rng.uniform(_LEAST_CURL, 1.0, count) / steps
+    # The end swings out, away from what it hangs from, give or take: back in, it curls into
+    # the wall. Under an arch the normal points down and has no "out", so it picks its own.
+    out = away - np.outer(away @ up, up)
+    flat = np.linalg.norm(out, axis=1) < 0.3
+    random = rng.normal(size=(count, 3))
+    random -= np.outer(random @ up, up)
+    out[flat] = random[flat]
+    out /= np.maximum(np.linalg.norm(out, axis=1), 1e-9)[:, None]
+    out = _turned(out, np.broadcast_to(up, out.shape), rng.uniform(-0.8, 0.8, count))
+    # Turning about this axis takes "down" towards "out", then on up.
+    axis = np.cross(-up, out)
+    return reach - steps, axis, turn
 
 #: How far a tendril's sway pulls it sideways each step, against gravity's pull down.
 _SWAY = 0.22
@@ -1286,8 +1342,8 @@ _TENDRIL_LEAF = 0.8
 #: How much of a strand's growth, back from its tip, its leaves take to reach full size.
 _YOUNG_SPAN = 0.15
 
-#: No leaves: points, normals, growth, directions, scales.
-_NO_LEAVES = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3)), np.zeros(0))
+#: No leaves: points, normals, growth, directions, scales, tips.
+_NO_LEAVES = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3)), np.zeros(0), np.zeros(0))
 
 
 def _leaf_points(strands, positions, normals, radii, growth, settings, hanging=None):
@@ -1315,13 +1371,15 @@ def _leaf_points(strands, positions, normals, radii, growth, settings, hanging=N
             to a wall, and leaved as thickly it hung in clumps.
 
     Returns:
-        (points, normals, growth, directions, scales): (L, 3), (L, 3), (L,), (L, 3) and (L,)
-        arrays. A direction is the way the leaf leaves its stem -- out to its side and a
-        little forward -- for Scatter Points to point the leaf along. A scale is the leaf's
-        size: full on the older stem, down to Tip Leaf Size at the tip it is growing toward.
+        (points, normals, growth, directions, scales, tips): (L, 3), (L, 3), (L,), (L, 3),
+        (L,) and (L,) arrays. A direction is the way the leaf leaves its stem -- out to its
+        side and a little forward -- for Scatter Points to point the leaf along. A scale is
+        the leaf's size: full on the older stem, down to Tip Leaf Size at the tip it is
+        growing toward. A tip is when that tip grew, so `_leaves_at` can size the leaf for a
+        vine cut short of it.
     """
     spacing = settings["leaf_spacing"]
-    found_points, found_normals, found_growth, found_dirs, found_scales = [], [], [], [], []
+    found_points, found_normals, found_growth, found_dirs, found_scales, found_tips = [], [], [], [], [], []
     radii = np.asarray(radii, dtype=np.float64)
     bare = settings["leaf_bare"] * (float(growth.max()) if len(growth) else 0.0)
     for chain in strands if spacing > 0.0 else ():
@@ -1365,10 +1423,42 @@ def _leaf_points(strands, positions, normals, radii, growth, settings, hanging=N
         found_growth.append(age[keep])
         found_dirs.append(direction[keep])
         found_scales.append(scale[keep])
+        found_tips.append(np.full(int(np.count_nonzero(keep)), float(growth[chain[-1]])))
     if not found_points:
         return _NO_LEAVES
     return (np.concatenate(found_points), np.concatenate(found_normals), np.concatenate(found_growth),
-            np.concatenate(found_dirs), np.concatenate(found_scales))
+            np.concatenate(found_dirs), np.concatenate(found_scales), np.concatenate(found_tips))
+
+
+def _leaves_at(leaves, fraction, settings):
+    """The grown vine's leaves as they stand at `fraction` of its growth, each with its id.
+
+    A leaf is kept if the vine has reached it, and keeps the place and the id it has on the
+    grown vine, so Scatter Points gives it the same leaf at every Growth %. Leaves from the
+    part-grown vine sat along strands that regroup as it grows: they moved, and their order
+    changed, from one Growth % to the next, and the leaves on them flickered.
+
+    A leaf near the cut is sized as the tip it is growing toward: Tip Leaf Size at the cut,
+    full a little way behind it. So leaves still grow in behind the tips.
+
+    Args:
+        leaves: The grown vine's leaves, from `_leaf_points`.
+        fraction: How far grown, 0..1.
+        settings: From `_settings`: leaf_young is read.
+
+    Returns:
+        (points, normals, growth, directions, scales, ids) for the leaves grown by then.
+    """
+    points, normals, growth, directions, scales, tips = leaves
+    ids = np.arange(len(points), dtype=np.int64)
+    keep = growth <= fraction + 1e-12
+    points, normals, growth, directions = points[keep], normals[keep], growth[keep], directions[keep]
+    scales, tips, ids = scales[keep], tips[keep], ids[keep]
+    young = settings["leaf_young"]
+    grown = young + (1.0 - young) * np.clip((tips - growth) / _YOUNG_SPAN, 0.0, 1.0)
+    now = young + (1.0 - young) * np.clip((np.minimum(tips, fraction) - growth) / _YOUNG_SPAN, 0.0, 1.0)
+    scales = scales * now / np.maximum(grown, 1e-6)
+    return points, normals, growth, directions, scales, ids
 
 
 # ---------------------------------------------------------------------------
@@ -1422,6 +1512,8 @@ def _settings(node, surface):
         "hang": number("hang") / 100.0,
         # A share of the painted region, like Thickness, so it reads the same at any scale.
         "hang_length": region * number("hang_length") / 100.0,
+        "hang_curl": number("hang_curl"),
+        "hang_curl_length": min(max(number("hang_curl_length") / 100.0, 0.0), 1.0),
         "taper": number("taper"),
         # A multiple of each node's own radius, applied per node -- not a distance. See `_lift`.
         "lift": number("lift"),
@@ -1528,7 +1620,8 @@ _GROWN: dict = {}
 
 #: The settings that change what grows. The rest only change how it is drawn.
 _GROWTH_SETTINGS = ("step", "influence", "kill", "climb", "wander", "meander", "density", "roots",
-                    "min_branch", "max_nodes", "hang", "hang_length", "hang_floor")
+                    "min_branch", "max_nodes", "hang", "hang_length", "hang_curl", "hang_curl_length",
+                    "hang_floor")
 
 
 def _lowest(surface, up):
@@ -1542,15 +1635,29 @@ class _Grown:
     `seated` is the skeleton after smoothing and re-seating on the surface, for the Smoothing
     it was done at: (passes, positions, normals). Re-seating projects every node, and is most
     of what is left of a cook once the growth is reused.
+
+    `leaves` is the grown vine's leaves, for the settings they were drawn with: (key, leaves),
+    the key from `_leaf_key`. Every Growth % cuts them, so dragging Growth draws them once.
     """
 
-    __slots__ = ("key", "nodes", "projector", "roots", "roots_note", "hand_placed", "grown", "seated")
+    __slots__ = ("key", "nodes", "projector", "roots", "roots_note", "hand_placed", "grown", "seated", "leaves")
 
     def __init__(self, nodes, projector, roots, roots_note, hand_placed, grown):
         self.key = None
         self.nodes, self.projector = nodes, projector
         self.roots, self.roots_note, self.hand_placed, self.grown = roots, roots_note, hand_placed, grown
         self.seated = None
+        self.leaves = None
+
+
+#: What the grown vine's leaves depend on besides the skeleton: its Smoothing, the stem widths
+#: and lift they sit on, and the leaf settings.
+_LEAF_SETTINGS = ("smooth", "base_width", "taper", "lift", "leaves", "leaf_spacing", "leaf_spread",
+                  "leaf_bare", "leaf_young")
+
+
+def _leaf_key(settings):
+    return tuple(settings[name] for name in _LEAF_SETTINGS)
 
 
 def _growth_key(surface, settings, seed, cloud):
@@ -1711,41 +1818,51 @@ def execute(node):
         _resurface(nodes, projector)
         grown.seated = (settings["smooth"], nodes.position.copy(), nodes.normal.copy())
     growth = _growth_of(nodes)
-    drawn = _draw(nodes, growth, settings["growth"], settings)
+    full = settings["growth"] >= 1.0
+    drawn = _draw(nodes, growth, settings["growth"], settings, with_leaves=full)
     if drawn is None:
         _bail(node, stage, layer, where, "nothing grown yet — raise Growth")
         return
-    strands, leaves = drawn[0], drawn[4]
+    strands = drawn[0]
+    # The leaves are the grown vine's, cut to Growth % (see `_leaves_at`), on every frame too.
+    # Drawn once for the skeleton and kept: dragging Growth % only cuts them.
+    leaf_key = _leaf_key(settings)
+    if full:
+        grown_leaves = drawn[4]
+    elif grown.leaves is not None and grown.leaves[0] == leaf_key:
+        grown_leaves = grown.leaves[1]
+    else:
+        grown_leaves = _draw(nodes, growth, 1.0, settings)[4]
+    grown.leaves = (leaf_key, grown_leaves)
+    leaf_count = int(np.count_nonzero(grown_leaves[2] <= settings["growth"] + 1e-12))
 
     frames = _frames(settings)
     with Usd.EditContext(stage, chunk_utils.edit_target(stage, layer)):
         UsdGeom.Scope.Define(stage, where[0])
         # The default value is the vine at Growth %, for anything that reads without a time.
         _author_curves(stage, where[1], drawn, settings, node)
-        _author_leaves(stage, where[2], drawn[4], settings, node)
+        _author_leaves(stage, where[2], grown_leaves, settings, node, grown_to=settings["growth"])
         for frame, fraction in frames:
-            at = _draw(nodes, growth, fraction, settings)
+            at = _draw(nodes, growth, fraction, settings, with_leaves=False)
             time = Usd.TimeCode(frame)
             _author_curves(stage, where[1], at, settings, node, time)
-            # The grown vine's leaves, each from the frame the vine reaches it -- not the
-            # leaves of the part-grown vine. Those are spaced along strands that regroup as
-            # the vine grows, so they would shuffle from frame to frame. Kept by index, which
-            # is each leaf's id, so an instancer can follow them.
-            _author_leaves(stage, where[2], drawn[4], settings, node, time, fraction)
+            # The grown vine's leaves, each from the frame the vine reaches it, kept by index,
+            # which is each leaf's id, so an instancer can follow them.
+            _author_leaves(stage, where[2], grown_leaves, settings, node, time, fraction)
 
     hit_cap = grown.grown >= settings["max_nodes"]
     _report(
         node,
         f"{grown.roots} vine{'s' if grown.roots != 1 else ''}"
         f"{' from painted points' if grown.hand_placed else ''} · "
-        f"{len(strands)} branches · {len(leaves[0])} leaves"
+        f"{len(strands)} branches · {leaf_count} leaves"
         + (f" · grows over frames {frames[0][0]:g}-{frames[-1][0]:g}" if frames else "")
         + (f"\ncapped at {settings['max_nodes']} points — raise Max Points" if hit_cap else "")
         + (f"\n{grown.roots_note}" if grown.roots_note else ""),
     )
 
 
-def _draw(nodes, growth, fraction, settings):
+def _draw(nodes, growth, fraction, settings, with_leaves=True):
     """The vine as drawn at one moment of its growth.
 
     Shared by the still image and every animated frame, so frame N of an animation is exactly
@@ -1756,6 +1873,8 @@ def _draw(nodes, growth, fraction, settings):
         growth: When each node grew, from `_growth_of`.
         fraction: How far grown, 0..1.
         settings: From `_settings`.
+        with_leaves: Place the leaves too. Off where only the stems are wanted: a part-grown
+            vine's leaves are the grown vine's, cut (see `_leaves_at`).
 
     Returns:
         (strands, nodes, radii, growth, leaves) for what has grown, or None before anything
@@ -1772,7 +1891,7 @@ def _draw(nodes, growth, fraction, settings):
     _lift(cut, radii, settings["lift"])
     leaves = (
         _leaf_points(strands, cut.position, cut.normal, radii, cut_growth, settings, cut.hanging)
-        if settings["leaves"]
+        if settings["leaves"] and with_leaves
         else _NO_LEAVES
     )
     return strands, cut, radii, cut_growth, leaves
@@ -1888,19 +2007,15 @@ def _author_leaves(stage, path, leaves, settings, node, time=Usd.TimeCode.Defaul
     Guide purpose: the points are data for Scatter Points, and a renderer that draws Points
     (V-Ray) would show each leaf as a ball. usdview shows them with Display Guide on.
 
-    `leaves` None is a frame before any leaf grew. Points, normals, widths, growth and extent
-    are written at `time`; with `grown_to`, only the leaves grown by then (growth up to it).
-    Every leaf carries its index in `leaves` as its id, so the same leaf keeps the same id on
-    every frame.
+    `leaves` are the grown vine's, None before any leaf grew. Points, normals, widths, growth
+    and extent are written at `time`; with `grown_to`, only the leaves grown by then (see
+    `_leaves_at`). Every leaf carries its index in `leaves` as its id, so the same leaf keeps
+    the same id on every frame and at every Growth %.
     """
     if leaves is None:
         leaves = _NO_LEAVES
-    points, normals, growth, directions, scales = leaves
-    ids = np.arange(len(points), dtype=np.int64)
-    if grown_to is not None:
-        keep = growth <= grown_to + 1e-12
-        points, normals, growth, ids = points[keep], normals[keep], growth[keep], ids[keep]
-        directions, scales = directions[keep], scales[keep]
+    points, normals, growth, directions, scales, ids = _leaves_at(
+        leaves, 1.0 if grown_to is None else grown_to, settings)
 
     def vec3f(array):
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(array, dtype=np.float32).reshape(-1, 3))
@@ -2266,6 +2381,31 @@ def main():
             "region. Each tendril grows to its own length, down to a third of this.",
         )
     )
+    hang.add_param(
+        chunk.Slider(
+            "hang_curl",
+            "Curl",
+            min_value=0.0,
+            max_value=360.0,
+            default_value=0.0,
+            flags=_PF.LABELED,
+            tooltip="How far the end of each tendril curls round, in degrees. 0 hangs straight\n"
+            "down. 90 swings the end out, 180 turns it back up like a hook, 360 rolls it\n"
+            "into a loop. Each tendril curls its own amount, down to 60% of this.",
+        )
+    )
+    hang.add_param(
+        chunk.Slider(
+            "hang_curl_length",
+            "Curl Length %",
+            min_value=5.0,
+            max_value=100.0,
+            default_value=35.0,
+            flags=_PF.LABELED,
+            tooltip="How much of each tendril curls, from its end, as a percentage of its\n"
+            "length. Low makes a tight hook at the tip, high a long loose J.",
+        )
+    )
     chunk_api.add_param(hang)
 
     # --- shape ---
@@ -2503,6 +2643,8 @@ def config():
           - Roots: how many vines to start when no painted points are wired.
           - Hang % / Hang Length %: tendrils that fall off the vine tips and
             drape over the mesh, like ivy hanging off a ledge.
+          - Curl / Curl Length %: how far the end of each tendril curls round,
+            out and back up, and how much of it curls.
           - Thickness %: width at the base, as a share of the painted region,
             so the defaults hold at any scene scale. Lift, leaf spacing and
             leaf size are all multiples of it.

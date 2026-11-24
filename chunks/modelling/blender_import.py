@@ -52,6 +52,13 @@ logger = logging.getLogger(__name__)
 #: The collection menu's entry for "everything in the scene".
 WHOLE_SCENE = "Scene Collection"
 
+#: The Subdivision menu, onto Blender's USD exporter's export_subdivision. As USD
+#: subdivision is what an import saved before the menu existed was made with; config's
+#: new_values gives every import made from now on Apply.
+SUBDIVISION_AS_USD = "As USD subdivision"
+SUBDIVISION_APPLY = "Apply"
+_SUBDIVISION = {SUBDIVISION_AS_USD: "BEST_MATCH", SUBDIVISION_APPLY: "TESSELLATE"}
+
 #: Where Blender's exporter puts everything; copied from here to primpath_location.
 _EXPORT_ROOT = "/root"
 
@@ -278,6 +285,9 @@ def _export_kwargs(node, stage, path):
         export_animation=bool(node.get_param("export_animation").value),
         use_instancing=bool(node.get_param("use_instancing").value),
         evaluation_mode=(node.get_param("evaluation_mode").value or "Render").upper(),
+        # Blender's own default, BEST_MATCH, writes a Subdivision Surface modifier as the
+        # cage plus a catmullClark scheme, and the Hydra view draws the cage.
+        export_subdivision=_SUBDIVISION.get(node.get_param("subdivision").value, "BEST_MATCH"),
         convert_scene_units="CUSTOM",
         meters_per_unit=UsdGeom.GetStageMetersPerUnit(stage),
     )
@@ -362,6 +372,13 @@ def main():
             default_value="Render", flags=ChunkFlags.ParamFlags.LABELED,
             tooltip="Which modifier and visibility settings the export uses.",
         ),
+        chunk.Menu(
+            "subdivision", "Subdivision", menu_items=list(_SUBDIVISION),
+            default_value=SUBDIVISION_AS_USD, flags=ChunkFlags.ParamFlags.LABELED,
+            tooltip="Apply: a Subdivision Surface modifier is applied, so the stage has the mesh "
+            "Blender shows.\nAs USD subdivision: the cage is written with a Catmull-Clark scheme "
+            "for the renderer to subdivide; the viewport draws the cage.",
+        ),
         chunk.Checkbox("export_materials", "Materials", default_value=True,
                        flags=ChunkFlags.ParamFlags.LABELED),
         chunk.Checkbox("materialx", "MaterialX", default_value=False,
@@ -386,6 +403,9 @@ def config():
         # Always cached, never a checkbox: an unchanged import reads back on reopen
         # rather than running Blender's exporter again.
         cache_always=True,
+        # What Blender shows: a new import applies Subdivision Surface modifiers. Saved
+        # imports keep the cage and scheme they were made with.
+        new_values={"subdivision": "Apply"},  # SUBDIVISION_APPLY: config() runs on its own
         description="""
         Imports Blender objects into the stage -- one collection or the whole scene --
         the way Houdini's SOP Import brings SOPs into LOPs.
@@ -395,6 +415,10 @@ def config():
         MaterialX) come through as Blender writes them. The result is copied into this
         chunk's layer under the target prim: nothing is left on disk beside the network,
         and an unchanged import is read back from the cook cache instead of exported again.
+
+        Subdivision: Apply (new imports) applies Subdivision Surface modifiers, so the stage
+        has the mesh Blender shows; As USD subdivision writes the cage with a Catmull-Clark
+        scheme for the renderer to subdivide.
 
         Live by default: editing what the collection holds re-imports it; anything else
         Blender does is ignored.

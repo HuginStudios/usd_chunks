@@ -1087,7 +1087,12 @@ def file_changed(owner, notice, sender):
         return
 
     asset_name = Tf.MakeValidIdentifier(os.path.splitext(os.path.basename(cad_path))[0])
-    primpath_param.value = chunk_utils.get_unique_path(param.get_stage(), f"/{asset_name}")
+    suggestion = f"/{asset_name}"
+    # A revision with the same file name keeps its root: the prim already there is this
+    # chunk's own import, not a clash, and the chunks downstream read it at that path.
+    if suggestion != primpath_param.value:
+        suggestion = chunk_utils.get_unique_path(param.get_stage(), suggestion)
+    primpath_param.value = suggestion
     primpath_param.filled_in = primpath_param.value
 
 

@@ -40,7 +40,7 @@ if "bpy" not in sys.modules:  # pragma: no cover - the usual case outside Blende
 import bpy  # noqa: E402
 
 from mathutils import Matrix, Vector  # noqa: E402
-from pxr import Gf, Kind, Sdf, Usd, UsdGeom  # noqa: E402
+from pxr import Gf, Kind, Sdf, Tf, Usd, UsdGeom  # noqa: E402
 
 from graph_fixtures import chunk_prims, make_network  # noqa: E402
 from usd_chunks import chunk, chunk_registry  # noqa: E402
@@ -689,6 +689,54 @@ def test_a_collapsed_node_shows_its_wired_sockets_and_a_plus_each_side(view):
     assert len(_shown(_node(view, "Move").inputs)) > 1, "open again: every param's socket"
 
 
+def test_blenders_own_collapse_arrow_opens_and_folds_the_params(view):
+    """The arrow in a node's header sets node.hide and nothing else. The chunk stayed
+    COLLAPSED, its param sockets stayed folded, and the node opened with no sliders in it."""
+    view.set_selection({_node(view, "Move").name})
+    view.collapse_selected_or_all()
+    move = _node(view, "Move")
+    chunk = view.chunks[move.name]
+
+    move.hide = False  # what a click on the arrow does
+    assert bg.follow_hide_toggles(view)
+    move = _node(view, "Move")
+    assert not chunk.has_state(ChunkFlags.State.COLLAPSED)
+    assert len(_shown(move.inputs)) > 1, "open: every param's socket"
+    _flush(view)  # the tick between two clicks
+    assert not _node(view, "Move").hide
+
+    move = _node(view, "Move")
+    move.hide = True
+    assert bg.follow_hide_toggles(view)
+    move = _node(view, "Move")
+    assert chunk.has_state(ChunkFlags.State.COLLAPSED)
+    assert [s.name for s in _shown(move.inputs)] == [bg._PLUS]
+    view.reload()
+    assert _node(view, "Move").hide, "folded with the arrow survives a reload"
+
+
+def test_a_collapse_from_the_model_is_not_taken_back_before_the_tree_catches_up(view):
+    """A collapse made on the chunk (a script, undo) reaches node.hide on the next flush.
+    Until then the two disagree, and that is the tree lagging, not the arrow: the poll must
+    not undo it."""
+    move = _node(view, "Move")
+    chunk = view.chunks[move.name]
+    chunk.set_state(ChunkFlags.State.COLLAPSED)
+    assert not _node(view, "Move").hide, "precondition: the tree has not caught up yet"
+    assert not bg.follow_hide_toggles(view)
+    assert chunk.has_state(ChunkFlags.State.COLLAPSED)
+    _flush(view)
+    assert _node(view, "Move").hide
+
+
+def test_the_add_ons_poll_follows_the_collapse_arrow(view, monkeypatch):
+    """The arrow has no callback of its own, so the add-on's 0.1 s poll is what notices it."""
+    seen = []
+    monkeypatch.setattr(bg, "follow_hide_toggles", lambda v=None: seen.append(v))
+    addon._poll_new_trees()
+    assert seen
+
+
 def test_a_link_to_a_plus_is_taken_out_and_picked_as_a_param(view):
     """The link is not a wire until a param is picked: update() removes it, and join()
     asks (headless, the pick waits in pending_pick; Blender proper shows a search)."""
@@ -853,6 +901,48 @@ def _add(view, module_name):
     view.chunks = {chunk_stage.get_chunk_prim_path(c): c for c in view.scene.get_chunks()}
     view.reload()
     return view.tree.nodes[chunk_stage.get_chunk_prim_path(chunk)]
+
+
+class _Layout:
+    """Stands in for a bpy UILayout (there is none headless) and records what is drawn."""
+
+    def __init__(self):
+        self.calls = []
+        self.active = True
+        self.alert = False
+
+    def row(self, **_kw):
+        return self
+
+    column = row
+
+    def label(self, text="", **_kw):
+        self.calls.append(("label", text))
+
+    def prop(self, _data, key, **kw):
+        self.calls.append(("prop", key, kw.get("text")))
+
+    def operator(self, idname, **_kw):
+        self.calls.append(("operator", idname))
+        return type("Op", (), {})()
+
+
+def test_a_label_param_is_drawn_as_its_text_not_a_field(view):
+    """A Label is a read-only line (the House's "8.5 x 4.7 m · Hip roof" readout, a status).
+    Qt shows its text. Blender drew an editable text field captioned with the param's own
+    label, so the readout read "not built ... | 8.5 x 4.7 m" and could be typed into."""
+    node = _add(view, "house")
+    readout = node.get_chunk().get_param("readout")
+    readout.value = "8.5 x 4.7 m · Hip roof\n19 windows"
+    layout = _Layout()
+    assert chunk_blender.draw_param(node, layout, readout)
+    # One Blender label per line: a label draws a single line.
+    assert layout.calls == [("label", "8.5 x 4.7 m · Hip roof"), ("label", "19 windows")]
+
+    readout.value = ""
+    layout = _Layout()
+    assert not chunk_blender.draw_param(node, layout, readout), "nothing to read: no row"
+    assert layout.calls == []
 
 
 def test_a_hidden_groups_params_are_hidden_with_it(view):
@@ -1526,7 +1616,8 @@ def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
     stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)  # Blender's own space: no turn
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)  # an in-memory stage is centimetres
-    prim = _camera_prim(stage, focal=50.0)
+    # In tenths of a scene unit, as USD keeps a lens: 50 x 36 mm in metres.
+    prim = _camera_prim(stage, focal=0.5, aperture=0.36)
     addon.BlenderScene(prim.GetStage()).set_viewport_camera(prim)
     obj = bpy.context.scene.camera
     assert obj is not None and obj.name == addon.camera.MIRROR_NAME
@@ -1873,6 +1964,40 @@ def test_blender_objects_are_copied_into_the_chunk_layer(imported):
     assert "</imported/_materials/ImportRed>" in text
 
 
+def _imported_mesh(node, name):
+    """(face count, subdivision scheme) of the mesh the import wrote for object `name`."""
+    stage = Usd.Stage.Open(node.get_edit_context())
+    mesh = next(UsdGeom.Mesh(p) for p in stage.Traverse()
+                if p.IsA(UsdGeom.Mesh) and p.GetParent().GetName() == Tf.MakeValidIdentifier(name))
+    return len(mesh.GetFaceVertexCountsAttr().Get()), mesh.GetSubdivisionSchemeAttr().Get()
+
+
+def test_a_new_import_applies_the_subdivision_modifier(view, imported):
+    """Blender's USD export writes a Subdivision Surface modifier as the cage plus a
+    catmullClark scheme by default, and the Hydra view draws the cage: a smooth Suzanne
+    in Blender came out faceted in the stage. A new import applies the modifier; a saved
+    one keeps the cage it was made with."""
+    node, obj, _material, mod = imported
+    subsurf = obj.modifiers.new("Subdivision", "SUBSURF")
+    subsurf.levels = subsurf.render_levels = 2
+
+    assert node.get_param("subdivision").value == "As USD subdivision", "a saved import's value"
+    mod.execute(node)
+    assert _imported_mesh(node, obj.name) == (500, UsdGeom.Tokens.catmullClark)
+
+    node.get_edit_context().Clear()
+    node.get_param("subdivision").value = "Apply"
+    mod.execute(node)
+    faces, scheme = _imported_mesh(node, obj.name)
+    assert faces > 500 * 15 and scheme == UsdGeom.Tokens.none, (faces, scheme)
+
+    entry = next(e for e in chunk_graph.menu_entries() if e.module.module_name == "blender_import")
+    view.create_chunk(entry, 0.0, 0.0)
+    made = [c for c in view.scene.get_chunks()
+            if c is not node and c.get_config().module == "blender_import"]
+    assert [c.get_param("subdivision").value for c in made] == ["Apply"], "a new one applies it"
+
+
 def test_only_what_the_import_reads_changes_its_fingerprint(imported):
     node, obj, material, mod = imported
     before = mod._fingerprint(node)
@@ -2048,7 +2173,7 @@ def test_a_hit_sent_as_a_stroke_paints_the_floor(painted):
                                     [(Gf.Vec3d(*point), 1.0, Gf.Vec3d(*normal))])
     painter.stop_gizmo()
     primvar = UsdGeom.PrimvarsAPI(view.stage.GetPrimAtPath("/World/Floor")).GetPrimvar(
-        "scatterDensity")
+        painter.get_param("density_name").value)
     weights = list(primvar.ComputeFlattened())
     assert max(weights) > 0.0
     assert weights[0] == 0.0  # the corner at (0, 0) is outside a radius-2 brush at (5, 5)
@@ -2318,3 +2443,32 @@ def test_every_chunk_that_builds_gets_a_node_class(view):
         if built:
             missing.append(name)
     assert missing == []
+
+
+def _dome_file_param(view):
+    """A Light chunk cooked as a DomeLight, and its texture file param: one its cook makes."""
+    node = _add(view, "light")
+    light = node.get_chunk()
+    light.get_param("light_type").value = "DomeLight"
+    light.execute()
+    params = [p for p in chunk_blender.iter_drawable(light, include_hidden=True)
+              if ChunkFlags.ParamType.FILE in p.get_type()]
+    assert params, "a DomeLight has a texture file"
+    return node, light, params[0]
+
+
+def test_a_file_param_a_cook_makes_gets_a_browse_button(view):
+    """A DomeLight's texture file drew as bare text: a param made in a cook is an ID
+    property on the node, and only a colour got a subtype there."""
+    node, light, param = _dome_file_param(view)
+    chunk_blender.sync_to_node(node, light)
+    key = chunk_blender.prop_key(param)
+    assert node.id_properties_ui(key).as_dict()["subtype"] == "FILE_PATH"
+
+
+def test_a_blend_relative_path_reaches_the_param_absolute(view):
+    """Blender's browser writes '//sky.exr' with Relative Paths on; USD cannot resolve it."""
+    _node_, _light, param = _dome_file_param(view)
+    chunk_blender._write_param(param, "//sky.exr")
+    assert param.value == bpy.path.abspath("//sky.exr")
+    assert not param.value.startswith("//")

@@ -616,6 +616,26 @@ def test_a_change_that_only_redraws_does_not_grow_again(host, monkeypatch) -> No
     assert grown
 
 
+def test_dragging_growth_places_the_grown_vines_leaves_once(host, monkeypatch) -> None:
+    """A part-grown vine's leaves are the grown vine's, cut. Placing them is a walk of every
+    strand, so it is done once for a skeleton, not again at every Growth %."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine(seed=3, growth=30.0)
+    module = _loaded_vine(host)
+    placed = []
+    real = module._leaf_points
+    monkeypatch.setattr(module, "_leaf_points", lambda *args: placed.append(1) or real(*args))
+    before = len(host.leaves().GetPointsAttr().Get())
+
+    for growth in (45.0, 60.0, 75.0):
+        node.get_param("growth").value = growth
+
+    assert not placed
+    assert len(host.leaves().GetPointsAttr().Get()) > before
+    node.get_param("leaf_spacing").value = 6.0
+    assert placed
+
+
 def test_a_reused_growth_draws_what_a_fresh_cook_draws(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     node = host.vine(seed=3)
@@ -733,6 +753,32 @@ def test_an_animated_vine_keeps_its_leaves_where_they_grew(host) -> None:
     assert np.array_equal(np.asarray(cloud.GetPointsAttr().Get(6)), final[ids])
 
 
+def test_a_part_grown_vine_keeps_its_leaves_where_they_grew(host) -> None:
+    """Growth % below 100 shows some of the grown vine's leaves, each where it is on the grown
+    vine and with the same id. Leaves of the part-grown vine moved and were renumbered at every
+    Growth %, so the leaves instanced on them flickered as the vine grew."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    node = host.vine()
+    final = np.asarray(host.leaves().GetPointsAttr().Get(), dtype=np.float64)
+
+    for growth in (40.0, 70.0):
+        node.get_param("growth").value = growth
+        cloud = host.leaves()
+        ids = np.asarray(cloud.GetIdsAttr().Get())
+        assert 0 < len(ids) < len(final)
+        assert np.allclose(np.asarray(cloud.GetPointsAttr().Get(), dtype=np.float64), final[ids], atol=1e-6)
+
+
+def test_leaves_at_the_growing_tips_start_small(host) -> None:
+    """Behind the cut the leaves grow in from Tip Leaf Size, as at the tips of the grown vine."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    host.vine(leaf_young=0.3, growth=50.0)
+    primvars = UsdGeom.PrimvarsAPI(host.leaves().GetPrim())
+    scale = np.asarray(primvars.GetPrimvar("scale").Get(), dtype=np.float64)
+
+    assert scale.min() == pytest.approx(0.3, abs=0.05) and scale.max() == pytest.approx(1.0)
+
+
 def test_a_still_vine_writes_no_time_samples(host) -> None:
     _paint(host.mesh, _stripe(2.0, 8.0))
     host.vine()
@@ -789,29 +835,122 @@ def test_leaves_on_a_tendril_face_every_way_round_it(host) -> None:
     assert np.abs(normals[hanging, 0]).mean() > 0.3
 
 
-def test_tendrils_hang_to_different_lengths(host, monkeypatch) -> None:
-    """All the same length, tendrils hang in a row like a fringe cut straight."""
-    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+def _hung(host, monkeypatch):
+    """Record each skeleton `_hang` returns, newest last."""
     module = _loaded_vine(host)
     hung = []
     real = module._hang
     monkeypatch.setattr(module, "_hang", lambda *args: hung.append(real(*args)) or hung[-1])
-    host.vine(hang=100.0, hang_length=20.0)
+    return hung
 
-    nodes = hung[-1]
+
+def _tendrils(nodes):
+    """Each tendril of a skeleton as its node positions, from where it leaves the vine to its end."""
     parents = np.asarray(nodes.parent)
     hanging = np.asarray(nodes.hanging)
-    # Each tendril starts at a hanging node whose parent is not one; count down its chain.
+    # Each tendril starts at a hanging node whose parent is not one; walk down its chain.
     child = {int(p): i for i, p in enumerate(parents) if p >= 0 and hanging[i]}
-    lengths = []
+    tendrils = []
     for start in np.flatnonzero(hanging & ~hanging[np.maximum(parents, 0)]):
-        n, at = 1, int(start)
-        while at in child:
-            at, n = child[at], n + 1
-        lengths.append(n)
+        chain = [int(start)]
+        while chain[-1] in child:
+            chain.append(child[chain[-1]])
+        tendrils.append(np.asarray(nodes.position)[chain])
+    return tendrils
+
+
+def test_tendrils_hang_to_different_lengths(host, monkeypatch) -> None:
+    """All the same length, tendrils hang in a row like a fringe cut straight."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    hung = _hung(host, monkeypatch)
+    host.vine(hang=100.0, hang_length=20.0)
+
+    lengths = [len(tendril) for tendril in _tendrils(hung[-1])]
 
     assert len(lengths) > 5
     assert max(lengths) > 2 * min(lengths)
+
+
+def test_a_curled_tendril_turns_back_up_at_its_end(host, monkeypatch) -> None:
+    """Hanging ivy hooks at its ends. With Curl 180 a tendril's end turns back up: it ends
+    above its lowest point, heading up."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    hung = _hung(host, monkeypatch)
+    host.vine(hang=100.0, hang_length=20.0, hang_curl=180.0)
+
+    # Long enough to curl visibly: a two-node tendril has no room for a hook.
+    tendrils = [t for t in _tendrils(hung[-1]) if len(t) >= 8]
+    lowest = np.array([t[:, 2].min() for t in tendrils])
+    end = np.array([t[-1, 2] for t in tendrils])
+    heading = np.array([t[-1, 2] - t[-2, 2] for t in tendrils])
+
+    assert len(tendrils) > 5
+    # Nearly every one: a tendril stopped by the floor never reaches its curl.
+    assert np.mean(end > lowest + 1e-3) > 0.8
+    assert np.mean(heading > 0.0) > 0.8
+
+
+def test_curl_swings_a_tendril_out_from_the_wall(host, monkeypatch) -> None:
+    """Back toward the wall, a curl would press into it. It swings out, off the wall."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    hung = _hung(host, monkeypatch)
+    node = host.vine(hang=100.0, hang_length=20.0)
+    straight = _tendrils(hung[-1])
+    node.get_param("hang_curl").value = 90.0
+    curled = _tendrils(hung[-1])
+
+    # The wall is the y = 0 plane; the tendrils leave it on the +y side of its normals.
+    out = [abs(c[-1, 1]) - abs(s[-1, 1]) for s, c in zip(straight, curled) if len(c) >= 8]
+    assert np.mean(np.asarray(out) > 0.0) > 0.8
+
+
+def test_no_curl_hangs_the_tendrils_as_before(host) -> None:
+    """Curl 0 is the default, and the tendrils it draws are the ones drawn before Curl was a
+    setting: turning Curl up and back down to 0 puts every point back where it was."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    node = host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=20.0)
+    before = host.points()
+    node.get_param("hang_curl").value = 180.0
+    curled = host.points()
+    node.get_param("hang_curl").value = 0.0
+
+    assert node.get_param("hang_curl").default_value == 0.0
+    assert curled.shape != before.shape or not np.allclose(curled, before)
+    np.testing.assert_array_equal(host.points(), before)
+
+
+def test_curl_leaves_the_vine_above_its_tendrils_alone(host) -> None:
+    """Curl changes only the ends of the tendrils: the vine on the wall is the same vine."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    node = host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=20.0)
+    straight = host.points()
+    node.get_param("hang_curl").value = 270.0
+    curled = host.points()
+
+    on_wall = np.abs(straight[:, 1]) < 1e-6
+    nearest = np.min(np.linalg.norm(straight[on_wall][:, None, :] - curled[None, :, :], axis=2), axis=1)
+    assert on_wall.sum() > 20
+    assert nearest.max() < 1e-5
+
+
+def test_a_curled_tendril_grows_its_hook_last(host) -> None:
+    """Growth % still grows a curled tendril from its tip down to the end of its hook, and the
+    leaves already grown stay where they were."""
+    _paint(host.mesh, lambda p: 1.0 if p[2] >= 6.0 else 0.0)
+    node = host.vine(curve_form="Linear", lift=0.0, smooth=0, hang=100.0, hang_length=20.0,
+                     hang_curl=180.0)
+    growth, _ = _growth(host)
+    counts = host.curves().GetCurveVertexCountsAttr().Get()
+    for strand in np.split(growth, np.cumsum(counts)[:-1]):
+        assert np.all(np.diff(strand) > 0.0)
+
+    final = np.asarray(host.leaves().GetPointsAttr().Get(), dtype=np.float64)
+    for value in (40.0, 70.0):
+        node.get_param("growth").value = value
+        cloud = host.leaves()
+        ids = np.asarray(cloud.GetIdsAttr().Get())
+        assert 0 < len(ids) < len(final)
+        assert np.allclose(np.asarray(cloud.GetPointsAttr().Get(), dtype=np.float64), final[ids], atol=1e-6)
 
 
 def test_tendrils_carry_fewer_smaller_leaves(host) -> None:
@@ -1050,6 +1189,48 @@ def test_the_leaf_cloud_drives_a_scatter_points_chunk(host) -> None:
     # One instance per leaf, standing exactly where the leaf was.
     assert np.linalg.norm(placed[:, None, :] - cloud[None, :, :], axis=2).min(axis=1).max() < 1e-5
     assert len(instancer.GetOrientationsAttr().Get()) == len(cloud)
+
+
+def test_a_leaf_keeps_its_look_as_the_vine_grows(host) -> None:
+    """Each leaf keeps its prototype and turn from one Growth % to the next. Picked by a
+    shuffle over the count, every leaf got a new prototype whenever the vine grew a leaf."""
+    _paint(host.mesh, _stripe(2.0, 8.0))
+    for index in range(3):
+        leaf = UsdGeom.Mesh.Define(host.stage, f"/Assets/Leaf{index}")
+        leaf.GetPointsAttr().Set([Gf.Vec3f(-0.1, 0, 0), Gf.Vec3f(0.1, 0, 0), Gf.Vec3f(0, 0.2 + 0.1 * index, 0)])
+        leaf.GetFaceVertexCountsAttr().Set([3])
+        leaf.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+    node = host.vine(growth=60.0)
+    scatter = host.chunk("scatter_points")
+    scatter.add_dependency(node)
+    scatter.get_param("points_prim").value = node.get_param("out_leaves").value
+    scatter.get_param("inst_path").value = "/LeafInstancer"
+    scatter.get_param("orient_mode").value = "Align to Normal"
+    scatter.get_param("rand_amount").value = 40.0
+    rows = scatter.get_param("prototypes")
+    rows.size = 3
+    for index in range(3):
+        rows.get_indexed_param(rows.get_param("proto_path"), index).value = f"/Assets/Leaf{index}"
+    scatter.execute()
+
+    def looks():
+        ids = np.asarray(host.leaves().GetIdsAttr().Get())
+        inst = UsdGeom.PointInstancer(host.stage.GetPrimAtPath("/LeafInstancer"))
+        protos = np.asarray(inst.GetProtoIndicesAttr().Get())
+        turns = np.asarray([(q.GetReal(), *q.GetImaginary()) for q in inst.GetOrientationsAttr().Get()])
+        return {int(i): (p, q) for i, p, q in zip(ids, protos, turns)}
+
+    part = looks()
+    node.get_param("growth").value = 100.0
+    scatter.execute()
+    grown = looks()
+
+    assert 0 < len(part) < len(grown)
+    assert len({int(p) for p, _ in grown.values()}) == 3
+    for leaf_id, (proto, turn) in part.items():
+        assert grown[leaf_id][0] == proto
+        assert np.allclose(grown[leaf_id][1], turn, atol=2e-3)
 
 
 def test_wiring_painted_points_hides_the_root_count(host) -> None:
