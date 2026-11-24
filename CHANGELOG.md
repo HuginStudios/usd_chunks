@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender, Flet, ImGui: a wire from one node's chunk port dropped on a folded node's "+"
+  chains the node. The "+" sits right under the chunk port (in Blender, 1 px apart at Home
+  zoom), and the drop only said "nothing there takes that wire".
 - RBD Solver with Shape Type Convex Hull collides a moved PointInstancer's instances where
   they are drawn. Each hull carried the instancer's own transform, so under a moved or
   rotated instancer (the Open Chess Set's pawns) the instances fell through what they should

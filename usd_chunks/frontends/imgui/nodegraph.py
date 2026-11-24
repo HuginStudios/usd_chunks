@@ -439,6 +439,7 @@ class ImGuiGraphView:
         waits in pending_pick for choose(), which joins it on and may ask again when both
         ends were a "+".
         """
+        a, b = chunk_graph.plus_as_exec(a, b)  # an exec wire on a "+" chains the node
         step = chunk_graph.plus_step(self.chunks, a, b)
         if step is None:
             change = chunk_graph.connect(self.stage, a, b, self.chunks)
