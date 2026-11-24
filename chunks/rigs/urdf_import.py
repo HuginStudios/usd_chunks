@@ -14,6 +14,8 @@ directly, and a disagreement is a real bug rather than an opinion.
       <origin xyz rpy/>          ->      physics:localPos0 / localRot0   (in the parent)
       <axis xyz/>                ->      physics:axis + localRot1        (see _axis_frame)
       <limit lower upper/>       ->      physics:lowerLimit / upperLimit (degrees)
+      <limit effort/>            ->      drive:angular:physics:maxForce
+      <limit velocity/>          ->      physxJoint:maxJointVelocity     (degrees/s)
       <dynamics damping/>        ->      drive:angular:physics:damping
 
 Requires: pxr (OpenUSD), usd_chunks, numpy (bulk STL parsing).
@@ -431,6 +433,8 @@ def _author_joint(stage, joint, parent_path, child_path, scale):
                 low, high = low * scale, high * scale
             prim.CreateAttribute("physics:lowerLimit", Sdf.ValueTypeNames.Float).Set(low)
             prim.CreateAttribute("physics:upperLimit", Sdf.ValueTypeNames.Float).Set(high)
+    if limit is not None:
+        _author_effort_velocity(prim, limit, kind, scale)
 
     dynamics = joint.find("dynamics")
     if dynamics is not None:
@@ -442,6 +446,27 @@ def _author_joint(stage, joint, parent_path, child_path, scale):
                 "physxJoint:jointFriction", Sdf.ValueTypeNames.Float
             ).Set(float(friction))
     return prim
+
+
+def _author_effort_velocity(prim: Usd.Prim, limit, kind: str, scale: float) -> None:
+    """<limit effort velocity> as the drive's max force and PhysX's max joint velocity.
+
+    effort is N m for a revolute joint and N for a prismatic one, in metres; the stage's units
+    scale a torque by scale^2 and a force by scale. velocity is rad/s or m/s; USD wants deg/s or
+    stage units/s. A missing or non-positive value is left out: some files write effort="0"
+    for "unspecified", and authoring it would seize the joint.
+    """
+    angular = kind != "prismatic"
+    effort, velocity = limit.get("effort"), limit.get("velocity")
+    if effort is not None and float(effort) > 0:
+        prefix = "drive:angular:physics:" if angular else "drive:linear:physics:"
+        prim.CreateAttribute(prefix + "maxForce", Sdf.ValueTypeNames.Float).Set(
+            float(effort) * (scale * scale if angular else scale)
+        )
+    if velocity is not None and float(velocity) > 0:
+        prim.CreateAttribute("physxJoint:maxJointVelocity", Sdf.ValueTypeNames.Float).Set(
+            math.degrees(float(velocity)) if angular else float(velocity) * scale
+        )
 
 
 def parse(source: str) -> dict:
@@ -537,6 +562,7 @@ def execute(node):
     approximation = node.get_param("collider_approximation").value or "convexHull"
     want_visual = bool(node.get_param("import_visual").value)
     want_collision = bool(node.get_param("import_collision").value)
+    fixed_base = bool(node.get_param("fixed_base").value)
 
     stage = node.get_stage()
     layer = node.get_edit_context()
@@ -660,6 +686,12 @@ def execute(node):
             base = stage.GetPrimAtPath(root.GetPath().AppendChild(root_link))
             if base and base.IsValid():
                 UsdPhysics.ArticulationRootAPI.Apply(base)
+                if fixed_base:
+                    # Bolted to the world: a fixed joint with a body1 and no body0, the
+                    # UsdPhysics way to say so. A solver then keeps a motorised arm on its
+                    # mount instead of letting it topple as it reaches.
+                    anchor = UsdPhysics.FixedJoint.Define(stage, base.GetPath().AppendChild("world_anchor"))
+                    anchor.CreateBody1Rel().SetTargets([base.GetPath()])
 
     logger.debug("%s: %d link(s), %d joint(s), %d material(s), %d root(s) -> %s",
                  robot['name'], counts['links'], counts['joints'], len(robot['materials']),
@@ -707,6 +739,13 @@ def main():
                        flags=ChunkFlags.ParamFlags.LABELED),
         chunk.Checkbox("import_collision", "Collision Geometry", default_value=True,
                        flags=ChunkFlags.ParamFlags.LABELED),
+        chunk.Checkbox(
+            "fixed_base", "Fixed Base", default_value=True,
+            flags=ChunkFlags.ParamFlags.LABELED,
+            tooltip="Fix the base link to the world with a fixed joint, as an arm is bolted "
+            "to its table. The RBD Solver keeps a robot with motors on its mount. Off "
+            "for something that walks or drives: its base is free.",
+        ),
     ])
     return chunk_api
 
@@ -739,6 +778,9 @@ def config():
         A link joined by a fixed joint with no collision geometry (a camera mount, a tool
         tip) is nested instead. It is not a degree of freedom, so it gets no rigid body and
         no joint: nesting is what keeps it attached to the parent it is welded to.
+
+        Fixed Base (on by default) bolts the base link to the world with a fixed joint, as
+        an arm on a table. Turn it off for a robot that walks or drives.
 
         To pose the robot, wire Pose Articulation after this chunk with its Articulation
         set to the same prim path: one slider per moving joint.
