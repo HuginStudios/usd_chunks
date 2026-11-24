@@ -718,6 +718,10 @@ def _install_watching() -> None:
         def lookup(stage, path, *args, **kwargs):
             if _watches and (watch := _watch_for(stage)) is not None:
                 prim = Sdf.Path(str(path)).GetPrimPath().StripAllVariantSelections()
+                if not prim.IsAbsolutePath():
+                    # Not a prim path at all -- a name wired into a path param ("edges"). The
+                    # stage finds nothing there, so there is nothing read to record.
+                    return original(stage, path, *args, **kwargs)
                 watch.points.add(prim)
                 if not _covered(prim, watch.mask) and prim not in watch.parents:
                     watch.outside.add(prim)
@@ -1327,6 +1331,10 @@ def _covered(path: Sdf.Path, mask: set[Sdf.Path]) -> bool:
     as a prefix: a cook that writes thousands of prims also has thousands in its mask, and
     checking each against each was 64 million prefix tests for a fracture of 8,000 specs.
     """
+    if not path.IsAbsolutePath():
+        # A relative path's parents never reach the root ("edges" -> "." -> ".." -> "../.."),
+        # so the walk below would never end; and no masked prim is under one.
+        return False
     while not path.isEmpty:
         if path in mask:
             return True

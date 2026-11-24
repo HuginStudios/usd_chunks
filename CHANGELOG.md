@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A prim-path param holding text that isn't a prim path no longer freezes usdview. Wiring
+  Edge Field's Primvar output ("edges") into Scatter Points' Painted Points hung the cook,
+  and so did any plain word in a path param that a chunk looks prims up by (Camera's Aim
+  At, ...). Text like `1.5` or `..` no longer reaches a chunk as an empty path, and `*` no
+  longer matches the stage's root, so Mute Prim, Prune Prim, Variant, Semantics, Inherit
+  and others stop with nothing to do instead of an error. Scatter Points' readout now says
+  when Painted Points isn't a prim path.
 - Blender, Flet, ImGui: a wire from one node's chunk port dropped on a folded node's "+"
   chains the node. The "+" sits right under the chunk port (in Blender, 1 px apart at Home
   zoom), and the drop only said "nothing there takes that wire".

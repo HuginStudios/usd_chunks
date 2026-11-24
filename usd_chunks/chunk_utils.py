@@ -854,7 +854,11 @@ def resolve_prim_paths(stage, location_str, include_inactive=False):
         if token == "/":
             continue  # never target the pseudo-root (authoring an op on / raises)
         if "*" not in token and "?" not in token:
-            paths.append(token)
+            # Text that isn't a prim path ("/1.5", "/..") names nothing; passed on, it became
+            # an empty path that chunks then tried to make a prim at.
+            plain = re.sub(r"\{[^}]*\}", "", token)  # /asset{color=red}/geo is checked as /asset/geo
+            if Sdf.Path.IsValidPathString(plain) and Sdf.Path(plain).IsAbsolutePath():
+                paths.append(token)
             continue
         _anchor, pattern, selections = split_variant_path(token)
         rx = glob_to_regex(pattern)
@@ -873,6 +877,8 @@ def resolve_prim_paths(stage, location_str, include_inactive=False):
             for prim in Usd.PrimRange(root, predicate) if root else ():
                 if include_inactive and prim.IsActive() and not prim.IsLoaded():
                     continue
+                if prim.IsPseudoRoot():
+                    continue  # never target the pseudo-root, as above: "*" matched "/"
                 if rx.match(prim.GetPath().pathString):
                     matched.append(prim.GetPath().pathString)
         paths.extend(_with_variant_selections(path, selections) for path in matched)
@@ -1730,13 +1736,16 @@ def author_class_arc(node, arc: str) -> None:
     if not base_value or not targets.value or not Sdf.Path.IsValidPathString(base_value):
         return
     base = Sdf.Path(base_value)
+    if not base.IsAbsolutePath():
+        # A plain word, such as a name wired in from another chunk: USD can't make a prim there.
+        return
     stage = node.get_stage()
     if not stage.GetPrimAtPath(base).IsValid():
         stage.CreateClassPrim(base)
 
     for target_path in author_in_variant_contexts(stage, targets):
         path = Sdf.Path(target_path)
-        if path == base or path.HasPrefix(base):
+        if not path.IsAbsolutePath() or path == base or path.HasPrefix(base):
             continue
         prim = stage.GetPrimAtPath(path)
         if not prim.IsValid():
