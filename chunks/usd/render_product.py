@@ -136,6 +136,7 @@ def main():
         chunk.LineEdit(
             "camera", "Camera",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+            prim_types=("Camera",),
         ),
         chunk.LineEdit(
             "ordered_vars", "Ordered Vars",
