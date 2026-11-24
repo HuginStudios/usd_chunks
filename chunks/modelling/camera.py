@@ -633,18 +633,6 @@ _MM_ATTRS = ("focalLength", "horizontalAperture", "horizontalApertureOffset", "v
              "verticalApertureOffset")
 
 
-def _mm_to_lens_units(stage) -> float:
-    """What a millimetre is in tenths of this stage's unit: 1 in centimetres, 0.01 in metres.
-
-    Writing millimetres as they are is right only in a centimetre scene. In metres a 50 mm
-    lens became a 5 m one: the framing (a ratio) stayed right, but depth of field, which
-    uses the real aperture, blurred about a hundred times too much (f/2.8 looked like
-    f/0.03, and a scene needed f-stop 280 to look like f/2.8).
-    """
-    tenth = 0.1 * UsdGeom.GetStageMetersPerUnit(stage)  # metres in a tenth of a scene unit
-    return 0.001 / tenth if tenth > 0 else 1.0
-
-
 def _bind_lens_attr(param, attr):
     """Author the param's value on the camera attribute, then drive the attribute from the param.
 
@@ -654,7 +642,10 @@ def _bind_lens_attr(param, attr):
     20.955 x 15.2908 and so framed wider than the chunk said.
     """
     if attr.GetName() in _MM_ATTRS:
-        param.driven_scale = _mm_to_lens_units(attr.GetStage())
+        # Written as millimetres, they were right only in a centimetre scene. In metres a
+        # 50 mm lens was a 5 m one: the framing (a ratio) stayed right, but depth of field
+        # blurred about a hundred times too much, and f/2.8 needed an f-stop of 280.
+        param.driven_scale = 1.0 / (chunk_utils.millimetres_per_lens_unit(attr.GetStage()) or 1.0)
     value = param.value
     if value is not None and not isinstance(value, str):
         if attr.GetTypeName() == Sdf.ValueTypeNames.Float2:

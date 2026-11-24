@@ -37,6 +37,22 @@ _ROW_REF_RE = re.compile(r'(\w+)\[(\d+)\]')
 _PATH_LIST_SPLIT = re.compile(r"([,\s]+)")
 
 
+def millimetres_per_lens_unit(stage: Usd.Stage) -> float:
+    """How many millimetres one unit of a camera's focal length or aperture is on this stage.
+
+    UsdGeom.Camera keeps them in tenths of a scene unit (Gf.Camera.FOCAL_LENGTH_UNIT and
+    APERTURE_UNIT): a millimetre in a centimetre scene, 100 mm in a scene in metres. Multiply
+    an authored value by this for millimetres; divide millimetres by it to author them.
+
+    Args:
+        stage: The stage, for its metersPerUnit.
+
+    Returns:
+        Millimetres per lens unit: 1.0 in centimetres, 100.0 in metres.
+    """
+    return 1000.0 * Gf.Camera.FOCAL_LENGTH_UNIT * UsdGeom.GetStageMetersPerUnit(stage)
+
+
 def apply_namespace(namespace: str, paths: str) -> str:
     """Put every absolute prim path in `paths` under `namespace`.
 

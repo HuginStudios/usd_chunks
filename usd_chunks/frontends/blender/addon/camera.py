@@ -26,6 +26,7 @@ import bpy
 from mathutils import Matrix
 from pxr import Gf, Usd, UsdGeom
 
+from usd_chunks import chunk_utils
 from usd_chunks.frontends.blender.addon import viewport
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ def _lens_in_millimetres(camera: Gf.Camera, stage) -> Gf.Camera:
     """
     if camera.projection != Gf.Camera.Perspective:
         return camera
-    scale = 100.0 * UsdGeom.GetStageMetersPerUnit(stage)  # millimetres in a tenth of a unit
+    scale = chunk_utils.millimetres_per_lens_unit(stage)
     if scale != 1.0:
         camera.focalLength *= scale
         camera.horizontalAperture *= scale
