@@ -23,11 +23,13 @@ URDF = """<robot name="arm">
     <collision><origin xyz="0 0 0.2"/><geometry><box size="0.05 0.05 0.4"/></geometry></collision></link>
   <joint name="shoulder" type="revolute">
     <parent link="base"/><child link="upper"/><origin xyz="0 0 0.15"/>
-    <axis xyz="0 1 0"/><limit lower="-1.6" upper="1.6" effort="1" velocity="1"/>
+    <axis xyz="0 1 0"/><limit lower="-1.6" upper="1.6" effort="10" velocity="1"/>
     <dynamics damping="0.05"/>
   </joint>
 </robot>
 """
+# effort="10": URDF Import makes effort the drive's maxForce, and 1 N m is too weak to hold
+# the upper link at its pose -- it sags to about 88 degrees.
 JOINT = "/World/robot/upper/joint_shoulder"
 
 
