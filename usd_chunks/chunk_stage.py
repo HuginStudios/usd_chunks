@@ -355,7 +355,7 @@ def _push_driven_values(stage: Usd.Stage, param, layer: Sdf.Layer | None = None)
     paths = getattr(param, "_driven_attr_paths", None)
     if not paths:
         return
-    value = param.value
+    value = param.driven_value(param.value) if hasattr(param, "driven_value") else param.value
     layer = layer or param.get_edit_context()
     # USD refuses to author into a muted layer; set_chunks_muted re-pushes on un-mute.
     if value is None or layer is None or stage.IsLayerMuted(layer.identifier):

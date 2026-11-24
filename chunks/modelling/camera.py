@@ -622,6 +622,39 @@ def main():
     return chunk_api
 
 
+#: The camera prim's attributes the lens, sensor, focus and clipping params drive.
+_LENS_ATTRS = ("focalLength", "horizontalAperture", "horizontalApertureOffset", "verticalAperture",
+               "verticalApertureOffset", "fStop", "focusDistance", "clippingRange")
+
+#: The ones UsdGeom.Camera keeps in tenths of a scene unit (Gf.Camera.FOCAL_LENGTH_UNIT and
+#: APERTURE_UNIT), where the params are millimetres. fStop has no unit; focus distance and
+#: clipping are scene units in both.
+_MM_ATTRS = ("focalLength", "horizontalAperture", "horizontalApertureOffset", "verticalAperture",
+             "verticalApertureOffset")
+
+
+def _bind_lens_attr(param, attr):
+    """Author the param's value on the camera attribute, then drive the attribute from the param.
+
+    The value first, as Preview Surface does: connect_usd_attr pushes a value only once the
+    param holds one of its own, and a param still at its default holds none. So the sensor a
+    preset gives (an X-T5 is 23.5 x 15.7 mm) never reached the prim, which kept the schema's
+    20.955 x 15.2908 and so framed wider than the chunk said.
+    """
+    if attr.GetName() in _MM_ATTRS:
+        # Written as millimetres, they were right only in a centimetre scene. In metres a
+        # 50 mm lens was a 5 m one: the framing (a ratio) stayed right, but depth of field
+        # blurred about a hundred times too much, and f/2.8 needed an f-stop of 280.
+        param.driven_scale = 1.0 / (chunk_utils.millimetres_per_lens_unit(attr.GetStage()) or 1.0)
+    value = param.value
+    if value is not None and not isinstance(value, str):
+        if attr.GetTypeName() == Sdf.ValueTypeNames.Float2:
+            attr.Set(Gf.Vec2f(*value))
+        else:
+            attr.Set(float(param.driven_value(value)))
+    param.connect_usd_attr(attr)
+
+
 def execute(node):
     stage = node.get_stage()
 
@@ -635,14 +668,8 @@ def execute(node):
     for target_path in chunk_utils.author_in_variant_contexts(stage, primpath_param, unique=True):
         prim = stage.DefinePrim(target_path, "Camera")
 
-        node.get_param("focalLength").connect_usd_attr(prim.GetAttribute("focalLength"))
-        node.get_param("horizontalAperture").connect_usd_attr(prim.GetAttribute("horizontalAperture"))
-        node.get_param("horizontalApertureOffset").connect_usd_attr(prim.GetAttribute("horizontalApertureOffset"))
-        node.get_param("verticalAperture").connect_usd_attr(prim.GetAttribute("verticalAperture"))
-        node.get_param("verticalApertureOffset").connect_usd_attr(prim.GetAttribute("verticalApertureOffset"))
-        node.get_param("fStop").connect_usd_attr(prim.GetAttribute("fStop"))
-        node.get_param("focusDistance").connect_usd_attr(prim.GetAttribute("focusDistance"))
-        node.get_param("clippingRange").connect_usd_attr(prim.GetAttribute("clippingRange"))
+        for name in _LENS_ATTRS:
+            _bind_lens_attr(node.get_param(name), prim.GetAttribute(name))
 
         attr = UsdGeom.VisibilityAPI.Apply(prim).CreateGuideVisibilityAttr()
         attr.Set(UsdGeom.Tokens.inherited)
