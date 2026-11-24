@@ -56,6 +56,28 @@ Tessellation is cached against the file's mtime and the three meshing params, so
 Extra Scale, or the hierarchy and instancing toggles, re-authors without re-meshing. That
 matters: meshing a real assembly is the slow part, and OCCT through Python bindings is not
 fast.
+
+**DXF** goes through `ezdxf` instead, and lands in the same intermediate form, so everything
+above about prototypes, instancing, colour subsets and caching applies unchanged. A DXF has
+no assembly tree, but it has the next best thing: a *block* is a part defined once and an
+`INSERT` is a placement of it, with its own matrix, nested to any depth. So blocks become
+prototypes and inserts become references -- a drawing with two hundred chairs is one chair
+mesh. Model space is split by layer, one Xform per layer, since the layer is how a drafter
+organises a drawing. Layers that are off or frozen are left out, as AutoCAD leaves them out.
+
+What comes through: `MESH`, polyface and polygon-mesh `POLYLINE`s, `3DFACE`, `SOLID` and
+`TRACE` as meshes; `3DSOLID`, `REGION`, `BODY` and the surface entities as meshes when their
+ACIS data is all flat faces; lines, arcs, circles, ellipses, splines and polylines as linear
+`BasisCurves`, flattened to the same Linear Deflection as a B-rep edge. ACIS bodies with
+curved faces (a modelled cylinder, a fillet) cannot be meshed without the ACIS kernel, and
+text, hatches and dimensions are annotation; all of those are skipped and *counted* in the
+readout, never dropped silently. For curved solids, export STEP from the CAD package.
+
+A DXF face has no reliable winding, so its meshes are `doubleSided`; and with no surface
+parameterisation to borrow, its UVs are a planar projection of each triangle onto the axis
+plane it faces most, in metres -- still one UV unit per metre, still islands. Units come from
+`$INSUNITS`; a drawing that declares none is taken as millimetres (inches if `$MEASUREMENT`
+says imperial), which is what Extra Scale is for when that guess is wrong.
 """
 
 from __future__ import annotations
@@ -64,6 +86,7 @@ import hashlib
 import logging
 import math
 import os
+from collections import Counter
 from dataclasses import dataclass, field
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
@@ -106,6 +129,19 @@ except ImportError:  # pragma: no cover - exercised only on a machine without th
     _COLOR_TYPES = ()
     _HAS_OCP = False
 
+try:
+    import ezdxf
+    from ezdxf import disassemble, recover
+    from ezdxf import units as dxf_units
+    from ezdxf.acis import api as acis
+    from ezdxf.colors import aci2rgb
+    from ezdxf.math import BoundingBox
+    from ezdxf.math.triangulation import mapbox_earcut_3d
+
+    _HAS_EZDXF = True
+except ImportError:  # pragma: no cover - exercised only on a machine without ezdxf
+    _HAS_EZDXF = False
+
 
 _PF = chunk.ChunkFlags.ParamFlags
 _GF = (
@@ -115,8 +151,8 @@ _GF = (
 )
 
 #: What the file browser will open. STEP is the safe assumption everywhere; IGES comes free
-#: because it is the same XCAF reader underneath.
-_EXTENSIONS = [".step", ".stp", ".STEP", ".STP", ".iges", ".igs", ".IGES", ".IGS"]
+#: because it is the same XCAF reader underneath; DXF is ezdxf's.
+_EXTENSIONS = [".step", ".stp", ".STEP", ".STP", ".iges", ".igs", ".IGES", ".IGS", ".dxf", ".DXF"]
 
 #: Tessellated scenes, keyed by the chunk layer's identifier. See `_fingerprint` -- only the
 #: file and the meshing params are in the key, so the cheap params re-author without
@@ -137,6 +173,16 @@ class _Proto:
     #: Surface distance in metres, one per point. See `_face_uvs`.
     uvs: list = field(default_factory=list)
     uses: int = 0
+    #: Linework, authored as one linear BasisCurves beside the mesh. DXF only.
+    curve_points: list = field(default_factory=list)
+    curve_counts: list = field(default_factory=list)
+    #: (r, g, b) per curve, or None.
+    curve_colors: list = field(default_factory=list)
+    #: A face with no reliable winding (DXF) has to render from both sides.
+    double_sided: bool = False
+    #: `uvs` hold one value per face corner, not per point. DXF only: its meshes share
+    #: points between faces, while each face gets its own planar projection.
+    uv_face_varying: bool = False
 
 
 @dataclass
@@ -156,6 +202,8 @@ class _Scene:
     roots: list
     #: Set when the file read, or a part of it, did not work out.
     note: str = ""
+    #: What was left out, e.g. "12 TEXT, 3 HATCH" -- shown in the readout.
+    skipped: str = ""
 
 
 @dataclass
@@ -433,10 +481,27 @@ def _geometry_digest(proto: _Proto) -> str:
         hasher.update(b"%.9f,%.9f,%.9f;" % (point[0], point[1], point[2]))
     for colour in proto.face_colors:
         hasher.update(b"-" if colour is None else b"%.5f,%.5f,%.5f;" % colour)
+    if proto.curve_counts:
+        hasher.update(b"curves" + repr(proto.curve_counts).encode())
+        for point in proto.curve_points:
+            hasher.update(b"%.9f,%.9f,%.9f;" % (point[0], point[1], point[2]))
+        for colour in proto.curve_colors:
+            hasher.update(b"-" if colour is None else b"%.5f,%.5f,%.5f;" % colour)
     return hasher.hexdigest()
 
 
+def _is_dxf(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() == ".dxf"
+
+
 def _extract(path: str, settings: _Settings) -> _Scene:
+    """Read *path* into a _Scene, through ezdxf for a DXF and OpenCASCADE for the rest."""
+    if _is_dxf(path):
+        return _extract_dxf(path, settings)
+    return _extract_xcaf(path, settings)
+
+
+def _extract_xcaf(path: str, settings: _Settings) -> _Scene:
     """Walk the XCAF assembly tree, tessellating each distinct part exactly once."""
     shape_tool, color_tool = _open_document(path)
 
@@ -520,6 +585,288 @@ def _extract(path: str, settings: _Settings) -> _Scene:
 
 
 # ---------------------------------------------------------------------------
+# ezdxf side: DXF file -> _Scene
+# ---------------------------------------------------------------------------
+
+#: Entities that are one or two faces of a mesh in their own right.
+_DXF_FACES = frozenset({"3DFACE", "SOLID", "TRACE"})
+#: Entities holding ACIS data, meshable only where every face is flat.
+_DXF_ACIS = frozenset({"3DSOLID", "BODY", "REGION", "SURFACE", "EXTRUDEDSURFACE", "LOFTEDSURFACE",
+                       "REVOLVEDSURFACE", "SWEPTSURFACE", "PLANESURFACE"})
+#: Linework. A POLYLINE is here only when it is not a polyface or polygon mesh.
+_DXF_CURVES = frozenset({"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE", "HELIX"})
+#: Nesting deeper than this is a block that (indirectly) inserts itself.
+_DXF_MAX_DEPTH = 64
+
+
+def _dxf_unit(doc) -> float:
+    """Metres per drawing unit: `$INSUNITS` when the drawing says, otherwise a guess."""
+    insunits = doc.header.get("$INSUNITS", 0)
+    if insunits:
+        try:
+            return dxf_units.conversion_factor(insunits, dxf_units.InsertUnits.Meters)
+        except Exception:
+            logger.info("DXF declares units %s, which ezdxf cannot convert; assuming mm", insunits)
+    # Unitless is the norm for a drawing that started as a template from long ago, and in
+    # practice those are millimetres -- or inches, where the drawing says it is imperial.
+    return 0.0254 if doc.header.get("$MEASUREMENT", 1) == 0 else 0.001
+
+
+def _dxf_rgb(true_colour, aci: int) -> tuple | None:
+    if true_colour is not None:
+        return tuple(c / 255.0 for c in true_colour)
+    if 1 <= aci <= 255:
+        return tuple(c / 255.0 for c in aci2rgb(aci))
+    return None
+
+
+class _DxfReader:
+    """One DXF drawing as a _Scene: blocks are the parts, INSERTs their placements."""
+
+    def __init__(self, doc, settings: _Settings):
+        self.doc = doc
+        self.unit = _dxf_unit(doc)
+        self.settings = settings
+        self.protos: list = []
+        self.by_geometry: dict = {}
+        #: block name -> (prototype index or None, the INSERTs nested in it)
+        self.blocks: dict = {}
+        self.skipped: Counter = Counter()
+        self.hidden: set = set()
+        self.layer_colours: dict = {}
+        for layer in doc.layers:
+            # Layer names are case-insensitive in DXF, and drawings do mix the cases.
+            key = layer.dxf.name.lower()
+            if layer.is_off() or layer.is_frozen():
+                self.hidden.add(key)
+            # An off layer stores its colour negated.
+            self.layer_colours[key] = _dxf_rgb(layer.rgb, abs(layer.color))
+
+    # -- colour --------------------------------------------------------------
+
+    def colour(self, entity, in_block: bool) -> tuple | None:
+        """The entity's own colour, its layer's, or None where it takes the placement's."""
+        if entity.rgb is not None:
+            return _dxf_rgb(entity.rgb, 0)
+        aci = entity.dxf.color
+        if aci == 256:  # BYLAYER
+            layer = entity.dxf.layer
+            # Layer 0 inside a block is the drafter's way of saying "whatever the insert is".
+            if in_block and layer == "0":
+                return None
+            return self.layer_colours.get(layer.lower())
+        return _dxf_rgb(None, aci)  # 0 is BYBLOCK, which comes back None too
+
+    # -- geometry ------------------------------------------------------------
+
+    def face(self, proto: _Proto, corners: list, colour) -> None:
+        """One face, as point indices into *proto* that are already there."""
+        points = [proto.points[i] for i in corners]
+        # Newell's normal: right for any planar polygon, and good enough for a warped quad.
+        normal = Gf.Vec3f(0.0)
+        for i, p in enumerate(points):
+            q = points[(i + 1) % len(points)]
+            normal += Gf.Vec3f((p[1] - q[1]) * (p[2] + q[2]), (p[2] - q[2]) * (p[0] + q[0]),
+                               (p[0] - q[0]) * (p[1] + q[1]))
+        if normal.GetLength() < 1e-20:
+            return
+        # Planar UVs on the axis plane this face faces most, in metres. Per corner, since
+        # the point is shared with neighbours that may face another way.
+        axis = max(range(3), key=lambda i: abs(normal[i]))
+        u, v = ((1, 2), (2, 0), (0, 1))[axis]
+        proto.uvs.extend(Gf.Vec2f(p[u], p[v]) for p in points)
+        proto.uv_face_varying = True
+        proto.indices.extend(corners)
+        proto.counts.append(len(corners))
+        proto.face_colors.append(colour)
+
+    def mesh(self, proto: _Proto, vertices, faces, colour) -> None:
+        """A mesh as the file has it: points shared between faces, quads kept as quads.
+
+        A DXF mesh's topology is the modeller's, so it is kept: welded points are what
+        lets a renderer smooth a cushion, and what a modeller expects to find when it
+        selects an edge. Only faces of more than four corners are triangulated, and
+        through ear clipping, since a fan from one corner goes wrong on a concave one.
+        """
+        vertices = list(vertices)
+        remap: dict = {}
+
+        def point(i: int) -> int:
+            # Only the points a face uses, so a polyface's unused vertices do not come along.
+            if i not in remap:
+                v = vertices[i]
+                remap[i] = len(proto.points)
+                proto.points.append(Gf.Vec3f(v.x * self.unit, v.y * self.unit, v.z * self.unit))
+            return remap[i]
+
+        for face in faces:
+            ring = []
+            for i in face:
+                if not ring or not vertices[i].isclose(vertices[ring[-1]]):
+                    ring.append(i)
+            if len(ring) > 1 and vertices[ring[-1]].isclose(vertices[ring[0]]):
+                ring.pop()
+            if len(ring) < 3:
+                continue
+            if len(ring) <= 4:
+                self.face(proto, [point(i) for i in ring], colour)
+                continue
+            by_position = {vertices[i].round(9): i for i in ring}
+            for tri in mapbox_earcut_3d([vertices[i] for i in ring]):
+                self.face(proto, [point(by_position[v.round(9)]) for v in tri], colour)
+
+    def polygon(self, proto: _Proto, vertices, colour) -> None:
+        vertices = list(vertices)
+        self.mesh(proto, vertices, [range(len(vertices))], colour)
+
+    def curve(self, proto: _Proto, entity, colour) -> bool:
+        path = disassemble.make_primitive(entity).path
+        if path is None:
+            return False
+        for sub in path.sub_paths() if path.has_sub_paths else [path]:
+            deflection = self.settings.linear_deflection
+            if self.settings.relative:
+                box = BoundingBox(sub.control_vertices())
+                distance = deflection * (box.size.magnitude if box.has_data else 1.0)
+            else:
+                distance = deflection / self.unit
+            points = list(sub.flattening(max(distance, 1e-9), segments=16))
+            if len(points) < 2:
+                continue
+            proto.curve_points.extend(Gf.Vec3f(p.x * self.unit, p.y * self.unit, p.z * self.unit)
+                                      for p in points)
+            proto.curve_counts.append(len(points))
+            proto.curve_colors.append(colour)
+        return True
+
+    def add(self, proto: _Proto, entity, kind: str, colour) -> bool:
+        """Add one entity to *proto*; False when it is not something this reader brings in."""
+        if kind in _DXF_FACES:
+            self.polygon(proto, entity.wcs_vertices(), colour)
+            return True
+        if kind in _DXF_ACIS:
+            before = len(proto.counts)
+            for body in acis.load_dxf(entity):
+                for mesh in acis.mesh_from_body(body):
+                    self.mesh(proto, mesh.vertices, mesh.faces, colour)
+            return len(proto.counts) > before
+        if kind == "MESH" or (kind == "POLYLINE" and (entity.is_poly_face_mesh or entity.is_polygon_mesh)):
+            mesh = disassemble.make_primitive(entity).mesh
+            if mesh is None:
+                return False
+            self.mesh(proto, mesh.vertices, mesh.faces, colour)
+            return True
+        if kind in _DXF_CURVES:
+            return self.curve(proto, entity, colour)
+        return False
+
+    def collect(self, entities, name: str, in_block: bool) -> tuple:
+        """The geometry among *entities* as one prototype, and the INSERTs among them."""
+        proto = _Proto(name=name, points=[], counts=[], indices=[], face_colors=[], double_sided=True)
+        inserts = []
+        for entity in entities:
+            if entity.dxf.get("layer", "0").lower() in self.hidden:
+                continue
+            kind = entity.dxftype()
+            if kind == "INSERT":
+                inserts.append(entity)
+                continue
+            try:
+                added = self.add(proto, entity, kind, self.colour(entity, in_block))
+            except Exception:
+                # ACIS with curved faces lands here, as does any entity ezdxf cannot make
+                # sense of; one bad entity must not cost the rest of the drawing.
+                logger.debug("DXF %s %s not imported", kind, entity.dxf.get("handle", "?"), exc_info=True)
+                added = False
+            if not added:
+                self.skipped[kind] += 1
+        return proto, inserts
+
+    def register(self, proto: _Proto) -> int | None:
+        if not proto.counts and not proto.curve_counts:
+            return None
+        digest = _geometry_digest(proto)
+        index = self.by_geometry.get(digest)
+        if index is None:
+            index = len(self.protos)
+            self.protos.append(proto)
+            self.by_geometry[digest] = index
+        return index
+
+    # -- structure -----------------------------------------------------------
+
+    def block(self, name: str) -> tuple:
+        if name not in self.blocks:
+            # Placeholder first: a block that inserts itself then finds nothing to recurse into.
+            self.blocks[name] = (None, [])
+            layout = self.doc.blocks.get(name)
+            if layout is not None:
+                proto, inserts = self.collect(layout, name, in_block=True)
+                self.blocks[name] = (self.register(proto), inserts)
+        return self.blocks[name]
+
+    def matrix(self, m) -> Gf.Matrix4d:
+        # ezdxf's Matrix44 is row-major with row vectors, the same convention as USD, so it
+        # goes across as it is; only the translation is in drawing units.
+        rows = [list(row) for row in m.rows()]
+        rows[3][:3] = [value * self.unit for value in rows[3][:3]]
+        return Gf.Matrix4d(*[value for row in rows for value in row])
+
+    def node(self, name: str, matrix: Gf.Matrix4d, proto: int | None, inserts: list, depth: int) -> _Node | None:
+        node = _Node(name=name, matrix=matrix)
+        children = [child for insert in inserts for child in self.place(insert, depth)]
+        if proto is not None:
+            self.protos[proto].uses += 1
+            if children:
+                # An instanceable prim ignores children authored under it, so a block with
+                # both its own geometry and nested blocks keeps the geometry a level down.
+                children.insert(0, _Node(name="geometry", matrix=Gf.Matrix4d(1.0), proto=proto))
+            else:
+                node.proto = proto
+        node.children = children
+        return node if node.proto is not None or node.children else None
+
+    def place(self, insert, depth: int) -> list:
+        if depth >= _DXF_MAX_DEPTH:
+            return []
+        name = insert.dxf.name
+        proto, nested = self.block(name)
+        # MINSERT: a rows x columns array of the block, each its own placement.
+        placements = list(insert.multi_insert()) if insert.mcount > 1 else [insert]
+        nodes = []
+        for placement in placements:
+            node = self.node(name, self.matrix(placement.matrix44()), proto, nested, depth + 1)
+            if node is not None:
+                nodes.append(node)
+        return nodes
+
+    def scene(self) -> _Scene:
+        by_layer: dict = {}
+        for entity in self.doc.modelspace():
+            by_layer.setdefault(entity.dxf.get("layer", "0"), []).append(entity)
+
+        roots = []
+        for layer, entities in by_layer.items():
+            proto, inserts = self.collect(entities, layer, in_block=False)
+            node = self.node(layer, Gf.Matrix4d(1.0), self.register(proto), inserts, 0)
+            if node is not None:
+                roots.append(node)
+
+        skipped = ", ".join(f"{count:,} {kind}" for kind, count in self.skipped.most_common())
+        note = "" if roots else "the drawing read, but held no meshes or linework in model space"
+        return _Scene(protos=self.protos, roots=roots, note=note, skipped=skipped)
+
+
+def _extract_dxf(path: str, settings: _Settings) -> _Scene:
+    try:
+        doc = ezdxf.readfile(path)
+    except ezdxf.DXFStructureError:
+        # A file some exporter wrote slightly wrong; recover is slower but forgiving.
+        doc, _auditor = recover.readfile(path)
+    return _DxfReader(doc, settings).scene()
+
+
+# ---------------------------------------------------------------------------
 # USD side: _Scene -> prims
 # ---------------------------------------------------------------------------
 
@@ -564,6 +911,42 @@ def _author_proto(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, s
     thousands of parts, and through the Usd API every attribute is a recomposition.
     """
     writer.define(path, "Xform")
+    if proto.counts:
+        _author_mesh(writer, path, proto, scale, texture_size)
+    if proto.curve_counts:
+        _author_curves(writer, path, proto, scale)
+
+
+def _display_color(spec, colours: list) -> None:
+    """displayColor: constant when everything is one colour, uniform when it is not."""
+    distinct = {c for c in colours if c is not None}
+    if len(distinct) == 1:
+        sdf_authoring.primvar(spec, "displayColor", Sdf.ValueTypeNames.Color3fArray,
+                              Vt.Vec3fArray([Gf.Vec3f(*next(iter(distinct)))]), UsdGeom.Tokens.constant)
+    elif len(distinct) > 1:
+        fallback = Gf.Vec3f(0.5, 0.5, 0.5)
+        sdf_authoring.primvar(
+            spec, "displayColor", Sdf.ValueTypeNames.Color3fArray,
+            Vt.Vec3fArray([Gf.Vec3f(*c) if c is not None else fallback for c in colours]),
+            UsdGeom.Tokens.uniform,
+        )
+
+
+def _author_curves(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, scale: float) -> None:
+    """The prototype's linework, as one linear BasisCurves beside its mesh."""
+    curves = writer.define(path.AppendChild("curves"), "BasisCurves")
+    points = Vt.Vec3fArray([Gf.Vec3f(p[0] * scale, p[1] * scale, p[2] * scale) for p in proto.curve_points])
+    sdf_authoring.attribute(curves, "points", Sdf.ValueTypeNames.Point3fArray, points)
+    sdf_authoring.attribute(curves, "curveVertexCounts", Sdf.ValueTypeNames.IntArray,
+                            Vt.IntArray(proto.curve_counts))
+    sdf_authoring.attribute(curves, "type", Sdf.ValueTypeNames.Token, UsdGeom.Tokens.linear, uniform=True)
+    sdf_authoring.attribute(curves, "extent", Sdf.ValueTypeNames.Float3Array,
+                            UsdGeom.PointBased.ComputeExtent(points))
+    _display_color(curves, proto.curve_colors)
+
+
+def _author_mesh(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, scale: float,
+                 texture_size: float) -> None:
     mesh = writer.define(path.AppendChild("mesh"), "Mesh")
 
     points = Vt.Vec3fArray([Gf.Vec3f(p[0] * scale, p[1] * scale, p[2] * scale) for p in proto.points])
@@ -576,30 +959,28 @@ def _author_proto(writer: sdf_authoring.Writer, path: Sdf.Path, proto: _Proto, s
                             uniform=True)
     sdf_authoring.attribute(mesh, "extent", Sdf.ValueTypeNames.Float3Array,
                             UsdGeom.PointBased.ComputeExtent(points))
+    if proto.double_sided:
+        sdf_authoring.attribute(mesh, "doubleSided", Sdf.ValueTypeNames.Bool, True, uniform=True)
 
     # `vertex`, not `faceVarying`: points are never welded across face boundaries, so every
     # point already belongs to exactly one face and one UV. That is half the data of a
     # faceVarying primvar and needs no index array.
-    if texture_size > 0.0 and len(proto.uvs) == len(proto.points):
+    # A DXF mesh shares points between faces that project differently, so its UVs are
+    # one per face corner instead.
+    if proto.uv_face_varying:
+        interpolation, expected = UsdGeom.Tokens.faceVarying, len(proto.indices)
+    else:
+        interpolation, expected = UsdGeom.Tokens.vertex, len(proto.points)
+    if texture_size > 0.0 and proto.uvs and len(proto.uvs) == expected:
         repeats = 1.0 / texture_size
         sdf_authoring.primvar(
             mesh, "st", Sdf.ValueTypeNames.TexCoord2fArray,
             Vt.Vec2fArray([Gf.Vec2f(uv[0] * repeats, uv[1] * repeats) for uv in proto.uvs]),
-            UsdGeom.Tokens.vertex,
+            interpolation,
         )
 
     distinct = {c for c in proto.face_colors if c is not None}
-    if len(distinct) == 1:
-        colour = next(iter(distinct))
-        sdf_authoring.primvar(mesh, "displayColor", Sdf.ValueTypeNames.Color3fArray,
-                              Vt.Vec3fArray([Gf.Vec3f(*colour)]), UsdGeom.Tokens.constant)
-    elif len(distinct) > 1:
-        fallback = Gf.Vec3f(0.5, 0.5, 0.5)
-        sdf_authoring.primvar(
-            mesh, "displayColor", Sdf.ValueTypeNames.Color3fArray,
-            Vt.Vec3fArray([Gf.Vec3f(*c) if c is not None else fallback for c in proto.face_colors]),
-            UsdGeom.Tokens.uniform,
-        )
+    _display_color(mesh, proto.face_colors)
 
     # Colour groups as bindable subsets: in STEP the colour IS the material assignment, so
     # these are the handles a shading library binds against later. What
@@ -727,9 +1108,13 @@ def execute(node):
 
     given = node.get_param("file_path").value
     if not given:
-        _report(node, "pick a STEP or IGES file")
+        _report(node, "pick a STEP, IGES or DXF file")
         return
-    if not _HAS_OCP:
+    if _is_dxf(given):
+        if not _HAS_EZDXF:
+            _report(node, "ezdxf is not installed — pip install ezdxf")
+            return
+    elif not _HAS_OCP:
         _report(node, "cadquery-ocp is not installed — pip install cadquery-ocp")
         return
     # Found as USD finds a file: a relative path is from the network's folder.
@@ -805,12 +1190,18 @@ def execute(node):
                     for leaf in flat:
                         _author_node(writer, root_path, leaf, proto_paths, instance_parts, scale, taken, counters)
 
-    triangles = sum(len(p.counts) * p.uses for p in scene.protos)
-    unique = sum(len(p.counts) for p in scene.protos)
+    # Triangles, not faces: a DXF keeps its quads, and a quad is two.
+    unique_by_proto = [sum(p.counts) - 2 * len(p.counts) for p in scene.protos]
+    triangles = sum(n * p.uses for n, p in zip(unique_by_proto, scene.protos))
+    unique = sum(unique_by_proto)
     shared = f", {unique:,} unique" if unique != triangles else ""
+    curves = sum(len(p.curve_counts) * p.uses for p in scene.protos)
+    extra = f" · {curves:,} curves" if curves else ""
+    if scene.skipped:
+        extra += f" · skipped {scene.skipped}"
     _report(
         node,
-        f"{counters['parts']:,} parts · {len(scene.protos):,} distinct · {triangles:,} tris{shared}",
+        f"{counters['parts']:,} parts · {len(scene.protos):,} distinct · {triangles:,} tris{shared}{extra}",
         parts=counters["parts"],
         triangles=triangles,
     )
@@ -855,7 +1246,8 @@ def main():
                 tooltip="How far the triangles may sag away from the true B-rep surface —\n"
                 "the tessellation rate. Smaller is finer and slower.\n"
                 "Relative: a fraction of each edge's own size, so small parts in a\n"
-                "big assembly still get enough triangles. Absolute: metres.",
+                "big assembly still get enough triangles. Absolute: metres.\n"
+                "For a DXF this is how finely arcs, circles and splines are flattened.",
             ),
             chunk.Checkbox(
                 "relative_deflection",
@@ -913,7 +1305,8 @@ def main():
                 tooltip="Author an `st` primvar from each B-rep face's own surface\n"
                 "parameterisation, rescaled so texel density is even across the part.\n"
                 "Needed by any material with texture maps in it -- without UVs a\n"
-                "tiling MaterialX surface renders as a flat colour.",
+                "tiling MaterialX surface renders as a flat colour. A DXF has no\n"
+                "parameterisation, so its faces get a planar projection in metres.",
             ),
             chunk.Slider(
                 "texture_size",
@@ -969,13 +1362,14 @@ def config():
     return chunk.DefaultConfig(
         category=chunk.StandardCategory.MODELLING,
         icon="cube",
-        requirements=["cadquery-ocp>=7.8,<9"],
+        requirements=["cadquery-ocp>=7.8,<9", "ezdxf>=1.1"],
         cache_cook=True,
         description=(
             """
-        Imports a STEP or IGES CAD assembly as USD, keeping hierarchy, instancing, face colours.
+        Imports STEP, IGES or DXF CAD files as USD, keeping hierarchy, instancing and colours.
 
-        Imports a STEP or IGES assembly as USD, through OpenCASCADE's XCAF reader.
+        Imports a STEP or IGES assembly as USD through OpenCASCADE's XCAF reader, or
+        a DXF drawing through ezdxf.
 
         Keeps the three things a converter usually drops: the assembly hierarchy (as
         nested Xforms), part instancing (a repeated part is tessellated once into a
@@ -985,6 +1379,11 @@ def config():
         Points are not welded across B-rep face boundaries, so renderer-computed
         normals smooth within a face and crease between them — curved surfaces stay
         smooth and machined edges stay sharp with no authored normals.
+
+        A DXF's blocks become the instanced parts and its INSERTs their placements,
+        with model space split into one Xform per layer. Meshes, 3D faces and
+        flat-faced ACIS solids come in as meshes, lines/arcs/splines as BasisCurves.
+        Curved ACIS solids, text, hatches and dimensions are skipped and counted.
         """
         ),
     )

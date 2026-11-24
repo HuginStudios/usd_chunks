@@ -70,3 +70,35 @@ def test_each_instance_rests_on_its_own_prototype(shape_type):
         f"the big instance should rest at {BIG / 2.0}, got {big_z:.2f} -- "
         "it was sized from the wrong prototype"
     )
+
+
+@pytest.mark.parametrize("shape_type", ["Box", "Convex Hull"])
+def test_a_moved_instancer_collides_where_its_instances_are(shape_type):
+    """An instancer under a moved parent lands its instances where they are drawn.
+
+    Reported live with the Open Chess Set: its pawns are a PointInstancer whose prototype
+    sits under it, and the whole set was rotated and lifted. With Convex Hull every pawn
+    fell straight through the board. The hull's points were read in world space, so the
+    instancer's own transform was baked into each hull, and that hull then sat as far from
+    its pawn as the instancer is from the origin. Scatter Points' instancer sits at the
+    origin, which is why it never showed there.
+    """
+    lift = 200.0
+    stage = _stage()
+    world = UsdGeom.Xform.Define(stage, "/world")
+    world.AddTranslateOp().Set(Gf.Vec3d(40.0, -30.0, lift))
+    inst = UsdGeom.PointInstancer.Define(stage, "/world/pieces")
+    _box_mesh(stage, "/world/pieces/protos/pawn/box", centre=(0.0, 0.0, 0.0), size=(SMALL,) * 3)
+    inst.GetPrototypesRel().SetTargets([Sdf.Path("/world/pieces/protos/pawn")])
+    inst.GetPositionsAttr().Set([Gf.Vec3f(0.0, 0.0, 60.0)])
+    inst.GetProtoIndicesAttr().Set([0])
+    inst.GetOrientationsAttr().Set([Gf.Quath(1, 0, 0, 0)])
+
+    (local_z,) = _settle(stage, inst, shape_type)
+
+    # The positions stay in the instancer's space: resting on the ground at world z = 0
+    # puts the box's origin half its size above it, minus the parent's lift.
+    assert local_z + lift == pytest.approx(SMALL / 2.0, abs=0.3), (
+        f"the instance should rest on the ground (world z {SMALL / 2.0}), got world z "
+        f"{local_z + lift:.2f} -- its collider is not where the instance is drawn"
+    )
