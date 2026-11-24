@@ -85,6 +85,11 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A new Camera's sensor reaches the camera prim. The default preset is an X-T5 (23.5 x 15.7
+  mm), but the prim kept USD's 20.955 x 15.29 until you moved a Sensor slider, so the camera
+  framed wider than the chunk showed and its image had another aspect. Any lens value left
+  at its default had the same problem; the focal length only looked right because 50 is
+  also USD's default.
 - Blender: opening a folded node with the arrow in its header shows its params. Before, the
   node opened empty except for its status line, and the next reload folded it again; only H
   opened it properly.
