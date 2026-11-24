@@ -260,7 +260,7 @@ def main():
     _PF = chunk.ChunkFlags.ParamFlags
 
     camera = chunk.LineEdit(
-        "camera", "Camera", flags=_PF.LABELED | _PF.PRIM_SELECTION,
+        "camera", "Camera", flags=_PF.LABELED | _PF.PRIM_SELECTION, prim_types=("Camera",),
         tooltip="The camera whose view decides what stays.",
     )
     prims = chunk.LineEdit(

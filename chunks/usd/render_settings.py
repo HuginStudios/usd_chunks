@@ -252,6 +252,7 @@ def main():
             # The path a first Camera chunk takes (chunks/modelling/camera.py).
             default_value="/cameras/camera1",
             flags=chunk.ChunkFlags.ParamFlags.LABELED | chunk.ChunkFlags.ParamFlags.PRIM_SELECTION,
+            prim_types=("Camera",),
         ),
         chunk.LineEdit("products", "Products"),
         chunk.LineEdit("included_purposes", "Included Purposes", default_value="default,render"),

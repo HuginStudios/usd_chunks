@@ -1,9 +1,10 @@
 """Scatter Brush chunk -- paints where instances are allowed to land.
 
 Pairs with Scatter Points. This chunk owns a **field**, not a stroke: a per-vertex weight
-(`primvars:scatterDensity`) on the surface, which the scatter chunk samples per candidate
-point and keeps with that probability. Paint an area, get instances there; paint it out, they
-go away. Wire this upstream of Scatter Points so its cook can see the field.
+(`primvars:scatterDensity_<chunk name>`, one per brush) on the surface, which the scatter
+chunk samples per candidate point and keeps with that probability. Paint an area, get
+instances there; paint it out, they go away. Wire this upstream of Scatter Points so its cook
+can see the field.
 
 Its own chunk rather than a mode on Scatter Points, so one painted field can feed several
 scatters and Scatter Points stays what its docstring says it is: placement only.
@@ -28,7 +29,7 @@ import contextlib
 import logging
 
 import numpy as np
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Tf, Usd, UsdGeom, Vt
 
 from usd_chunks import chunk, chunk_core, chunk_utils, mesh_math
 
@@ -37,6 +38,20 @@ logger = logging.getLogger(__name__)
 #: Read by chunks/modelling/scatter_points.py. Kept as a literal rather than imported, so a scene with
 #: only one of the two chunks installed still loads.
 DENSITY_PRIMVAR = "scatterDensity"
+
+
+def _field_name(node):
+    """The primvar this brush paints: `scatterDensity_<chunk name>`.
+
+    One per brush, so two brushes on one mesh -- a vine on the face of a rock and grass on its
+    top -- each keep their own field. They all wrote `scatterDensity` before, and the stronger
+    brush layer then won on the shared mesh, so every consumer read the same paint. Taken from
+    the chunk's name so it is known before the first cook, and published on the Density Field
+    output so a consumer wired to it follows a rename.
+    """
+    name = getattr(node, "name", None) if node is not None else None
+    return f"{DENSITY_PRIMVAR}_{Tf.MakeValidIdentifier(name)}" if name else DENSITY_PRIMVAR
+
 
 _MODES = ["Add", "Subtract", "Smooth"]
 
@@ -147,7 +162,7 @@ def _stroke_state(node, mesh_prim, count):
     """
     cache = getattr(node, _STROKE_CACHE, None)
     if cache is None:
-        return _current_weights(mesh_prim, count), _NO_COLOURS, None
+        return _current_weights(mesh_prim, count, _field_name(node)), _NO_COLOURS, None
     states = cache[2]
     key = str(mesh_prim.GetPath())
     state = states.get(key)
@@ -260,15 +275,15 @@ def _paint_targets(prim):
     return targets
 
 
-def _current_weights(prim, count):
-    """Whatever is painted now, as a float array, defaulting to unpainted.
+def _current_weights(prim, count, name):
+    """Whatever is painted now in the field `name`, as a float array, defaulting to unpainted.
 
     Zero rather than one: a brush chunk that has been added but never used should scatter
     nothing, so the effect of adding it is visible and undoable. An *absent* primvar still
     means "no opinion" and lets scatter place everywhere -- that difference is the whole
     reason scatter distinguishes an empty field from a missing one.
     """
-    primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar(DENSITY_PRIMVAR)
+    primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar(name)
     if primvar and primvar.HasValue():
         values = primvar.ComputeFlattened()
         if values is not None and len(values) >= count:
@@ -283,7 +298,7 @@ def _held_weights(node, mesh_prim, count):
     held = getattr(node, _FIELD, {}).get(str(mesh_prim.GetPath()))
     if held is not None and len(held) == count:
         return held
-    return _current_weights(mesh_prim, count)
+    return _current_weights(mesh_prim, count, _field_name(node))
 
 
 _DISPLAY_COLOR = "primvars:displayColor"
@@ -312,7 +327,7 @@ def _write_weights(node, stage, prim, weights, colours=None):
     with context:
         over = stage.OverridePrim(prim.GetPath())
         primvar = UsdGeom.PrimvarsAPI(over).CreatePrimvar(
-            DENSITY_PRIMVAR, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+            _field_name(node), Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
         )
         # FromNumpy, not a list comprehension into Vt: the array is authored on every tick of
         # a stroke, and rebuilding a third of a million Python floats to do it was most of
@@ -1082,7 +1097,7 @@ def _show_paint_changed(owner, notice, sender):
     if prim is None:
         return
     for mesh_prim, count in _paint_meshes(prim):
-        _write_weights(node, stage, mesh_prim, _current_weights(mesh_prim, count))
+        _write_weights(node, stage, mesh_prim, _current_weights(mesh_prim, count, _field_name(node)))
 
 
 def _show_points(node, stage):
@@ -1162,7 +1177,7 @@ def _record_paint(node):
 
     meshes, counts, spans, indices, weights = [], [], [], [], []
     for mesh_prim, count in _paint_meshes(prim):
-        values = _current_weights(mesh_prim, count)
+        values = _current_weights(mesh_prim, count, _field_name(node))
         painted = np.flatnonzero(values > 0.0)
         if not len(painted):
             continue
@@ -1289,6 +1304,9 @@ def execute(node):
     published = node.get_param("points_path")
     if path is not None and published is not None and published.value != str(path):
         published.value = str(path)
+    field = node.get_param("density_name")
+    if field is not None and field.value != _field_name(node):
+        field.value = _field_name(node)
 
     stage = node.get_stage()
     held_points = getattr(node, _POINTS, None)
@@ -1483,8 +1501,9 @@ def config():
 
         Wire this chunk's Density Field output into a Scatter Points chunk's
         Density Field input, with both pointed at the same mesh. Painting writes
-        primvars:scatterDensity on the surface, and the wire is what tells that
-        scatter to read it — an unconnected scatter is unaffected. Weight is a
+        primvars:scatterDensity_<chunk name> on the surface, one field per brush,
+        so two brushes on one mesh don't mix. The wire is what tells that scatter
+        to read it — an unconnected scatter is unaffected. Weight is a
         probability, so 0.5 gives roughly half as many instances, not a hard edge.
 
         Parameters:
