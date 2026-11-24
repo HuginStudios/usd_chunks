@@ -4,19 +4,20 @@ usd_chunks.autosave decides where quick saves go, writes and recovers them, and 
 edit from a cook. This module only adds what needs Qt:
 
 - `AutosaveController`: one per open network. A timer on the main thread writes a quick
-  save while the network has unsaved changes; `check_recovery` offers the quick saves left
-  behind (a crash, a quit without saving) before the network's chunks load; `on_saved`
-  deletes them once the user saves the network to its own file.
+  save while the network has unsaved changes, one file per editing session in the user's
+  quick-save folder; `check_recovery` offers the quick saves left behind (a crash, a quit
+  without saving) before the network's chunks load; `on_saved` deletes them once the user
+  saves the network to its own file.
 - `start_after_recovery`: the "check, ask, then load the chunks" order a host starts up in,
   so the network in the file never cooks before the user has chosen.
 - `choose_recovery`: the default prompt.
 - `configure_toggle_action`: the Auto Quick Save menu entry.
 - `notify_saved`: what Save Scene calls after it wrote a file.
 
-Turning it off: USD_CHUNKS_AUTOSAVE_MINUTES=0 turns quick saves off for everyone (a site or
-a farm sets it); the per-user toggle (QSettings) turns them off for one user. Neither stops
-the recovery prompt: quick saves already on disk are the user's work, so they are always
-offered.
+Quick saves are off until a user turns them on with the toggle (QSettings, per user).
+USD_CHUNKS_AUTOSAVE_MINUTES=0 keeps them off for everyone (a site or a farm sets it). Neither
+stops the recovery prompt: quick saves already on disk are the user's work, so they are
+always offered.
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ from usd_chunks.frontends.qt import window_state
 
 logger = logging.getLogger(__name__)
 
-#: The QSettings key of the per-user toggle. True (on) when unset.
+#: The QSettings key of the per-user toggle. False (off) when unset.
 SETTINGS_KEY = "autosave/enabled"
 
 #: What a recovery chooser returns to delete every quick save. A path recovers that file;
@@ -59,8 +60,8 @@ def env_off() -> bool:
 
 
 def user_enabled() -> bool:
-    """The per-user toggle, from QSettings. On unless the user turned it off."""
-    value = window_state.settings().value(SETTINGS_KEY, True)
+    """The per-user toggle, from QSettings. Off unless the user turned it on."""
+    value = window_state.settings().value(SETTINGS_KEY, False)
     if isinstance(value, str):  # an ini file gives back text
         return value.strip().lower() not in ("false", "0", "no", "off")
     return bool(value)
@@ -82,6 +83,17 @@ def enabled() -> bool:
 
 def _same_file_key(path: str | os.PathLike) -> str:
     return os.path.normcase(os.path.realpath(os.fspath(path)))
+
+
+_swept = False
+
+
+def _sweep_once() -> None:
+    """Delete month-old quick saves of any network, once per session (autosave.sweep)."""
+    global _swept
+    if not _swept:
+        _swept = True
+        autosave.sweep()
 
 
 # -- the controller --------------------------------------------------------------------------
@@ -110,8 +122,9 @@ class AutosaveController(QtCore.QObject):
         self._path: str | None = None
         self._scene = None
         self._tracker: autosave.ChangeTracker | None = None
-        #: Quick-save files kept for the user (offered at recovery): never written over.
-        self.pinned: set[str] = set()
+        #: This session's quick-save file, named when it is first written. A quick save of
+        #: another session (one offered at recovery) is never written over.
+        self._target: str | None = None
         self._last_text: str | None = None
         self._warned = False
         _controllers.add(self)
@@ -130,14 +143,14 @@ class AutosaveController(QtCore.QObject):
     def set_network(self, root_layer: Sdf.Layer | None) -> None:
         """Record the network about to load: its root layer and that layer's file.
 
-        Forgets what belonged to the previous network: pinned files, the last text written,
-        the warning already given.
+        Forgets what belonged to the previous network: its session file, the last text
+        written, the warning already given.
         """
         self.close()
         self._root_layer = root_layer
         real = root_layer.realPath if root_layer is not None and not root_layer.anonymous else ""
         self._path = os.path.realpath(real) if real else None
-        self.pinned = set()
+        self._target = None
         self._last_text = None
         self._warned = False
 
@@ -153,12 +166,11 @@ class AutosaveController(QtCore.QObject):
         Before the network's chunks load. chooser gets the files newest first and returns
         one to recover, DISCARD, or None; choose_recovery (a dialog) when omitted.
 
-        - A file: every quick save on disk is pinned (none is ever written over) and the
-          file's network goes into the root layer. The layer is left unsaved.
+        - A file: its network goes into the root layer, which is left unsaved. The file is
+          kept until the network is saved: this session's quick saves go to a new one.
         - DISCARD: every quick save is deleted.
         - None (the dialog closed with Esc or its close button): nothing is recovered and
-          nothing is deleted; every quick save is pinned, so they are all still there to
-          recover next time.
+          nothing is deleted, so they are all still there to recover next time.
 
         Returns:
             The file recovered, or None.
@@ -172,9 +184,7 @@ class AutosaveController(QtCore.QObject):
         choice = chooser(list(paths))
         if choice == DISCARD:
             autosave.discard(self._path)
-            self.pinned = set()
             return None
-        self.pinned = set(autosave.quick_save_paths(self._path))
         if choice is None:
             return None
         if _same_file_key(choice) not in {_same_file_key(p) for p in paths}:
@@ -229,9 +239,14 @@ class AutosaveController(QtCore.QObject):
         if (tracker is None or self._scene is None or self._path is None or self.is_quick_save()
                 or not self.enabled or not tracker.changed):
             return
-        target = autosave.next_target(self._path, self.pinned)
+        if self._target is None:
+            # This session's first quick save: a new file, so no other session's is touched.
+            self._target = autosave.new_target(self._path)
+            autosave.prune(self._path, autosave.KEEP_PER_NETWORK - 1)
+            _sweep_once()
+        target = self._target
         try:
-            text = autosave.write_quick_save(self._scene, target, self._last_text)
+            text = autosave.write_quick_save(self._scene, target, self._path, self._last_text)
         except Exception as exc:  # noqa: BLE001 - any failure: warn once, retry next tick
             if not self._warned:
                 self._warned = True
@@ -251,7 +266,7 @@ class AutosaveController(QtCore.QObject):
             if _same_file_key(path) != _same_file_key(self._path):
                 return  # saved elsewhere: the network's own file still lacks the changes
             autosave.discard(self._path)
-            self.pinned = set()
+            self._target = None
             self._last_text = None
             if self._tracker is not None:
                 self._tracker.mark_clean()
@@ -320,8 +335,6 @@ def start_after_recovery(
             controller.check_recovery(chooser)
         except Exception:  # noqa: BLE001 - the network still has to load
             logger.exception("Could not recover a quick save of %s; opening it as saved", controller.network_path)
-            if controller.network_path:
-                controller.pinned = set(autosave.quick_save_paths(controller.network_path))
         start()
 
     defer(recover_then_start)
@@ -331,19 +344,26 @@ def start_after_recovery(
 # -- the prompt -------------------------------------------------------------------------------
 
 
-def _clock(path: str) -> str:
+def _when(path: str, seconds: bool = False) -> str:
+    """When path was last written, as date and time: `2026-11-24 14:30` (`14:30:05` with seconds)."""
     try:
-        return time.strftime("%H:%M", time.localtime(os.path.getmtime(path)))
+        return time.strftime("%Y-%m-%d %H:%M:%S" if seconds else "%Y-%m-%d %H:%M",
+                             time.localtime(os.path.getmtime(path)))
     except OSError:
         return "?"
 
 
 def recovery_buttons(paths: Sequence[str]) -> list[tuple[str, str]]:
     """(label, choice) for each button of the prompt, in order: the recover buttons, newest
-    first, then the discard button."""
+    first, then the discard button. Labels say when each was written, to the second where two
+    would read the same to the minute."""
     if len(paths) == 1:
         return [("Recover", paths[0]), ("Discard", DISCARD)]
-    buttons = [(f"Recover {'latest' if i == 0 else 'earlier'} ({_clock(p)})", p) for i, p in enumerate(paths)]
+    times = [_when(p) for p in paths]
+    if len(set(times)) < len(times):
+        times = [_when(p, seconds=True) for p in paths]
+    buttons = [(f"Recover {'latest' if i == 0 else 'earlier'} ({t})", p)
+               for i, (t, p) in enumerate(zip(times, paths))]
     return [*buttons, ("Discard all", DISCARD)]
 
 
@@ -385,7 +405,7 @@ def choose_recovery(paths: Sequence[str], network_path: str | None = None,
     box.setIcon(QtWidgets.QMessageBox.Icon.Question)
     box.setWindowTitle("Recover quick save")
     if len(paths) == 1:
-        box.setText(f"{name} has a quick save with changes that were never saved ({_clock(paths[0])}).")
+        box.setText(f"{name} has a quick save with changes that were never saved ({_when(paths[0])}).")
     else:
         box.setText(f"{name} has {len(paths)} quick saves with changes that were never saved.")
     box.setInformativeText(
@@ -422,8 +442,9 @@ def configure_toggle_action(action: QtGui.QAction, on_toggled: Callable[[bool], 
         action.setEnabled(False)
         action.setToolTip(ENV_OFF_TOOLTIP)
     else:
-        action.setToolTip("Write a quick save of the network beside its file every few minutes while it "
-                          "has unsaved changes")
+        action.setToolTip("Keep a quick save of the network every few minutes while it has unsaved "
+                          "changes, in your own user folder. Opening the network after a crash "
+                          "offers it back")
     # A QMenu hides its actions' tooltips unless told otherwise.
     for menu in _menus_of(action):
         menu.setToolTipsVisible(True)

@@ -1,7 +1,10 @@
 from __future__ import annotations
+import atexit
 import os
 import pathlib
+import shutil
 import sys
+import tempfile
 
 import pytest
 from usd_chunks.chunk_registry import ChunkLayerManager, ChunkRegistry
@@ -28,6 +31,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # reopened network cooks would test the read-back instead. Off for the suite; its own tests
 # turn it on, with a folder of their own.
 os.environ["USD_CHUNKS_OPEN_CACHE"] = "0"
+
+# A test that turns usdview's quick saves on must never write into the user's own quick-save
+# folder, where the next real usdview session would offer them back. Every test process gets
+# a throwaway folder; the autosave tests set one of their own on top.
+_QUICK_SAVES = tempfile.mkdtemp(prefix="usd_chunks_quick_saves_")
+os.environ["USD_CHUNKS_AUTOSAVE_DIR"] = _QUICK_SAVES
+atexit.register(shutil.rmtree, _QUICK_SAVES, True)
 
 # The suite loads real chunk modules by name (get_chunk_module), and the registry only
 # looks in USD_CHUNK_DIRS. With it unset the suite reports 250 failures and 50 errors

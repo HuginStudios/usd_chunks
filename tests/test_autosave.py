@@ -5,15 +5,25 @@ import logging
 import os
 import time
 import types
+from pathlib import Path
 
 import pytest
 from pxr import Gf, Sdf, Usd, UsdUI
 
-from usd_chunks import Scene, autosave, chunk_stage, chunk_utils, open_cache
+from usd_chunks import Scene, asset_paths, autosave, chunk_cache, chunk_stage, chunk_utils, open_cache
 from usd_chunks.chunk_registry import ChunkLayerManager
 from usd_chunks.graph import backdrops
 
 GROUP = "/chunks/ChunkGroup"
+DIR_ENV = "USD_CHUNKS_AUTOSAVE_DIR"
+
+
+@pytest.fixture(autouse=True)
+def quick_save_dir(monkeypatch, tmp_path):
+    """Quick saves in a folder of the test's own, never the user's real one."""
+    root = tmp_path / "quick_saves"
+    monkeypatch.setenv(DIR_ENV, str(root))
+    return root
 
 
 def _build(path):
@@ -72,64 +82,96 @@ def _layers_state(stage):
 # -- paths ------------------------------------------------------------------------------
 
 
-def test_path_names(tmp_path):
+def _touch(path, mtime):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#usda 1.0\n")
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_quick_saves_go_in_the_users_own_folder(tmp_path, monkeypatch, quick_save_dir):
+    """Never beside the network: in USD_CHUNKS_AUTOSAVE_DIR, else the user's usd_chunks folder."""
     net = tmp_path / "shot.usda"
-    assert autosave.autosave_path(net) == str(tmp_path / "shot.autosave.usda")
-    assert autosave.autosave_path(tmp_path / "shot.usdc") == str(tmp_path / "shot.autosave.usda")
-    assert autosave.is_quick_save(tmp_path / "shot.autosave.usda")
-    assert autosave.is_quick_save(tmp_path / "shot.autosave.3.usda")
-    assert autosave.is_quick_save("SHOT.AUTOSAVE.USDA")
+    assert autosave.autosave_root() == quick_save_dir
+    assert autosave.network_folder(net).parent == quick_save_dir
+    assert autosave.network_folder(net).name.startswith("shot-")
+    monkeypatch.delenv(DIR_ENV)
+    assert autosave.autosave_root() == Path(chunk_cache.user_cache_dir("autosave"))
+
+
+def test_each_network_file_has_its_own_folder(tmp_path):
+    one, other = tmp_path / "a" / "shot.usda", tmp_path / "b" / "shot.usda"
+    assert autosave.network_folder(one) != autosave.network_folder(other)
+    spelled = os.path.join(str(tmp_path), "a", ".", "shot.usda")
+    assert autosave.network_folder(spelled) == autosave.network_folder(one)
+
+
+def test_a_new_quick_save_is_named_by_date_and_time(tmp_path):
+    net = tmp_path / "shot.usda"
+    when = time.mktime((2026, 11, 18, 14, 30, 5, 0, 0, -1))
+    first = autosave.new_target(net, when)
+    assert Path(first) == autosave.network_folder(net) / "shot_2026-11-18_14-30-05.usda"
+    _touch(Path(first), when)
+    second = autosave.new_target(net, when)  # same second: never the same file
+    assert Path(second).name == "shot_2026-11-18_14-30-05_2.usda"
+
+
+def test_is_quick_save(tmp_path, quick_save_dir):
+    net = tmp_path / "shot.usda"
+    assert autosave.is_quick_save(autosave.new_target(net))
     assert not autosave.is_quick_save(net)
-    assert not autosave.is_quick_save(tmp_path / "shot.autosave.usda.tmp")
-    assert not autosave.is_quick_save(tmp_path / "autosave.usda")
-
-
-def test_next_target_skips_pinned(tmp_path):
-    net = tmp_path / "shot.usda"
-    main = str(tmp_path / "shot.autosave.usda")
-    first = str(tmp_path / "shot.autosave.1.usda")
-    assert autosave.next_target(net) == main
-    assert autosave.next_target(net, {first}) == main
-    # Any spelling of the pinned file counts.
-    spelled = os.path.join(str(tmp_path), ".", "shot.autosave.usda")
-    assert autosave.next_target(net, [spelled]) == first
-    assert autosave.next_target(net, {main, first}) == str(tmp_path / "shot.autosave.2.usda")
-    assert autosave.next_target(net, {main, str(tmp_path / "shot.autosave.2.usda")}) == first
+    # A folder that only starts with the same name is not the quick-save folder.
+    assert not autosave.is_quick_save(str(quick_save_dir) + "_other" + os.sep + "shot.usda")
 
 
 def test_pending_recovery_lists_newer_files_newest_first(tmp_path):
     net = tmp_path / "shot.usda"
-    net.write_text("#usda 1.0\n")
-    other = tmp_path / "other.autosave.usda"  # another network's
-    files = {name: tmp_path / name for name in
-             ("shot.autosave.usda", "shot.autosave.1.usda", "shot.autosave.2.usda")}
-    for path in [*files.values(), other]:
-        path.write_text("#usda 1.0\n")
     now = time.time()
-    os.utime(net, (now, now))
-    os.utime(files["shot.autosave.usda"], (now + 10, now + 10))
-    os.utime(files["shot.autosave.1.usda"], (now + 20, now + 20))
-    os.utime(files["shot.autosave.2.usda"], (now - 20, now - 20))  # older than the save
-    os.utime(other, (now + 30, now + 30))
+    _touch(net, now)
+    folder = autosave.network_folder(net)
+    newer = _touch(folder / "shot_b.usda", now + 20)
+    new = _touch(folder / "shot_a.usda", now + 10)
+    old = _touch(folder / "shot_c.usda", now - 20)  # older than the save
+    _touch(folder / "shot_d.usda.tmp", now + 30)  # a write that never finished
+    _touch(autosave.network_folder(tmp_path / "other.usda") / "other_a.usda", now + 30)
 
-    assert autosave.pending_recovery(net) == [
-        str(files["shot.autosave.1.usda"]), str(files["shot.autosave.usda"])]
-    assert autosave.quick_save_paths(net) == [
-        str(files["shot.autosave.1.usda"]), str(files["shot.autosave.usda"]),
-        str(files["shot.autosave.2.usda"])]
+    assert autosave.pending_recovery(net) == [str(newer), str(new)]
+    assert autosave.quick_save_paths(net) == [str(newer), str(new), str(old)]
     net.unlink()
     assert autosave.pending_recovery(net) == autosave.quick_save_paths(net)
 
 
-def test_discard_removes_every_quick_save(tmp_path):
+def test_discard_removes_every_quick_save_and_the_folder(tmp_path):
     net = tmp_path / "shot.usda"
-    net.write_text("#usda 1.0\n")
-    for name in ("shot.autosave.usda", "shot.autosave.1.usda", "shot.autosave.7.usda"):
-        (tmp_path / name).write_text("#usda 1.0\n")
+    _touch(net, time.time())
+    for name in ("shot_a.usda", "shot_b.usda"):
+        _touch(autosave.network_folder(net) / name, time.time())
     autosave.discard(net)
     assert autosave.quick_save_paths(net) == []
+    assert not autosave.network_folder(net).exists()
     assert net.exists()
     autosave.discard(net)  # nothing left: no error
+
+
+def test_prune_keeps_the_newest(tmp_path):
+    net = tmp_path / "shot.usda"
+    now = time.time()
+    files = [_touch(autosave.network_folder(net) / f"shot_{i}.usda", now - i) for i in range(5)]
+    autosave.prune(net, keep=2)
+    assert autosave.quick_save_paths(net) == [str(files[0]), str(files[1])]
+
+
+def test_sweep_deletes_month_old_quick_saves_of_any_network(tmp_path):
+    now = time.time()
+    old_net = tmp_path / "old.usda"
+    live_net = tmp_path / "live.usda"
+    _touch(autosave.network_folder(old_net) / "old_a.usda", now - 40 * 86400)
+    kept = _touch(autosave.network_folder(live_net) / "live_a.usda", now - 2 * 86400)
+    gone = _touch(autosave.network_folder(live_net) / "live_b.usda", now - 31 * 86400)
+    autosave.sweep(now=now)
+    assert not autosave.network_folder(old_net).exists()
+    assert kept.exists() and not gone.exists()
+    autosave.sweep(now=now)  # again: nothing to do, no error
 
 
 def test_autosave_minutes(monkeypatch, caplog):
@@ -266,16 +308,64 @@ def test_close_stops_tracking(scene):
 # -- writing --------------------------------------------------------------------------------
 
 
-def test_quick_save_is_what_save_scene_writes(scene, net, tmp_path):
+def _without_network_key(layer):
+    data = dict(layer.customLayerData)
+    data.pop(autosave.NETWORK_KEY, None)
+    if data:
+        layer.customLayerData = data
+    else:
+        layer.ClearCustomLayerData()
+    return layer.ExportToString()
+
+
+def test_quick_save_is_what_save_scene_writes(scene, net):
     scene.set(_chunk(scene, "Transform"), tx=4.0)
-    target = autosave.next_target(net)
-    text = autosave.write_quick_save(scene, target)
+    target = autosave.new_target(net)
+    text = autosave.write_quick_save(scene, target, net)
     assert text is not None
     with open(target, encoding="utf-8") as f:
         assert f.read() == text
-    saved = tmp_path / "saved.usda"
-    scene.save(str(saved))
-    assert Sdf.Layer.OpenAsAnonymous(str(saved)).ExportToString() == text
+    quick = Sdf.Layer.OpenAsAnonymous(target)
+    assert quick.customLayerData[autosave.NETWORK_KEY] == os.path.realpath(net)
+    scene.save(str(net))
+    assert _without_network_key(quick) == Sdf.Layer.OpenAsAnonymous(str(net)).ExportToString()
+
+
+def test_relative_paths_in_a_quick_save_are_from_the_networks_folder(tmp_path, monkeypatch):
+    """Kept far from the network, a quick save still holds its paths as the network's file
+    does: recovered into it, they name the same files."""
+    inputs = tmp_path / "proj" / "inputs"
+    inputs.mkdir(parents=True)
+    layer = Sdf.Layer.CreateNew(str(inputs / "set.usda"))
+    Sdf.CreatePrimInLayer(layer, "/World/chair").specifier = Sdf.SpecifierDef
+    layer.GetPrimAtPath("/World").specifier = Sdf.SpecifierDef
+    layer.defaultPrim = "World"
+    layer.Save()
+    net = tmp_path / "proj" / "shot" / "net.usda"
+    net.parent.mkdir()
+    monkeypatch.chdir(tmp_path)
+    asset_paths._warned.clear()
+    with Scene.new(path=str(net)) as built:
+        built.set_output(built.create.reference(file_path="../inputs/set.usda", primpath_location="/ref"))
+        built.save()
+
+    with Scene.open(str(net)) as scene:
+        scene.set(next(c for c in scene.get_chunks() if c.get_param("file_path") is not None),
+                  primpath_location="/moved")
+        target = autosave.new_target(net)
+        autosave.write_quick_save(scene, target, net)
+    values = []
+    quick = Sdf.Layer.OpenAsAnonymous(target)
+    quick.Traverse(Sdf.Path.absoluteRootPath, lambda p: values.append(quick.GetAttributeAtPath(p).default)
+                   if p.IsPropertyPath() and p.name == "inputs:file_path" else None)
+    assert values == ["../inputs/set.usda"]
+
+    root = Sdf.Layer.FindOrOpen(str(net))
+    root.Reload(force=True)
+    autosave.recover_into(root, target)
+    root.Save()
+    with Scene.open(str(net)) as recovered:
+        assert recovered.get_stage().GetPrimAtPath("/moved/chair")
 
 
 def test_quick_save_reopens_to_the_same_network(net, tmp_path):
@@ -284,8 +374,8 @@ def test_quick_save_reopens_to_the_same_network(net, tmp_path):
         scene.set(_chunk(scene, "Transform"), tx=4.0)
         ball = scene.create.sphere(prim_path="/geo/ball")
         scene.connect(_chunk(scene, "Mesh"), ball)
-        target = autosave.next_target(net)
-        autosave.write_quick_save(scene, target)
+        target = autosave.new_target(net)
+        autosave.write_quick_save(scene, target, net)
         live = {c.name: (chunk_stage.get_chunk_prim_path(c), [d.name for d in scene.get_inputs(c)])
                 for c in scene.get_chunks()}
     finally:
@@ -313,7 +403,7 @@ def test_writing_leaves_the_stage_alone(scene, net, monkeypatch):
     monkeypatch.setattr(type(scene), "lay_out_scripted", refuse)
     tracker = autosave.ChangeTracker(stage)
     try:
-        assert autosave.write_quick_save(scene, autosave.next_target(net)) is not None
+        assert autosave.write_quick_save(scene, autosave.new_target(net), net) is not None
         assert not tracker.changed
     finally:
         tracker.close()
@@ -321,14 +411,14 @@ def test_writing_leaves_the_stage_alone(scene, net, monkeypatch):
 
 
 def test_unchanged_text_is_not_written_again(scene, net):
-    target = autosave.next_target(net)
-    text = autosave.write_quick_save(scene, target)
+    target = autosave.new_target(net)
+    text = autosave.write_quick_save(scene, target, net)
     old = time.time() - 100
     os.utime(target, (old, old))
-    assert autosave.write_quick_save(scene, target, last_text=text) is None
+    assert autosave.write_quick_save(scene, target, net, last_text=text) is None
     assert os.path.getmtime(target) == pytest.approx(old)
     scene.set(_chunk(scene, "Transform"), tx=4.0)
-    assert autosave.write_quick_save(scene, target, last_text=text) not in (None, text)
+    assert autosave.write_quick_save(scene, target, net, last_text=text) not in (None, text)
 
 
 def test_a_quick_save_is_usda_whatever_format_the_layer_has(scene, net, monkeypatch):
@@ -355,8 +445,8 @@ def test_a_quick_save_is_usda_whatever_format_the_layer_has(scene, net, monkeypa
     monkeypatch.setattr(Sdf.Layer, "ExportToString", export)
     monkeypatch.setattr(Sdf.Layer, "GetFileFormat", file_format)
     scene.set(_chunk(scene, "Transform"), tx=4.0)
-    target = autosave.next_target(net)
-    autosave.write_quick_save(scene, target)
+    target = autosave.new_target(net)
+    autosave.write_quick_save(scene, target, net)
     assert sdf_like and export(sdf_like[0]).startswith("#sdf")  # the stand-in took
     monkeypatch.undo()
 
@@ -373,10 +463,11 @@ def test_a_failed_write_raises_and_leaves_no_temp_file(scene, net, tmp_path, mon
         raise PermissionError("no")
 
     monkeypatch.setattr(os, "replace", broken)
-    target = autosave.next_target(net)
+    target = autosave.new_target(net)
     with pytest.raises(PermissionError):
-        autosave.write_quick_save(scene, target)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["shot.usda"]
+        autosave.write_quick_save(scene, target, net)
+    assert list(autosave.network_folder(net).iterdir()) == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["quick_saves", "shot.usda"]
 
 
 # -- recovering -----------------------------------------------------------------------------
@@ -394,8 +485,8 @@ def test_recover_into_replaces_the_network_and_keeps_the_rest(net, tmp_path):
         scene.set(_chunk(scene, "Transform"), tx=4.0)
         scene.create.sphere(prim_path="/geo/ball")
         scene.remove_backdrop(scene.get_backdrops()[0])
-        target = autosave.next_target(net)
-        autosave.write_quick_save(scene, target)
+        target = autosave.new_target(net)
+        autosave.write_quick_save(scene, target, net)
     finally:
         scene.close()
     # The session's edits never reached the file: it is as saved.

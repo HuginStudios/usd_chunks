@@ -1,10 +1,14 @@
-"""Quick saves: a copy of an edited network, written beside its file every few minutes.
+"""Quick saves: a copy of an edited network, kept every few minutes in a per-user folder.
 
-A host (usdview) writes the network to `<stem>.autosave.usda` next to `<stem>.usda` while
-it has changes the user has not saved, and offers it back when the network is opened again
-after a crash. This module is the part with no UI toolkit in it:
+A host (usdview) writes the network to a quick save while it has changes the user has not
+saved, and offers it back when the network is opened again after a crash. Quick saves are
+off until the user turns them on, and they never sit beside the network: they go in the
+user's own folder (`autosave_root`), one folder per network and one file per editing
+session, named by when the session first wrote one. Nobody has to look there; the host
+offers them when they matter. This module is the part with no UI toolkit in it:
 
-- where the files go (`autosave_path`, `next_target`, `quick_save_paths`, `is_quick_save`),
+- where the files go (`autosave_root`, `network_folder`, `new_target`, `quick_save_paths`,
+  `is_quick_save`) and how long they stay (`prune`, `sweep`),
 - writing one (`write_quick_save`): the same layer Save Scene writes, with none of a save's
   side effects on the open stage,
 - finding and restoring one (`pending_recovery`, `recover_into`) and deleting them
@@ -13,26 +17,36 @@ after a crash. This module is the part with no UI toolkit in it:
   time-dependent network never writes one,
 - how often (`autosave_minutes`, from USD_CHUNKS_AUTOSAVE_MINUTES).
 
-A quick save sits in the network's own folder, so its relative asset paths and sublayer
-paths mean what the network's do, and it opens like any saved network.
+A quick save holds the network as Save Scene would write it to the network's own file:
+its relative asset and sublayer paths are from the network's folder. So it is meant to be
+recovered into the network (`recover_into`), not opened from where it is kept.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
-import re
-from collections.abc import Iterable
+import time
 from pathlib import Path
 
 from pxr import Sdf, Tf, Usd
 
-from usd_chunks import chunk_naming, chunk_registry, chunk_stage, chunk_undo, live
+from usd_chunks import chunk_cache, chunk_naming, chunk_registry, chunk_stage, chunk_undo, live
 
 logger = logging.getLogger(__name__)
 
 #: Minutes between quick saves when USD_CHUNKS_AUTOSAVE_MINUTES is unset.
 DEFAULT_MINUTES = 2.0
+
+#: How many quick saves (editing sessions) of one network are kept; older ones are deleted.
+KEEP_PER_NETWORK = 10
+
+#: Quick saves older than this many days are deleted, whatever network they belong to.
+MAX_AGE_DAYS = 30
+
+#: customLayerData key holding the network a quick save was written for.
+NETWORK_KEY = "usdChunksQuickSaveOf"
 
 #: What a cook writes on a chunk prim outside the chunk's own layer: the module hash it
 #: cooked with (chunk_utils.stamp_module_hash) and the layer an Edit Target chunk points at
@@ -40,72 +54,76 @@ DEFAULT_MINUTES = 2.0
 #: edit of the network, so a change to only these is not a change.
 COOK_PROPERTIES = (chunk_naming.MODULE_HASH_ATTR, chunk_naming.EDIT_TARGET_MARKER)
 
-_SUFFIX = ".autosave"
-_QUICK_SAVE_NAME = re.compile(r"^(?P<stem>.+)\.autosave(?:\.(?P<n>\d+))?\.usda$", re.IGNORECASE)
 _warned_values: set[str] = set()
 
 
 # -- paths ------------------------------------------------------------------------------
 
 
-def autosave_path(network_path: str | os.PathLike) -> str:
-    """The network's main quick save: shot.usda -> shot.autosave.usda, in the same folder."""
-    path = Path(network_path)
-    return str(path.with_name(f"{path.stem}{_SUFFIX}.usda"))
+def autosave_root() -> Path:
+    """The folder every quick save is kept under.
 
-
-def _numbered_path(network_path: str | os.PathLike, n: int) -> str:
-    """The network's quick save number n: shot.usda -> shot.autosave.<n>.usda."""
-    path = Path(network_path)
-    return str(path.with_name(f"{path.stem}{_SUFFIX}.{n}.usda"))
-
-
-def is_quick_save(path: str | os.PathLike) -> bool:
-    """Whether path names a quick save (`*.autosave.usda` or `*.autosave.<n>.usda`).
-
-    A host opening one directly neither offers to recover it nor writes quick saves of it.
+    USD_CHUNKS_AUTOSAVE_DIR when set, else `autosave` in the user's own usd_chunks folder
+    (%LOCALAPPDATA%/usd_chunks on Windows, ~/.cache/usd_chunks elsewhere). Not created here.
     """
-    return bool(_QUICK_SAVE_NAME.match(os.path.basename(os.fspath(path))))
+    custom = chunk_registry.USD_CHUNKS_AUTOSAVE_DIR()
+    return Path(custom) if custom else Path(chunk_cache.user_cache_dir("autosave"))
 
 
 def _same_file_key(path: str | os.PathLike) -> str:
     return os.path.normcase(os.path.realpath(os.fspath(path)))
 
 
-def next_target(network_path: str | os.PathLike, pinned: Iterable[str | os.PathLike] = ()) -> str:
-    """The file the next quick save goes to.
+def network_folder(network_path: str | os.PathLike) -> Path:
+    """The folder a network's quick saves go in: `<stem>-<hash>` under autosave_root.
 
-    The main quick save, unless it is pinned (kept by the user, not to be written over);
-    then the lowest-numbered `<stem>.autosave.<n>.usda` (n >= 1) that is not pinned.
+    The hash is of the network's full path, so two shot.usda files in different folders
+    never share one; any spelling of the same file gives the same folder.
+    """
+    digest = hashlib.sha1(_same_file_key(network_path).encode("utf-8")).hexdigest()[:10]
+    return autosave_root() / f"{Path(network_path).stem}-{digest}"
+
+
+def new_target(network_path: str | os.PathLike, when: float | None = None) -> str:
+    """A new quick-save file for the network: `<stem>_<YYYY-MM-DD_HH-MM-SS>.usda`.
+
+    Named by when (now by default), and never one that already exists: a second one in the
+    same second gets `_2`, `_3`, ... The folder is not created here.
 
     Args:
         network_path: The network's file.
-        pinned: Quick-save files not to write over. Compared as files, so any spelling of
-            the same path counts.
+        when: The time to name it by, as from time.time().
     """
-    taken = {_same_file_key(p) for p in pinned}
-    target = autosave_path(network_path)
-    n = 0
-    while _same_file_key(target) in taken:
+    folder = network_folder(network_path)
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(time.time() if when is None else when))
+    base = f"{Path(network_path).stem}_{stamp}"
+    target, n = folder / f"{base}.usda", 1
+    while target.exists():
         n += 1
-        target = _numbered_path(network_path, n)
-    return target
+        target = folder / f"{base}_{n}.usda"
+    return str(target)
+
+
+def is_quick_save(path: str | os.PathLike) -> bool:
+    """Whether path is a file in the quick-save folder (autosave_root).
+
+    A host opening one directly neither offers to recover it nor writes quick saves of it.
+    """
+    root = _same_file_key(autosave_root())
+    return _same_file_key(path).startswith(root.rstrip(os.sep) + os.sep)
 
 
 def _quick_saves_with_mtime(network_path: str | os.PathLike) -> list[tuple[float, str]]:
     """(mtime, path) of each quick save of the network on disk, newest first."""
-    path = Path(network_path)
-    folder = path.parent
+    folder = network_folder(network_path)
     try:
         names = os.listdir(folder)
     except OSError:
         return []
-    stem = os.path.normcase(path.stem)
     found = []
     for name in names:
-        match = _QUICK_SAVE_NAME.match(name)
-        if match is None or os.path.normcase(match.group("stem")) != stem:
-            continue
+        if not name.lower().endswith(".usda"):
+            continue  # a write's .tmp, or anything else someone put there
         full = str(folder / name)
         try:
             found.append((os.path.getmtime(full), full))
@@ -116,7 +134,7 @@ def _quick_saves_with_mtime(network_path: str | os.PathLike) -> list[tuple[float
 
 
 def quick_save_paths(network_path: str | os.PathLike) -> list[str]:
-    """The network's quick-save files on disk (main and numbered), newest first by mtime."""
+    """The network's quick-save files on disk, newest first by mtime."""
     return [path for _, path in _quick_saves_with_mtime(network_path)]
 
 
@@ -135,29 +153,78 @@ def pending_recovery(network_path: str | os.PathLike) -> list[str]:
     return [path for mtime, path in saves if mtime > saved_at]
 
 
+def _remove(path: str | os.PathLike) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def _remove_folder_if_empty(folder: str | os.PathLike) -> None:
+    try:
+        os.rmdir(folder)
+    except OSError:  # not empty, or already gone
+        pass
+
+
 def discard(network_path: str | os.PathLike) -> None:
-    """Delete every quick save of the network. One that is already gone is skipped."""
+    """Delete every quick save of the network, and its folder. One already gone is skipped."""
     for path in quick_save_paths(network_path):
+        _remove(path)
+    _remove_folder_if_empty(network_folder(network_path))
+
+
+def prune(network_path: str | os.PathLike, keep: int = KEEP_PER_NETWORK) -> None:
+    """Keep the network's newest `keep` quick saves and delete the rest."""
+    for path in quick_save_paths(network_path)[keep:]:
+        _remove(path)
+
+
+def sweep(max_age_days: float = MAX_AGE_DAYS, now: float | None = None) -> None:
+    """Delete quick saves of any network older than max_age_days, and folders left empty.
+
+    Keeps the quick-save folder from growing with networks nobody opens again. Anything
+    that cannot be read or deleted is left as it is.
+    """
+    cutoff = (time.time() if now is None else now) - max_age_days * 86400
+    root = autosave_root()
+    try:
+        folders = [entry for entry in os.scandir(root) if entry.is_dir()]
+    except OSError:
+        return
+    for folder in folders:
         try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+            files = [entry for entry in os.scandir(folder.path) if entry.is_file()]
+        except OSError:
+            continue
+        for entry in files:
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.remove(entry.path)
+            except OSError:
+                continue
+        _remove_folder_if_empty(folder.path)
 
 
 # -- writing and recovering ---------------------------------------------------------------
 
 
-def write_quick_save(scene, target_path: str | os.PathLike, last_text: str | None = None) -> str | None:
-    """Write the scene's network to target_path, as Save Scene would write it.
+def write_quick_save(scene, target_path: str | os.PathLike, network_path: str | os.PathLike,
+                     last_text: str | None = None) -> str | None:
+    """Write the scene's network to target_path, as Save Scene would write it to network_path.
 
-    The layer is chunk_stage.saved_layer's, the one export_chunks writes. Unlike a save,
-    nothing on the stage changes: no nodes are laid out, no layer is reloaded or dirtied,
-    and nothing goes into the open cache. The file is replaced in one step (a temporary
-    file beside it, then a rename), so a crash mid-write leaves the previous quick save.
+    The layer is chunk_stage.saved_layer's for network_path, so its relative asset and
+    sublayer paths are from the network's folder, as recovering it into the network needs.
+    The network's path is noted in the layer's customLayerData (NETWORK_KEY), for anyone
+    looking through the quick-save folder. Unlike a save, nothing on the stage changes: no
+    nodes are laid out, no layer is reloaded or dirtied, and nothing goes into the open
+    cache. The file is replaced in one step (a temporary file beside it, then a rename), so
+    a crash mid-write leaves the previous quick save. Its folder is made if missing.
 
     Args:
         scene: The scene (chunk_scene.SceneSender) whose network to write.
-        target_path: The file to write, normally next_target(network_path, pinned).
+        target_path: The file to write, normally new_target(network_path).
+        network_path: The network's own file.
         last_text: The text this returned last time. When the network still serializes to
             exactly that, nothing is written.
 
@@ -171,10 +238,16 @@ def write_quick_save(scene, target_path: str | os.PathLike, last_text: str | Non
     """
     if scene.get_stage() is None:
         raise ValueError("the scene has no stage to write a quick save of")
-    text = _usda_text(chunk_stage.saved_layer(scene, target_path))
+    layer = chunk_stage.saved_layer(scene, network_path)
+    data = dict(layer.customLayerData)
+    data[NETWORK_KEY] = os.path.realpath(os.fspath(network_path))
+    layer.customLayerData = data
+    text = _usda_text(layer)
     if text == last_text:
         return None
-    live.write_atomic(Path(target_path), text)
+    target = Path(target_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    live.write_atomic(target, text)
     return text
 
 

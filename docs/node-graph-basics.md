@@ -189,30 +189,34 @@ See [ChunkGroup](core-chunks.md#chunkgroup) for how params are shared with the o
 
 ## Auto quick save (usdview)
 
-While a network has changes you haven't saved, usdview writes a copy of it beside its
-file every 2 minutes: `shot.usda` gets `shot.autosave.usda`. Only edits count (params,
-wires, nodes moved, backdrops); cooking, playback and File > Reload don't, so a network you
-only look at never writes one. A quick save is the file Save Scene would write, and opens
-like any network.
+Tick **Chunks > Auto Quick Save** to have usdview keep a copy of your network while it has
+changes you haven't saved. It is off until you turn it on, and the setting is your own, kept
+between sessions.
+
+Every 2 minutes, if you edited the network (params, wires, nodes moved, backdrops), usdview
+copies it into your own user folder, not beside the shot: `%LOCALAPPDATA%\usd_chunks\autosave`
+on Windows, `~/.cache/usd_chunks/autosave` elsewhere. Each network has a folder there, and
+each session writes one file in it, named by when it started:
+`shot_2026-11-24_14-30-05.usda`. Cooking, playback and File > Reload aren't edits, so a
+network you only look at writes nothing. You never need to go there yourself.
 
 When you open a network that has quick saves newer than its file -- at launch or with
 File > Open, after a crash or a quit without saving -- usdview asks before the network's
 chunks load:
 
-- **Recover** (with several quick saves, one button per file, newest first: **Recover
-  latest (14:30)**, **Recover earlier (14:28)**, ...) opens the quick save's network in
-  place of the saved one. The network stays unsaved until you save it. Every quick save on
-  disk is kept and none is written over: from here on they go to `shot.autosave.1.usda`,
-  `shot.autosave.2.usda` and so on, until you save.
+- **Recover** (with several quick saves, one button each, newest first: **Recover latest
+  (2026-11-24 14:30)**, **Recover earlier (2026-11-24 11:02)**, ...) opens the quick save's
+  network in place of the saved one. The network stays unsaved until you save it, and the
+  quick save is kept until then.
 - **Discard** (**Discard all**) deletes the quick saves and opens the network as saved.
-- Closing the question without choosing keeps every quick save, recovers nothing, and asks
-  again next time.
+- Closing the question without choosing keeps them, recovers nothing, and asks again next
+  time. **Show Details...** lists where they are.
 
 **Chunks > Save Scene** to the network's own file deletes its quick saves. Saving it under
-another name keeps them, as the network's own file still lacks the changes. Opening a
-quick save itself (`shot.autosave.usda`) neither asks nor writes quick saves of it.
+another name keeps them, as the network's own file still lacks the changes. The 10 newest
+quick saves of each network are kept, and any quick save older than 30 days is deleted.
 
-Turn quick saves off with **Chunks > Auto Quick Save** (your own setting, kept between
-sessions). `USD_CHUNKS_AUTOSAVE_MINUTES` sets how often, and `0` turns them off for everyone,
-greying out the menu entry (see [Environment variables](install.md#environment-variables)).
-Quick saves already on disk are offered either way.
+`USD_CHUNKS_AUTOSAVE_MINUTES` sets how often, and `0` keeps quick saves off for everyone;
+`USD_CHUNKS_AUTOSAVE_DIR` puts them somewhere else (see
+[Environment variables](install.md#environment-variables)). Quick saves already on disk are
+offered either way.

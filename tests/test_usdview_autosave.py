@@ -29,16 +29,19 @@ from usd_chunks.frontends.qt import window_state  # noqa: E402
 from usd_chunks.hosts import usdview  # noqa: E402
 
 ENV = "USD_CHUNKS_AUTOSAVE_MINUTES"
+DIR_ENV = "USD_CHUNKS_AUTOSAVE_DIR"
 TX = "inputs:translate_grp:tx"
 TRANSFORM = "/chunks/ChunkGroup/Transform"
 
 
 @pytest.fixture(autouse=True)
 def scratch_settings(monkeypatch, tmp_path):
-    """QSettings in a throwaway ini file: a test never touches the user's own settings."""
+    """QSettings in a throwaway ini file and quick saves in a folder of the test's own: a test
+    never touches the user's settings or quick saves."""
     path = str(tmp_path / "settings.ini")
     monkeypatch.setattr(window_state, "_settings", lambda: QtCore.QSettings(path, QtCore.QSettings.Format.IniFormat))
     monkeypatch.delenv(ENV, raising=False)
+    monkeypatch.setenv(DIR_ENV, str(tmp_path / "quick_saves"))
 
 
 @pytest.fixture
@@ -53,11 +56,11 @@ def net(tmp_path):
 
 
 def _quick_save(net, tx=4.0):
-    """shot.autosave.usda, newer than shot.usda: what a crash leaves behind."""
+    """A quick save newer than shot.usda: what a crash leaves behind."""
     with Scene.open(str(net)) as scene:
         scene.set(next(c for c in scene.get_chunks() if c.name == "Transform"), tx=tx)
-        main = autosave.next_target(net)
-        autosave.write_quick_save(scene, main)
+        main = autosave.new_target(net)
+        autosave.write_quick_save(scene, main, net)
     Sdf.Layer.FindOrOpen(str(net)).Reload(force=True)  # the edit was never saved
     return main
 
@@ -112,7 +115,7 @@ def test_without_quick_saves_the_chunks_load_at_once(qapp, monkeypatch, stage):
 
 @pytest.mark.parametrize("answer", ["recover", qt_autosave.DISCARD])
 def test_with_quick_saves_the_choice_comes_before_the_load(qapp, monkeypatch, net, answer):
-    _quick_save(net)
+    name = os.path.basename(_quick_save(net))
     stage = Usd.Stage.Open(str(net))
     try:
         host = Host(monkeypatch, stage)
@@ -123,18 +126,18 @@ def test_with_quick_saves_the_choice_comes_before_the_load(qapp, monkeypatch, ne
         host.queued.pop()()
         recovered = pytest.approx(4.0) if answer == "recover" else None
         assert host.calls == [
-            ("choose", ["shot.autosave.usda"]),
+            ("choose", [name]),
             ("notify", stage, recovered),
             ("attach", host.scene),
         ]
-        expected = ["shot.autosave.usda"] if answer == "recover" else []
+        expected = [name] if answer == "recover" else []
         assert [os.path.basename(p) for p in autosave.quick_save_paths(net)] == expected
     finally:
         stage.GetRootLayer().Reload(force=True)
 
 
 def test_a_stage_replaced_while_the_prompt_was_up_is_not_loaded(qapp, monkeypatch, net, tmp_path):
-    _quick_save(net)
+    name = os.path.basename(_quick_save(net))
     stage = Usd.Stage.Open(str(net))
     try:
         host = Host(monkeypatch, stage)
@@ -142,7 +145,7 @@ def test_a_stage_replaced_while_the_prompt_was_up_is_not_loaded(qapp, monkeypatc
         host.scene._on_stage_replaced()
         host.stage = Usd.Stage.CreateInMemory()  # another file opened meanwhile
         host.queued.pop()()
-        assert host.calls == [("choose", ["shot.autosave.usda"])]  # its own signal loads it
+        assert host.calls == [("choose", [name])]  # its own signal loads it
     finally:
         stage.GetRootLayer().Reload(force=True)
 
@@ -208,7 +211,7 @@ def test_a_real_action_becomes_the_checkbox(qapp):
     action = menu.addAction(qt_autosave.ACTION_TEXT)
     container._setup_autosave_action(action)
     assert container._autosaveAction is action
-    assert action.isCheckable() and action.isChecked()
+    assert action.isCheckable() and not action.isChecked()  # off until the user turns it on
 
 
 def test_without_the_action_it_is_found_in_the_menu_bar(qapp):
@@ -227,16 +230,16 @@ def test_toggle_command_returns_early_when_the_action_does_the_work(qapp):
     container = usdview.ChunksPluginContainer()
     container._autosaveAction = QtGui.QAction(qt_autosave.ACTION_TEXT)
     container.toggleAutosave(None)
-    assert qt_autosave.user_enabled()
+    assert not qt_autosave.user_enabled()  # left as it was: the action's own signal toggles
 
 
 def test_toggle_command_flips_the_setting_without_an_action(qapp):
     container = usdview.ChunksPluginContainer()
     container._autosaveAction = None
     container.toggleAutosave(None)
-    assert not qt_autosave.user_enabled()
-    container.toggleAutosave(None)
     assert qt_autosave.user_enabled()
+    container.toggleAutosave(None)
+    assert not qt_autosave.user_enabled()
 
 
 def test_toggle_command_only_logs_when_the_env_turns_it_off(qapp, monkeypatch, caplog):
@@ -245,5 +248,5 @@ def test_toggle_command_only_logs_when_the_env_turns_it_off(qapp, monkeypatch, c
     container._autosaveAction = None
     with caplog.at_level(logging.WARNING, logger="usd_chunks.hosts.usdview"):
         container.toggleAutosave(None)
-    assert qt_autosave.user_enabled()
+    assert not qt_autosave.user_enabled()  # unchanged
     assert any("USD_CHUNKS_AUTOSAVE_MINUTES=0" in r.getMessage() for r in caplog.records)

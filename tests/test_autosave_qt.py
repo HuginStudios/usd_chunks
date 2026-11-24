@@ -24,6 +24,7 @@ from usd_chunks.frontends.qt import autosave as qt_autosave  # noqa: E402
 from usd_chunks.frontends.qt import window_state  # noqa: E402
 
 ENV = "USD_CHUNKS_AUTOSAVE_MINUTES"
+DIR_ENV = "USD_CHUNKS_AUTOSAVE_DIR"
 LOGGER = "usd_chunks.frontends.qt.autosave"
 TX = "inputs:translate_grp:tx"
 TRANSFORM = "/chunks/ChunkGroup/Transform"
@@ -31,10 +32,14 @@ TRANSFORM = "/chunks/ChunkGroup/Transform"
 
 @pytest.fixture(autouse=True)
 def scratch_settings(monkeypatch, tmp_path):
-    """QSettings in a throwaway ini file: a test never touches the user's own settings."""
+    """QSettings in a throwaway ini file and quick saves in a folder of the test's own: a
+    test never touches the user's settings or quick saves. Quick saves are turned on here,
+    as a user turns them on; test_quick_saves_are_off_until_turned_on checks the default."""
     path = str(tmp_path / "settings.ini")
     monkeypatch.setattr(window_state, "_settings", lambda: QtCore.QSettings(path, QtCore.QSettings.Format.IniFormat))
     monkeypatch.delenv(ENV, raising=False)
+    monkeypatch.setenv(DIR_ENV, str(tmp_path / "quick_saves"))
+    qt_autosave.set_user_enabled(True)
 
 
 @pytest.fixture
@@ -109,37 +114,95 @@ def session(net, controller):
 
 
 def _quick_saves(net):
-    return sorted(os.path.basename(p) for p in autosave.quick_save_paths(net))
+    """The network's quick saves on disk, newest first."""
+    return autosave.quick_save_paths(net)
 
 
 def _crashed_with_a_quick_save(net, controller, tx=4.0):
-    """A session that edited the network, wrote shot.autosave.usda, and never saved."""
+    """A session that edited the network, wrote a quick save, and never saved. Returns it."""
     first = Session(net, controller)
     first.edit(tx=tx)
     first.controller.tick()
     first.close()
-    main = autosave.autosave_path(net)
+    (main,) = _quick_saves(net)
     stamp = time.time() - 50  # after the network was saved, before anything this test writes
     os.utime(main, (stamp, stamp))
     return main
 
 
+def _tx_in(path):
+    layer = Sdf.Layer.OpenAsAnonymous(path)  # held: a spec of a freed layer cannot be read
+    return layer.GetAttributeAtPath(f"{TRANSFORM}.{TX}").default
+
+
 # -- writing ------------------------------------------------------------------------------------
 
 
-def test_tick_writes_after_an_edit(session, net):
+def test_quick_saves_are_off_until_turned_on(net, controller):
+    window_state.settings().remove(qt_autosave.SETTINGS_KEY)  # a user who never chose
+    assert not qt_autosave.user_enabled()
+    session = Session(net, controller)
+    try:
+        assert not controller.timer.isActive()
+        session.edit(tx=4.0)
+        controller.tick()
+        assert _quick_saves(net) == []
+    finally:
+        session.close()
+
+
+def test_tick_writes_after_an_edit_into_the_quick_save_folder(session, net, tmp_path):
     session.controller.tick()
     assert _quick_saves(net) == []  # nothing changed: nothing written
     session.edit(tx=4.0)
     session.controller.tick()
-    assert _quick_saves(net) == ["shot.autosave.usda"]
-    saved = Sdf.Layer.OpenAsAnonymous(autosave.autosave_path(net))
-    assert saved.GetAttributeAtPath(f"{TRANSFORM}.{TX}").default == pytest.approx(4.0)
+    (written,) = _quick_saves(net)
+    assert os.path.dirname(written) == str(autosave.network_folder(net))
+    assert sorted(p.name for p in net.parent.iterdir()) == ["quick_saves", "settings.ini", "shot.usda"]
+    assert _tx_in(written) == pytest.approx(4.0)
     # Written: clean again until the next edit.
-    mtime = os.path.getmtime(autosave.autosave_path(net))
-    os.utime(autosave.autosave_path(net), (mtime - 10, mtime - 10))
+    mtime = os.path.getmtime(written)
+    os.utime(written, (mtime - 10, mtime - 10))
     session.controller.tick()
-    assert os.path.getmtime(autosave.autosave_path(net)) == pytest.approx(mtime - 10)
+    assert os.path.getmtime(written) == pytest.approx(mtime - 10)
+    # The next edit goes to the same file: one file per session.
+    session.edit(tx=5.0)
+    session.controller.tick()
+    assert _quick_saves(net) == [written]
+    assert _tx_in(written) == pytest.approx(5.0)
+
+
+def test_each_session_writes_its_own_file(net, controller):
+    first = _crashed_with_a_quick_save(net, controller)
+    before = open(first, "rb").read()
+    session = Session(net, controller, lambda paths: None)  # asked, and closed unanswered
+    try:
+        session.edit(tx=9.0)
+        controller.tick()
+        newest, older = _quick_saves(net)
+        assert older == first and newest != first
+        assert open(first, "rb").read() == before
+    finally:
+        session.close()
+
+
+def test_a_new_session_keeps_only_the_newest_quick_saves(net, controller, monkeypatch):
+    monkeypatch.setattr(autosave, "KEEP_PER_NETWORK", 2)
+    folder = autosave.network_folder(net)
+    folder.mkdir(parents=True)
+    stamp = time.time() - 300  # older than the network file: not offered, only kept
+    for name in ("shot_1.usda", "shot_2.usda", "shot_3.usda"):
+        (folder / name).write_text("#usda 1.0\n")
+        stamp -= 10
+        os.utime(folder / name, (stamp, stamp))
+    session = Session(net, controller)
+    try:
+        session.edit(tx=4.0)
+        controller.tick()
+        names = [os.path.basename(p) for p in _quick_saves(net)]
+        assert len(names) == 2 and names[1] == "shot_1.usda"
+    finally:
+        session.close()
 
 
 def test_the_timer_runs_at_the_set_interval(session, monkeypatch):
@@ -170,11 +233,13 @@ def test_a_failed_write_warns_once_retries_and_leaves_no_temp_file(session, net,
     assert "read-only" in warnings[0].getMessage()
     assert _quick_saves(net) == []
 
+    assert list(autosave.network_folder(net).iterdir()) == []  # no .tmp left behind
+
     monkeypatch.setattr(os, "replace", real_replace)
     session.controller.tick()  # still changed: this one writes
-    assert sorted(p.name for p in tmp_path.iterdir() if p.suffix != ".ini") == ["shot.autosave.usda", "shot.usda"]
-    saved = Sdf.Layer.OpenAsAnonymous(autosave.autosave_path(net))
-    assert saved.GetAttributeAtPath(f"{TRANSFORM}.{TX}").default == pytest.approx(5.0)
+    (written,) = _quick_saves(net)
+    assert [p.name for p in autosave.network_folder(net).iterdir()] == [os.path.basename(written)]
+    assert _tx_in(written) == pytest.approx(5.0)
 
     # Written once, a later failure warns again.
     monkeypatch.setattr(os, "replace", broken)
@@ -206,7 +271,7 @@ def test_the_user_toggle(session, net):
     session.controller.set_enabled(True)
     assert session.controller.timer.isActive()
     session.controller.tick()
-    assert _quick_saves(net) == ["shot.autosave.usda"]
+    assert len(_quick_saves(net)) == 1
 
 
 # -- saving -------------------------------------------------------------------------------------
@@ -218,21 +283,21 @@ def test_save_scene_to_the_network_deletes_its_quick_saves(net, controller):
     try:
         session.edit(tx=7.0)
         controller.tick()
-        assert _quick_saves(net) == ["shot.autosave.1.usda", "shot.autosave.usda"]
+        assert len(_quick_saves(net)) == 2
 
         other = net.with_name("other.usda")
         session.scene.save(str(other))
         qt_autosave.notify_saved(str(other))
-        assert _quick_saves(net) == ["shot.autosave.1.usda", "shot.autosave.usda"]
+        assert len(_quick_saves(net)) == 2
 
         session.scene.save(str(net))
         qt_autosave.notify_saved(os.path.join(str(net.parent), ".", net.name))  # any spelling
         assert _quick_saves(net) == []
-        assert not controller.pinned
-        # Pins gone with the files: the next quick save is the main one again.
+        assert not autosave.network_folder(net).exists()
+        # Edited after the save: a new quick save again.
         session.edit(tx=8.0)
         controller.tick()
-        assert _quick_saves(net) == ["shot.autosave.usda"]
+        assert len(_quick_saves(net)) == 1
     finally:
         session.close()
 
@@ -253,29 +318,28 @@ def test_save_scene_dialog_tells_the_controllers(monkeypatch, tmp_path):
 
 
 def test_discard_deletes_every_quick_save(net, controller):
-    _crashed_with_a_quick_save(net, controller)
+    main = _crashed_with_a_quick_save(net, controller)
     seen = []
     session = Session(net, controller, lambda paths: seen.append(paths) or qt_autosave.DISCARD)
     try:
-        assert seen == [[autosave.autosave_path(net)]]
+        assert seen == [[main]]
         assert _quick_saves(net) == []
+        assert not autosave.network_folder(net).exists()
         assert session.tx() == pytest.approx(0.0)  # the network as saved
     finally:
         session.close()
 
 
-def test_a_prompt_closed_unanswered_keeps_and_pins_every_file(net, controller):
+def test_a_prompt_closed_unanswered_keeps_every_file(net, controller):
     main = _crashed_with_a_quick_save(net, controller)
-    before = open(main, "rb").read()
-    session = Session(net, controller, lambda paths: None)
+    offered = []
+    session = Session(net, controller, lambda paths: offered.append(paths))
     try:
+        assert offered == [[main]]
         assert session.tx() == pytest.approx(0.0)  # nothing recovered
-        session.edit(tx=9.0)
-        controller.tick()
-        assert _quick_saves(net) == ["shot.autosave.1.usda", "shot.autosave.usda"]
-        assert open(main, "rb").read() == before
     finally:
         session.close()
+    assert _quick_saves(net) == [main]
 
 
 def test_recover_never_writes_over_the_recovered_file(net, controller):
@@ -286,22 +350,22 @@ def test_recover_never_writes_over_the_recovered_file(net, controller):
         assert session.tx() == pytest.approx(4.0)
         assert session.stage.GetRootLayer().dirty  # recovered, not saved
         controller.tick()
-        assert _quick_saves(net) == ["shot.autosave.usda"]  # nothing edited since: nothing written
+        assert _quick_saves(net) == [main]  # nothing edited since: nothing written
         session.edit(tx=5.0)
         controller.tick()
-        assert _quick_saves(net) == ["shot.autosave.1.usda", "shot.autosave.usda"]
+        assert len(_quick_saves(net)) == 2
         assert open(main, "rb").read() == before
     finally:
         session.close()
 
 
 def test_reload_after_recover_writes_nothing(net, controller):
-    _crashed_with_a_quick_save(net, controller)
+    main = _crashed_with_a_quick_save(net, controller)
     session = Session(net, controller, lambda paths: paths[0])
     try:
         session.stage.Reload()
         controller.tick()
-        assert _quick_saves(net) == ["shot.autosave.usda"]
+        assert _quick_saves(net) == [main]
     finally:
         session.close()
 
@@ -310,7 +374,7 @@ def test_recover_reload_edit_relaunch_recover_again(net, controller):
     main = _crashed_with_a_quick_save(net, controller)
     first_recovered = open(main, "rb").read()
 
-    # 1) Recover shot.autosave.usda; 2) reload; 3) edit, the tick goes to .1.
+    # 1) Recover it; 2) reload; 3) edit: the tick writes this session's own file.
     session = Session(net, controller, lambda paths: paths[0])
     session.stage.Reload()
     assert session.tx() == pytest.approx(0.0)
@@ -318,24 +382,23 @@ def test_recover_reload_edit_relaunch_recover_again(net, controller):
     # the stage (not autosave's doing), so the edit is to one the network never had.
     session.edit(ty=11.0)
     controller.tick()
-    numbered = str(net.with_name("shot.autosave.1.usda"))
-    assert _quick_saves(net) == ["shot.autosave.1.usda", "shot.autosave.usda"]
+    second = next(p for p in _quick_saves(net) if p != main)
     later = time.time()
-    os.utime(numbered, (later, later))
+    os.utime(second, (later, later))
     session.close()
 
     # 4) Relaunch; 5) both are offered, newest first; 6) recover the latest.
     offered = []
     relaunch = Session(net, controller, lambda paths: offered.append(paths) or paths[0])
     try:
-        assert offered == [[numbered, main]]
+        assert offered == [[second, main]]
         assert relaunch.value("ty") == pytest.approx(11.0)
         # 7) The first recovered network is still there, byte for byte.
         assert open(main, "rb").read() == first_recovered
-        # 8) One more edit goes to a new file.
+        # 8) One more edit goes to a third file.
         relaunch.edit(ty=12.0)
         controller.tick()
-        assert _quick_saves(net) == ["shot.autosave.1.usda", "shot.autosave.2.usda", "shot.autosave.usda"]
+        assert len(_quick_saves(net)) == 3
         assert open(main, "rb").read() == first_recovered
     finally:
         relaunch.close()
@@ -343,19 +406,14 @@ def test_recover_reload_edit_relaunch_recover_again(net, controller):
 
 def test_a_quick_save_opened_directly_is_never_offered_or_written(net, controller):
     main = _crashed_with_a_quick_save(net, controller)
-    # A quick save of the quick save would be shot.autosave.autosave.usda: make one exist.
-    nested = autosave.autosave_path(main)
-    with open(nested, "w", encoding="utf-8") as f:
-        f.write("#usda 1.0\n")
     session = Session(main, controller)  # _refuse: any prompt fails the test
     try:
         assert controller.is_quick_save()
         session.edit(tx=13.0)
         controller.tick()
-        assert sorted(n for n in os.listdir(net.parent) if n != "settings.ini") == sorted(
-            ["shot.usda", "shot.autosave.usda", "shot.autosave.autosave.usda"])
-        controller.on_saved(main)  # saving over it leaves its "quick saves" alone
-        assert os.path.exists(nested)
+        assert [str(p) for p in autosave.autosave_root().rglob("*.usda")] == [main]
+        controller.on_saved(main)  # saving over it leaves the quick saves alone
+        assert os.path.exists(main)
     finally:
         session.close()
 
@@ -392,7 +450,7 @@ def test_start_waits_for_the_choice(net, controller, answer):
         assert calls == []  # nothing loads until the deferred call runs
         queued.pop()()
         if answer == "recover":
-            assert calls == [("choose", [main]), ("start", pytest.approx(4.0), ["shot.autosave.usda"])]
+            assert calls == [("choose", [main]), ("start", pytest.approx(4.0), [main])]
         else:
             assert calls[0] == ("choose", [main])
             assert calls[1][0] == "start" and calls[1][2] == []
@@ -415,26 +473,39 @@ def test_a_failed_recovery_still_starts(net, controller, monkeypatch):
     queued.pop()()
     assert calls == ["start"]
     assert os.path.exists(main)
-    assert {os.path.normcase(p) for p in controller.pinned} == {os.path.normcase(main)}
 
 
 # -- the prompt ---------------------------------------------------------------------------------
 
 
-def test_recovery_buttons(tmp_path):
-    files = [str(tmp_path / n) for n in ("shot.autosave.2.usda", "shot.autosave.1.usda", "shot.autosave.usda")]
-    for i, path in enumerate(files):
+def _files_written_at(tmp_path, *stamps):
+    files = []
+    for i, stamp in enumerate(stamps):
+        path = str(tmp_path / f"shot_{i}.usda")
         with open(path, "w", encoding="utf-8") as f:
             f.write("#usda 1.0\n")
-        stamp = time.mktime((2026, 11, 18, 14, 30 - i, 0, 0, 0, -1))
-        os.utime(path, (stamp, stamp))
+        when = time.mktime(stamp + (0, 0, -1))
+        os.utime(path, (when, when))
+        files.append(path)
+    return files
+
+
+def test_recovery_buttons_say_when_each_was_written(tmp_path):
+    files = _files_written_at(tmp_path, (2026, 11, 18, 14, 30, 0), (2026, 11, 18, 14, 29, 0),
+                              (2026, 11, 17, 9, 5, 0))
     assert qt_autosave.recovery_buttons(files[2:]) == [("Recover", files[2]), ("Discard", qt_autosave.DISCARD)]
     assert qt_autosave.recovery_buttons(files) == [
-        ("Recover latest (14:30)", files[0]),
-        ("Recover earlier (14:29)", files[1]),
-        ("Recover earlier (14:28)", files[2]),
+        ("Recover latest (2026-11-18 14:30)", files[0]),
+        ("Recover earlier (2026-11-18 14:29)", files[1]),
+        ("Recover earlier (2026-11-17 09:05)", files[2]),
         ("Discard all", qt_autosave.DISCARD),
     ]
+
+
+def test_recovery_buttons_in_the_same_minute_show_seconds(tmp_path):
+    files = _files_written_at(tmp_path, (2026, 11, 18, 14, 30, 40), (2026, 11, 18, 14, 30, 5))
+    assert [label for label, _ in qt_autosave.recovery_buttons(files)] == [
+        "Recover latest (2026-11-18 14:30:40)", "Recover earlier (2026-11-18 14:30:05)", "Discard all"]
 
 
 def _answer_box(qapp, answer: str, stuck: list, seen: list):
@@ -475,10 +546,7 @@ def _answer_box(qapp, answer: str, stuck: list, seen: list):
 
 @pytest.mark.parametrize("answer", ["recover", "discard", "esc", "close"])
 def test_the_prompt_returns_the_choice(qapp, tmp_path, answer):
-    files = [str(tmp_path / "shot.autosave.1.usda"), str(tmp_path / "shot.autosave.usda")]
-    for path in files:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("#usda 1.0\n")
+    files = _files_written_at(tmp_path, (2026, 11, 18, 14, 30, 0), (2026, 11, 18, 14, 29, 0))
     labels = [label for label, _ in qt_autosave.recovery_buttons(files)]
     press, expected = {
         "recover": (labels[1], files[1]),
