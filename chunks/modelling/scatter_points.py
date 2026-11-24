@@ -1474,6 +1474,23 @@ def _on_points_input_changed(owner, notice, sender) -> None:
     _update_sampling_params(owner.get_chunk())
 
 
+def _painted_points_problem(stage, points_path) -> str:
+    """Why Painted Points gives no points, for the readout; empty when it is fine or empty.
+
+    The input takes a prim path. A wire from another chunk's name output (Edge Field's
+    Primvar, say) puts a plain word here, which places nothing and gave no hint why.
+    """
+    if not points_path or stage is None:
+        return ""
+    if not Sdf.Path.IsValidPathString(points_path) or not Sdf.Path(points_path).IsAbsolutePath():
+        return (f"Painted Points '{points_path}' is not a prim path: wire a Scatter Brush's "
+                "Painted Points output here")
+    prim = stage.GetPrimAtPath(points_path)
+    if not prim or not prim.IsA(UsdGeom.Points):
+        return f"Painted Points: no points at {points_path}"
+    return ""
+
+
 def _painted_points(stage, points_path, up=None):
     """Points a brush placed by hand, with the surface normal recorded at each.
 
@@ -3213,6 +3230,7 @@ def execute(node):
     # Read here, used at the dispatch below. Nothing about a painted cloud depends on the
     # prototypes, so it does not need to wait for them.
     points_input = node.get_param("points_prim").value
+    points_problem = _painted_points_problem(scratch_stage, points_input)
     placed, placed_normals = _painted_points(scratch_stage, points_input, world_up)
     placed_ids = _painted_ids(scratch_stage, points_input, len(placed))
     placed_toward, placed_scale = _painted_extras(scratch_stage, points_input, len(placed))
@@ -3546,7 +3564,8 @@ def execute(node):
                           keep, (out_positions, out_indices, out_scales, out_orients))
 
     triangles = sum(q * _triangle_count(stage.GetPrimAtPath(p.path)) for p, q in zip(protos, quota) if q)
-    _report(node, protos, quota, count, scatter_mode, pack_levels, missing, triangles, surface_missing)
+    _report(node, protos, quota, count, scatter_mode, pack_levels, missing, triangles, surface_missing,
+            points_problem)
 
 
 def _into_parent_space(stage, inst_path, positions, orients, scales):
@@ -3621,7 +3640,8 @@ def _millions(n: int) -> str:
     return f"{n / 1e6:.1f}M" if n >= 100_000 else f"{n:,}"
 
 
-def _report(node, protos, quota, count, mode, levels, missing=(), triangles=0, surface_missing=""):
+def _report(node, protos, quota, count, mode, levels, missing=(), triangles=0, surface_missing="",
+            points_problem=""):
     """Fill the readout label + the output params other chunks can read.
 
     Prototype paths that matched nothing are named, and logged: a typo in one row otherwise
@@ -3654,6 +3674,9 @@ def _report(node, protos, quota, count, mode, levels, missing=(), triangles=0, s
     if surface_missing:
         text += f"\nsurface not found: {surface_missing}"
         logger.warning("%s: surface prim not found: %s", node.name, surface_missing)
+    if points_problem:
+        text += f"\n{points_problem}"
+        logger.warning("%s: %s", node.name, points_problem)
     if missing:
         text += "\nnot found: " + ", ".join(missing)
         logger.warning("%s: prototype path(s) not found: %s", node.name, ", ".join(missing))
