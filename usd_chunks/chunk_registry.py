@@ -919,7 +919,11 @@ class _ChunkLazyModule(util._LazyModule):
     def __getattribute__(self, attr):
         if attr in _UNLOADED_ATTRS:
             return object.__getattribute__(self, attr)
-        return super().__getattribute__(attr)
+        # Hand over as a plain _LazyModule: from Python 3.11.9 / 3.12.3 the stdlib loads only
+        # while the type is exactly _LazyModule, and on a subclass it calls back into this
+        # method instead, which recursed until the stack ran out.
+        object.__setattr__(self, "__class__", util._LazyModule)
+        return util._LazyModule.__getattribute__(self, attr)
 
 
 class _ChunkLazyConfigLoader(importlib.abc.SourceLoader):
