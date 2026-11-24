@@ -54,3 +54,53 @@ def test_a_long_list_of_nodes_is_cut_short(network):
 
 def test_a_chunk_not_in_the_network_is_named_by_its_module(network):
     assert dependencies.chunk_text("uv_unwrap") == "uv_unwrap"
+
+
+class _Layout:
+    """Records what a draw() puts in the dialog, one entry per row."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def column(self):
+        return self
+
+    def box(self):
+        self.rows.append("box")
+        return self
+
+    def label(self, text="", icon="NONE"):
+        self.rows.append("label")
+
+    def prop(self, data, name, text=""):
+        self.rows.append(f"prop {name}")
+
+    def separator(self):
+        self.rows.append("separator")
+
+
+def _draw(opened_offline, online, monkeypatch):
+    monkeypatch.setattr(dependencies, "_online", lambda: online)
+    monkeypatch.setattr(chunk_registry.ChunkDependencyManager(), "target_dir", lambda: "deps")
+    item = SimpleNamespace(chunk="scatter_points", packages="scipy>=1.11,<2", install=True)
+    rows = []
+    op = SimpleNamespace(layout=_Layout(rows), items=[item], opened_offline=opened_offline)
+    context = SimpleNamespace(preferences=SimpleNamespace(system=SimpleNamespace(use_online_access=online)))
+    dependencies.USDCHUNKS_OT_install_dependencies.draw(op, context)
+    return rows
+
+
+def test_turning_online_access_on_keeps_the_dialog_the_same_size(network, monkeypatch):
+    """Ticking Allow Online Access in the dialog dropped the box that held it, so the dialog
+    shrank under the mouse: Install moved away, the click landed outside, and that declined."""
+    offline = _draw(opened_offline=True, online=False, monkeypatch=monkeypatch)
+    after_ticking = _draw(opened_offline=True, online=True, monkeypatch=monkeypatch)
+
+    assert "prop use_online_access" in offline
+    assert after_ticking == offline
+
+
+def test_a_dialog_opened_online_shows_no_switch(network, monkeypatch):
+    rows = _draw(opened_offline=False, online=True, monkeypatch=monkeypatch)
+
+    assert "prop use_online_access" not in rows

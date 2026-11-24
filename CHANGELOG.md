@@ -85,6 +85,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Blender: ticking Allow Online Access in the "Missing chunk dependencies" dialog no longer
+  declines the install. The box holding the switch disappeared, so the dialog shrank under
+  the mouse and the click on Install landed outside it. The box now stays and says that
+  online access is on.
 - **Breaking:** a Camera's lens is written in the stage's units. USD keeps focal length and
   aperture in tenths of a scene unit, and the chunk wrote its millimetres as they are, so in
   a scene in metres (every new one) a 50 mm lens was a 5 m lens. The framing was right but
