@@ -1731,6 +1731,7 @@ class BlenderGraphView:
         waits in pending_pick for choose(), which joins it on and may ask again when both
         ends were a "+". The search popup only shows it.
         """
+        a, b = chunk_graph.plus_as_exec(a, b)  # an exec wire on a "+" chains the node
         step = chunk_graph.plus_step(self.chunks, a, b)
         if step is None:
             if chunk_graph.connect(self.stage, a, b, self.chunks) is not None:

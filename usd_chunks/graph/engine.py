@@ -2493,6 +2493,31 @@ def plus_menu(chunk, plus: PlusRef, other: PortRef | None = None) -> list[PortRe
     ]
 
 
+def plus_as_exec(a, b) -> tuple[Any, Any]:
+    """A wire's ends, with a "+" that an exec wire landed on swapped for its node's exec port.
+
+    A collapsed node's exec port and its "+" sit a few pixels apart (in Blender, two 9 px
+    sockets 1 px apart at Home zoom), so a wire meant to chain the node often lands on the
+    "+". The "+" offers params only, and an exec wire is never one (pick_candidates), so the
+    drop did nothing but say "nothing there takes that wire". Chaining the node is the one
+    thing an exec wire can mean there.
+
+    Args:
+        a, b: The wire's ends, each a PortRef or a PlusRef.
+
+    Returns:
+        (a, b), with a "+" replaced by its node's exec input or output when the other end is
+        an exec port of the opposite direction on another node; otherwise as given.
+    """
+    for plus, other in ((a, b), (b, a)):
+        if (isinstance(plus, PlusRef) and isinstance(other, PortRef) and other.port_type == PORT_EXEC
+                and other.is_input != plus.is_input and other.node_path != plus.node_path):
+            name = EXEC_INPUT if plus.is_input else EXEC_OUTPUT
+            port = PortRef(plus.node_path, f"{plus.node_path}.{name}", PORT_EXEC, plus.is_input)
+            return (port, b) if plus is a else (a, port)
+    return a, b
+
+
 def plus_step(chunks: dict, a, b) -> tuple[list[PortRef], Any] | None:
     """What to ask when a wire joins a and b and at least one end is a "+".
 

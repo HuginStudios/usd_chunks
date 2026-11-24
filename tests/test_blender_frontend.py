@@ -759,6 +759,27 @@ def test_a_link_to_a_plus_is_taken_out_and_picked_as_a_param(view):
     assert [str(c.GetPrimPath()) for c in attr.GetConnections()] == [ref_path]
 
 
+def test_an_exec_wire_dropped_on_a_plus_chains_the_node(view):
+    """A collapsed node's chunk port and its "+" are two 9 px sockets 1 px apart at Home
+    zoom. A node-to-node wire that landed on the "+" said "nothing there takes that wire";
+    now it chains the node, the one thing an exec wire can mean there."""
+    view.set_selection({_node(view, "Move").name})
+    view.collapse_selected_or_all()
+    ref, move = _node(view, "Ref"), _node(view, "Move")
+    ref_path, move_path = ref.name, move.name
+    exec_in = bg._port_ref_named(view, move_path, "chunk", is_input=True)   # the exec port's socket
+    chunk_graph.disconnect(view.stage, exec_in, view.prims, view.chunks, heal=False)
+    attr = view.stage.GetAttributeAtPath(Sdf.Path(exec_in.attr_path))
+    assert not attr.GetConnections()
+
+    view.join(bg._port_ref_named(view, ref_path, "chunk", is_input=False),
+              chunk_graph.PlusRef(move_path, True))
+
+    assert view.pending_pick is None
+    assert "nothing" not in (view.status or "")
+    assert [str(c.GetPrimPath()) for c in attr.GetConnections()] == [ref_path]
+
+
 def test_a_chunk_deleted_behind_the_frontends_back_leaves_the_tree(view):
     """The CLI, another frontend, undo: none of them go through delete_selected. The
     CHUNK_DELETED notice schedules the rebuild instead."""
