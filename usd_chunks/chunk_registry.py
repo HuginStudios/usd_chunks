@@ -207,6 +207,13 @@ GLOBAL_USDCHUNKS = ChunkEnvVar[str | None](
 # one-line summary -- an intentional USD_CHUNK_DIRS-over-GLOBAL override is
 # silent (that's the feature, not a warning).
 USD_CHUNK_VERBOSE = ChunkEnvVar[str | None]("USD_CHUNK_VERBOSE", None)
+# How often usdview writes a quick save of an edited network, in minutes, once the user has
+# turned quick saves on (autosave.autosave_minutes). Unset: every 2 minutes. 0 (or less):
+# never, for everyone.
+USD_CHUNKS_AUTOSAVE_MINUTES = ChunkEnvVar[str | None]("USD_CHUNKS_AUTOSAVE_MINUTES", None)
+# Where quick saves are kept (autosave.autosave_root). Unset: autosave in the user's own
+# usd_chunks folder (%LOCALAPPDATA%/usd_chunks on Windows, ~/.cache/usd_chunks elsewhere).
+USD_CHUNKS_AUTOSAVE_DIR = ChunkEnvVar[str | None]("USD_CHUNKS_AUTOSAVE_DIR", None)
 
 
 def _is_truthy(value) -> bool:

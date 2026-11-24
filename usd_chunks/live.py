@@ -88,14 +88,21 @@ def manifest_path(network: str | os.PathLike) -> Path:
     return path.with_name(f"{path.stem}.live.json")
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """Write text to path in one step, so a reader never sees half of it."""
+def write_atomic(path: Path, text: str) -> None:
+    """Write text to path in one step, so a reader never sees half of it.
+
+    A write that fails leaves path as it was and no temporary file beside it, and raises.
+    """
     tmp = path.with_name(f"{path.name}.tmp")
-    # Bytes, not write_text: on Windows that turns every newline into CRLF, the ones inside
-    # a multi-line string value too -- and an Inline USD chunk's code that arrives with
-    # carriage returns in it no longer parses.
-    tmp.write_bytes(text.encode("utf-8"))
-    os.replace(tmp, path)
+    try:
+        # Bytes, not write_text: on Windows that turns every newline into CRLF, the ones
+        # inside a multi-line string value too -- and an Inline USD chunk's code that
+        # arrives with carriage returns in it no longer parses.
+        tmp.write_bytes(text.encode("utf-8"))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _stamp(path: Path) -> tuple[int, int] | None:
@@ -120,7 +127,7 @@ class LiveSession:
         self.overrides_path = overrides_path(self.network)
         self.manifest_path = manifest_path(self.network)
         if not self.overrides_path.exists():
-            _write_atomic(self.overrides_path, _EMPTY_LAYER)
+            write_atomic(self.overrides_path, _EMPTY_LAYER)
         self.layer = Sdf.Layer.FindOrOpen(str(self.overrides_path))
         self._session_layer = stage.GetSessionLayer()
         # Strongest: the chunk prims are in the network's own layers, all weaker than this.
@@ -156,7 +163,7 @@ class LiveSession:
             "error": error,
             "params": settable_params(scene),
         }
-        _write_atomic(self.manifest_path, json.dumps(manifest, indent=1))
+        write_atomic(self.manifest_path, json.dumps(manifest, indent=1))
 
     def close(self, scene) -> None:
         """Say the session is over, and take the overrides layer off the stage."""
@@ -312,7 +319,7 @@ def send(network: str | os.PathLike, values: dict | None = None, *, reset: bool 
     request = int(data.get(REQUEST_KEY, 0)) + 1
     data[REQUEST_KEY] = request
     layer.customLayerData = data
-    _write_atomic(path, layer.ExportToString())
+    write_atomic(path, layer.ExportToString())
 
     if wait:
         _wait_for(network, request, timeout)

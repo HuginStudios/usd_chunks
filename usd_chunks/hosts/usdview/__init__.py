@@ -16,6 +16,7 @@ from usd_chunks.frontends.qt import factory as chunk_qt
 from usd_chunks.frontends.qt import window_state as chunk_window_state
 from usd_chunks.frontends.qt import layer_stack as chunk_qt_layer_stack
 from usd_chunks.frontends.qt import undo as chunk_qt_undo
+from usd_chunks.frontends.qt import autosave as chunk_qt_autosave
 from usd_chunks import chunk_stage
 
 
@@ -141,6 +142,8 @@ class UsdviewScene(chunk_scene.SceneSender):
         #: True while set_viewport_renderer_settings is setting the delegate, so the settings
         #: a chunk sent are not reported back to it as the user's (_watch_renderer_settings).
         self._setting_viewport_renderer = False
+        #: Quick saves of the open network and their recovery (docs/node-graph-basics.md).
+        self.autosave = chunk_qt_autosave.AutosaveController()
 
         super().__init__()
 
@@ -617,7 +620,44 @@ class UsdviewScene(chunk_scene.SceneSender):
             stage_view.switchToFreeCamera(False)
 
     def _on_stage_replaced(self):
-        self.notify_stage_replaced(self.get_stage())
+        stage = self.get_stage()
+        self.autosave.close()
+        if stage is None:
+            self.notify_stage_replaced(None)
+            return
+
+        def start():
+            if self.get_stage() is not stage:
+                return  # another file opened while the prompt was up; its own signal loads it
+            self.notify_stage_replaced(stage)
+            self.autosave.attach(self)
+
+        # Quick saves of the file to offer: ask first, load the chunks after (deferred).
+        # None: the chunks load now, as they always did.
+        chunk_qt_autosave.start_after_recovery(self.autosave, stage, start, _after_startup)
+
+
+def _after_startup(fn) -> None:
+    """Run fn on the main thread from the application's own event loop, once usdview is up.
+
+    The recovery prompt is a modal dialog, and one shown while usdview is still opening a
+    stage lets its queued work run on a half-built window (see should_install_packages).
+    usdview pumps events itself while it starts up (processEvents, before the first draw),
+    and a timer fires in there too, with no event loop running yet: loopLevel() is 0 until
+    app.exec() starts. So wait for that.
+    """
+    app = QtCore.QCoreApplication.instance()
+
+    def attempt():
+        if QtCore.QThread.currentThread().loopLevel() < 1:
+            QtCore.QTimer.singleShot(50, app, attempt)
+            return
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - from a timer slot, an exception takes usdview down
+            logger.exception("Opening the network after the quick-save prompt failed")
+
+    QtCore.QTimer.singleShot(0, app, attempt)
 
 
 def launch_chunks(usdviewApi) -> None:
@@ -637,7 +677,16 @@ def launch_chunks(usdviewApi) -> None:
     # first thing drawn into it rather than after.
     chunk_window_state.install(usdviewApi.qMainWindow)
     chunk_registry.ChunkRegistry().initialize(scene, "chunk_usdview")
-    chunk_stage.initialize(usdviewApi.stage, scene)
+    stage = usdviewApi.stage
+    if stage is None:
+        # usdview opens the file after its plugins: the chunks load from _on_stage_replaced.
+        chunk_stage.initialize(stage, scene)
+    else:
+        def start():
+            chunk_stage.initialize(stage, scene)
+            scene.autosave.attach(scene)
+
+        chunk_qt_autosave.start_after_recovery(scene.autosave, stage, start, _after_startup)
     # The first chunk menu otherwise pays for building the shader registry (seconds).
     shader_defs.warm_registry_in_background()
 
@@ -663,6 +712,29 @@ class ChunksPluginContainer(PluginContainer):
         See chunk_qt.save_scene_dialog.
         """
         chunk_qt.save_scene_dialog()
+
+    def toggleAutosave(self, usdviewApi):
+        """Auto Quick Save. A checkable menu entry does its work in its toggled signal
+        (chunk_qt_autosave.configure_toggle_action); this is the fallback for a usdview
+        whose menu would not hand over the QAction."""
+        if getattr(self, "_autosaveAction", None) is not None:
+            return
+        if chunk_qt_autosave.env_off():
+            logger.warning("Auto Quick Save is %s", chunk_qt_autosave.ENV_OFF_TOOLTIP)
+            return
+        on = not chunk_qt_autosave.user_enabled()
+        chunk_qt_autosave.set_user_enabled(on)
+        logger.warning("Auto Quick Save is now %s", "on" if on else "off")
+
+    def _setup_autosave_action(self, action) -> None:
+        """Make the Auto Quick Save menu entry a checkbox, when the QAction can be reached."""
+        if not hasattr(action, "setCheckable"):
+            usdview_api = getattr(self, "_usdviewApi", None)
+            window = getattr(usdview_api, "qMainWindow", None)
+            action = chunk_qt_autosave.find_action(window.menuBar()) if window is not None else None
+        self._autosaveAction = action
+        if action is not None:
+            chunk_qt_autosave.configure_toggle_action(action)
 
     def saveChunkGroup(self, usdviewApi):
         """Export the current chunk graph as one clean, portable USD layer.
@@ -717,6 +789,11 @@ class ChunksPluginContainer(PluginContainer):
             "ChunksPlugin.openLayerStack", "Layer Stack", self.openLayerStack
         )
 
+        self._autosaveCommand = plugRegistry.registerCommandPlugin(
+            "ChunksPlugin.autosave", chunk_qt_autosave.ACTION_TEXT, self.toggleAutosave
+        )
+
+        self._usdviewApi = plugCtx
         launch_chunks(plugCtx)
         self._register_undo(plugRegistry, plugCtx)
 
@@ -752,6 +829,7 @@ class ChunksPluginContainer(PluginContainer):
         menu.addSeparator()
         menu.addItem(self._saveSceneCommand)
         menu.addItem(self._saveChunkGroupCommand)
+        self._setup_autosave_action(menu.addItem(self._autosaveCommand))
         menu.addSeparator()
         menu.addItem(self._layerStackCommand)
         menu.addItem(self._reloadChunkCommand, "SHIFT+R")

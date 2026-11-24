@@ -20,6 +20,11 @@ This file starts with the first release; development before that is in the commi
   land on, or spun off it.
 ### Added
 
+- Auto quick save in usdview, off until you tick **Chunks > Auto Quick Save**. Then an edited
+  network is copied every 2 minutes into your own user folder (never beside the shot), one
+  file per session named by date and time, and offered back (Recover or Discard) when you
+  open the network again after a crash. Save Scene deletes its quick saves; the 10 newest per
+  network are kept, and any older than 30 days are deleted.
 - URDF Import: a Fixed Base option (on by default) anchors the base link to the world with
   a fixed joint. Turn it off for a robot that walks or drives.
 - CAD Import reads DXF drawings, through `ezdxf` (now in the chunk's requirements). Blocks

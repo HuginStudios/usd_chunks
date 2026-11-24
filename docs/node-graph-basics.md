@@ -186,3 +186,37 @@ Double-click a ChunkGroup node to go inside and work on its contents as a separa
 with its own views. New chunks you create while inside a group are added to that group.
 See [ChunkGroup](core-chunks.md#chunkgroup) for how params are shared with the outside
 (lofting).
+
+## Auto quick save (usdview)
+
+Tick **Chunks > Auto Quick Save** to have usdview keep a copy of your network while it has
+changes you haven't saved. It is off until you turn it on, and the setting is your own, kept
+between sessions.
+
+Every 2 minutes, if you edited the network (params, wires, nodes moved, backdrops), usdview
+copies it into your own user folder, not beside the shot: `%LOCALAPPDATA%\usd_chunks\autosave`
+on Windows, `~/.cache/usd_chunks/autosave` elsewhere. Each network has a folder there, and
+each session writes one file in it, named by when it started:
+`shot_2026-11-24_14-30-05.usda`. Cooking, playback and File > Reload aren't edits, so a
+network you only look at writes nothing. You never need to go there yourself.
+
+When you open a network that has quick saves newer than its file -- at launch or with
+File > Open, after a crash or a quit without saving -- usdview asks before the network's
+chunks load:
+
+- **Recover** (with several quick saves, one button each, newest first: **Recover latest
+  (2026-11-24 14:30)**, **Recover earlier (2026-11-24 11:02)**, ...) opens the quick save's
+  network in place of the saved one. The network stays unsaved until you save it, and the
+  quick save is kept until then.
+- **Discard** (**Discard all**) deletes the quick saves and opens the network as saved.
+- Closing the question without choosing keeps them, recovers nothing, and asks again next
+  time. **Show Details...** lists where they are.
+
+**Chunks > Save Scene** to the network's own file deletes its quick saves. Saving it under
+another name keeps them, as the network's own file still lacks the changes. The 10 newest
+quick saves of each network are kept, and any quick save older than 30 days is deleted.
+
+`USD_CHUNKS_AUTOSAVE_MINUTES` sets how often, and `0` keeps quick saves off for everyone;
+`USD_CHUNKS_AUTOSAVE_DIR` puts them somewhere else (see
+[Environment variables](install.md#environment-variables)). Quick saves already on disk are
+offered either way.

@@ -8725,11 +8725,7 @@ def export_chunks(
     # Nodes a script made are laid out first, rather than written in one long row.
     if hasattr(scene, "lay_out_scripted"):
         scene.lay_out_scripted()
-    dst = _export_layer(scene, Path(path))
-    if relative_paths is None:
-        relative_paths = asset_paths.relative_paths_on(scene)
-    asset_paths.rebase_saved(dst, scene, str(Path(path).resolve().parent), relative_paths)
-    stamp_stage_metadata(dst, stage)
+    dst = saved_layer(scene, path, relative_paths)
     dst.Export(str(path))
     _reload_cached_layer(path)
     # Each chunk's result, kept for the next open of this file (open_cache).
@@ -8739,6 +8735,30 @@ def export_chunks(
             scene.get_chunks(), stage, saved, ChunkLayerManager().get_layer,
             chunk_cook.settled,
         )
+
+
+def saved_layer(
+    scene: chunk_scene.SceneSender, path: str | Path, relative_paths: bool | None = None,
+) -> Sdf.Layer:
+    """The in-memory layer export_chunks writes to path, built and not written.
+
+    The chunk prims, their asset paths fitted to path's folder, and the stage's up-axis and
+    units stamped. Building it changes nothing on the stage or in any of its layers, so
+    autosave writes a quick save from it without the side effects of a save (laying out
+    scripted nodes, reloading the file's cached layer, storing the open cache).
+
+    Args:
+        scene: The scene, which must have a stage.
+        path: The file the layer is meant for.
+        relative_paths: As for export_chunks.
+    """
+    stage = scene.get_stage()
+    dst = _export_layer(scene, Path(path))
+    if relative_paths is None:
+        relative_paths = asset_paths.relative_paths_on(scene)
+    asset_paths.rebase_saved(dst, scene, str(Path(path).resolve().parent), relative_paths)
+    stamp_stage_metadata(dst, stage)
+    return dst
 
 
 def _export_layer(scene: chunk_scene.SceneSender, path: Path) -> Sdf.Layer:
