@@ -1616,7 +1616,8 @@ def test_set_viewport_camera_mirrors_the_prim_onto_the_scene_camera(cam_state):
     stage = Usd.Stage.CreateInMemory()  # held: a prim expires with its stage
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)  # Blender's own space: no turn
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)  # an in-memory stage is centimetres
-    prim = _camera_prim(stage, focal=50.0)
+    # In tenths of a scene unit, as USD keeps a lens: 50 x 36 mm in metres.
+    prim = _camera_prim(stage, focal=0.5, aperture=0.36)
     addon.BlenderScene(prim.GetStage()).set_viewport_camera(prim)
     obj = bpy.context.scene.camera
     assert obj is not None and obj.name == addon.camera.MIRROR_NAME
