@@ -85,6 +85,12 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A new chunk fills only its first prim field from the selected prim. Every prim field took
+  it before: a Scatter Points made with the ground selected also used the ground as its
+  Grow Near and its prototype, an Inherit inherited from itself, a Collection excluded what
+  it included, and a Render Settings took a mesh as its camera. Camera, dome and sun fields
+  (Render, Render Settings, Render Product, Frustum Prune, Finish Frame) now take only a
+  camera or that light. A chunk declares this with `LineEdit(..., prim_types=("Camera",))`.
 - Blender: opening a folded node with the arrow in its header shows its params. Before, the
   node opened empty except for its status line, and the next reload folded it again; only H
   opened it properly.
