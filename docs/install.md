@@ -133,7 +133,7 @@ There are two ways to fix it:
 
 - Install the packages yourself: `pip install numpy requests mujoco fast-simplification`.
   mujoco is only for the RBD solver, and fast-simplification only for Poly Reduce. CAD
-  Import also needs `cadquery-ocp`. Add `PySide6` only if your host doesn't have Qt
+  Import also needs `cadquery-ocp` for STEP and IGES, and `ezdxf` for DXF. Add `PySide6` only if your host doesn't have Qt
   already; usdview, Houdini and Maya do. You can also install just the ones you need.
 - Let usd_chunks ask. When you create a chunk whose `requirements` ([Writing a
   chunk](writing-a-chunk.md#config)) aren't installed, usdview asks "OK to install requests
