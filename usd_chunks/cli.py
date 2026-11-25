@@ -142,6 +142,25 @@ def _find_param(owner, name):
     return None
 
 
+#: `CHUNK.active=false` switches a chunk off for one run, as D does in the graph. A disabled
+#: chunk is saved as active=false on its prim, so this is the name people reach for.
+_ACTIVE = "active"
+_ON = ("1", "true", "yes", "on")
+_OFF = ("0", "false", "no", "off")
+
+
+def _set_active(c, name, raw):
+    """Enable or disable chunk `c` for `CHUNK.active=raw`, or say why not."""
+    word = raw.strip().lower()
+    if word not in _ON + _OFF:
+        print(f"Cannot set {name!r}: expected true or false, got {raw!r}")
+        return
+    if word in _ON:
+        c.unset_state(chunk.ChunkFlags.State.DISABLED)
+    else:
+        c.set_state(chunk.ChunkFlags.State.DISABLED)
+
+
 def _parse_param_overrides(scene, overrides):
     # Contexts first, in both lookups. get_chunks() omits plain tab contexts because they
     # are not executable, but a tab is exactly where a network's lofted interface lives --
@@ -187,6 +206,9 @@ def _parse_param_overrides(scene, overrides):
             param = _find_param(c, param_path)
             if param is not None and not chunk.is_param(param):
                 param = None
+            if not param and param_path == _ACTIVE:
+                _set_active(c, name, value)
+                continue
             if not param:
                 print(f"Param not found: {param_path!r} on chunk {chunk_name!r}")
                 continue
@@ -1219,7 +1241,9 @@ def main():
         formatter_class=RawDescriptionHelpFormatter,
     )
     run_parser.add_argument("usda", help="Path to the .usda chunk network file")
-    run_parser.add_argument("params", nargs="*", help="Param overrides: ChunkName.param=value")
+    run_parser.add_argument(
+        "params", nargs="*",
+        help="Param overrides: ChunkName.param=value; ChunkName.active=false leaves a chunk out")
     run_parser.add_argument(
         "--export",
         "-o",
