@@ -14,6 +14,9 @@ This file starts with the first release; development before that is in the commi
 - `usdchunks run net.usda Chunk.active=false` leaves that chunk out of the run, as `D` does in the
   graph (a disabled chunk is saved as `active = false`). It printed `Param not found` and cooked
   the chunk anyway. `Chunk.active=true` brings back a chunk saved disabled.
+- A param takes a numpy number (`np.float64`, `np.int64`, `np.bool_`) as the plain number it
+  holds. A value worked out in a script with numpy raised `ValueError: Value of 4.43 is not
+  supported ... numpy.float64`, so every one had to be cast to `float` first.
 - A prim-path param holding text that isn't a prim path no longer freezes usdview. Wiring
   Edge Field's Primvar output ("edges") into Scatter Points' Painted Points hung the cook,
   and so did any plain word in a path param that a chunk looks prims up by (Camera's Aim

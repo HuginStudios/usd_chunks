@@ -2473,6 +2473,18 @@ class ChunkUsdAttributeSupport(AttributesBase):
         return param
 
 
+def _plain_scalar(val: Any) -> Any:
+    """A numpy scalar (np.float64, np.int32, np.bool_) as the plain Python number it holds.
+
+    Values worked out in a script usually come out of numpy arrays, and a param checks for
+    int, float or bool exactly, so `node.get_param("tx").value = points[0, 0]` raised.
+    Duck-typed, so the core doesn't import numpy for it.
+    """
+    if type(val).__module__ == "numpy" and getattr(val, "ndim", None) == 0 and hasattr(val, "item"):
+        return val.item()
+    return val
+
+
 class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
     """Base class for valued params.
 
@@ -2522,6 +2534,8 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
 
     @override
     def convert_attr(self, attr: attrs.Attribute, val: Any) -> Any:
+        if attr.name in ("value", "default_value"):
+            val = _plain_scalar(val)
         if attr.name == "value":
             if val is None:
                 return self.default_value
