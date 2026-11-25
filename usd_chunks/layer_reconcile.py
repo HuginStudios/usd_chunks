@@ -134,8 +134,29 @@ def _copy(src: Sdf.Layer, dst: Sdf.Layer, path: Sdf.Path) -> None:
         raise RuntimeError(f"could not copy {path} into {dst.identifier}")
 
 
+def parent_only(spec) -> bool:
+    """A prim spec there only to hold prims under it: an over with nothing of its own.
+
+    Writing /World/house/roof makes `over World` and `over house` too. When a cook stops
+    writing the roof they go with it; their going changes nothing about those prims, and
+    reported as a change it put /World -- above every chunk's mask -- in what skip_cook hands
+    down, so everything below cooked. The prims under them say what changed.
+    """
+    return (isinstance(spec, Sdf.PrimSpec) and spec.specifier == Sdf.SpecifierOver and not spec.properties
+            and len(spec.nameChildren) > 0 and set(spec.ListInfoKeys()) <= {"specifier"})
+
+
+def _tops(spec, changed: set) -> None:
+    """Report a prim spec that comes or goes: itself, or past a parent-only over, the prims under it."""
+    if parent_only(spec):
+        for child in spec.nameChildren:
+            _tops(child, changed)
+    else:
+        changed.add(spec.path)
+
+
 def _remove_child(parent, name: str, changed: set) -> None:
-    changed.add(parent.path.AppendChild(name))
+    _tops(parent.nameChildren[name], changed)
     del parent.nameChildren[name]
 
 
@@ -163,7 +184,7 @@ def _children(src: Sdf.Layer, dst: Sdf.Layer, s, d, changed: set) -> None:
         child = s.nameChildren[name]
         if i >= kept:
             _copy(src, dst, child.path)
-            changed.add(child.path)
+            _tops(child, changed)
         else:
             _prim(src, dst, child, d.nameChildren[name], changed)
 

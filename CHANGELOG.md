@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A chunk that stops writing a prim (a Move Points whose group came out empty, a chunk turned
+  to do nothing) no longer cooks every chunk below it again. The parent overs that went with
+  the prim (`over World`) counted as a change to `/World`, above everything; in a 109-chunk
+  modelling network one such edit cooked 66 chunks in 1.2 s, now the 20 that read it in 0.35 s.
 - `usdchunks run net.usda Chunk.active=false` leaves that chunk out of the run, as `D` does in the
   graph (a disabled chunk is saved as `active = false`). It printed `Param not found` and cooked
   the chunk anyway. `Chunk.active=true` brings back a chunk saved disabled.

@@ -1388,7 +1388,8 @@ def changed_paths(before: Sdf.Layer, after: Sdf.Layer) -> set[Sdf.Path]:
 
     A property's change is its prim's. Child lists are not compared -- a prim gaining a
     child is the child's change, not its parent's, so a /World two chunks both write under
-    does not change every time either of them cooks. The layer's own metadata -- its
+    does not change every time either of them cooks. Nor is a parent over coming or going
+    with its children (layer_reconcile.parent_only). The layer's own metadata -- its
     sublayers, a default prim -- is everyone's: a change there is EVERYTHING.
     """
     if not _same_spec(before, after, Sdf.Path.absoluteRootPath) or \
@@ -1396,6 +1397,9 @@ def changed_paths(before: Sdf.Layer, after: Sdf.Layer) -> set[Sdf.Path]:
         return set(EVERYTHING)
     changed: set[Sdf.Path] = set()
     for path in _spec_paths(before) | _spec_paths(after):
+        if path.IsPrimPath() and (before.GetPrimAtPath(path) is None) != (after.GetPrimAtPath(path) is None):
+            if layer_reconcile.parent_only(before.GetPrimAtPath(path) or after.GetPrimAtPath(path)):
+                continue
         if not _same_spec(before, after, path):
             prim = path.GetPrimPath() if not path.IsPrimPath() else path
             changed.add(prim.StripAllVariantSelections())
