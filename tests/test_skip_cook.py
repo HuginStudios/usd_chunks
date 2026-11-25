@@ -501,3 +501,63 @@ def test_covered_is_at_or_below_a_masked_path(path, covered):
     mask = {Sdf.Path("/Rocks"), Sdf.Path("/World/Machine/Mantle")}
     assert skip_cook._covered(Sdf.Path(path), mask) is covered
     assert skip_cook._covered(Sdf.Path(path), mask | {Sdf.Path.absoluteRootPath}) is True
+
+
+def test_changed_paths_ignore_the_parent_overs_that_go_with_a_prim():
+    """A cook that stops writing /World/house/roof also drops `over World` and `over house`;
+    only the roof changed."""
+    before = Sdf.Layer.CreateAnonymous()
+    roof = Sdf.CreatePrimInLayer(before, "/World/house/roof")
+    Sdf.AttributeSpec(roof, "size", Sdf.ValueTypeNames.Double).default = 1.0
+    after = Sdf.Layer.CreateAnonymous()
+
+    assert skip_cook.changed_paths(before, after) == {Sdf.Path("/World/house/roof")}
+    assert skip_cook.changed_paths(after, before) == {Sdf.Path("/World/house/roof")}
+
+
+def test_changed_paths_still_see_an_over_of_its_own_come_or_go():
+    """An over with nothing under it makes a prim on the stage: its coming is a change."""
+    before = Sdf.Layer.CreateAnonymous()
+    after = Sdf.Layer.CreateAnonymous()
+    Sdf.CreatePrimInLayer(after, "/World/marker")
+
+    assert skip_cook.changed_paths(before, after) == {Sdf.Path("/World/marker")}
+
+
+def _sometimes(cooks: list, name: str):
+    """Writes /World/<name>/leaf.size, or nothing at all when size is 0."""
+
+    def main():
+        c = chunk.Chunk(name)
+        c.add_param(chunk.Slider("size", default_value=1.0))
+        return c
+
+    def execute(node):
+        cooks.append(node.name)
+        size = node.get_param("size").value
+        if size:
+            prim = node.get_stage().OverridePrim(f"/World/{name}/leaf")
+            prim.CreateAttribute("size", Sdf.ValueTypeNames.Double).Set(size)
+
+    return register_stub_module(main=main, execute=execute)
+
+
+def test_a_chunk_that_stops_writing_under_world_does_not_cook_everything_below():
+    """A Move Points whose group came out empty wrote nothing, and the overs it no longer wrote
+    above its mesh (/World) cooked every chunk below it."""
+    cooks: list = []
+    with Scene() as scene:
+        gen = _add(scene, _sometimes(cooks, "Gen"))
+        other = _add(scene, _generator(cooks, "Other"))
+        other.get_param("path").value = "/World/Other"
+        _chain(scene, gen, other)
+        cooks.clear()
+
+        gen.get_param("size").value = 0.0
+        assert cooks == ["Gen"]
+        assert not scene.get_stage().GetPrimAtPath("/World/Gen/leaf").IsValid()
+
+        gen.get_param("size").value = 3.0  # writing again, somewhere new: Gen may cook twice, Other not at all
+        assert "Other" not in cooks
+        assert _size(scene, "/World/Gen/leaf") == 3.0
+        assert _size(scene, "/World/Other") == 1.0
