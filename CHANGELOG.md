@@ -11,6 +11,9 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- `usdchunks run net.usda Chunk.active=false` leaves that chunk out of the run, as `D` does in the
+  graph (a disabled chunk is saved as `active = false`). It printed `Param not found` and cooked
+  the chunk anyway. `Chunk.active=true` brings back a chunk saved disabled.
 - A prim-path param holding text that isn't a prim path no longer freezes usdview. Wiring
   Edge Field's Primvar output ("edges") into Scatter Points' Painted Points hung the cook,
   and so did any plain word in a path param that a chunk looks prims up by (Camera's Aim

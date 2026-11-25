@@ -44,6 +44,8 @@ Each override is `Name=value`, applied after the file loads:
   is `inputs:intensity`. (Only `send` also matches the end of a name.)
 - `param=value` with no chunk: the first chunk (ChunkGroup interfaces first) that has that
   param. Use it for a group's lofted params, as `usdchunks info` lists them.
+- `Chunk.active=false` leaves that chunk out of the run, as `D` does in the graph
+  (`Chunk.active=true` brings back one saved disabled). Not with `send`.
 - Values are read as the param's type. Numbers as written; a checkbox takes
   `true/false/1/0/yes/no/on/off`; a vector or colour takes comma-separated numbers
   (`Color.color=0.1,0.6,0.9`); a string as is.
