@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- usdview's free camera follows a change to the stage's up axis, such as one a Stage Settings
+  chunk makes. It kept tumbling around the axis it read when the file opened, so a scene
+  turned Z-up still orbited around Y until it was opened again. The camera keeps its place
+  and stands upright on the new axis.
 - A chunk that stops writing a prim (a Move Points whose group came out empty, a chunk turned
   to do nothing) no longer cooks every chunk below it again. The parent overs that went with
   the prim (`over World`) counted as a change to `/World`, above everything; in a 109-chunk
