@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Pose Articulation and the RBD Solver read an articulation with a closed loop whose closing
+  joint has `physics:excludeFromArticulation` set (a four-bar linkage, a closed chain) as the
+  open chain it closes. Before, the closing joint gave a link a second parent, and with no
+  root left the mechanism was skipped.
 - A prim-path param holding text that isn't a prim path no longer freezes usdview. Wiring
   Edge Field's Primvar output ("edges") into Scatter Points' Painted Points hung the cook,
   and so did any plain word in a path param that a chunk looks prims up by (Camera's Aim

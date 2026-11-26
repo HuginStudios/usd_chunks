@@ -2574,6 +2574,13 @@ def read_articulations(root_prim, keep_colliderless=False):
         return None
 
     for joint_prim in joints:
+        # A joint excluded from the articulation closes a loop (a four-bar linkage's fourth bar,
+        # a closed chain's last link pinned back to its first): UsdPhysics keeps it out of the
+        # tree on purpose. Read in, it re-parents a link that already has a parent, and the tree
+        # becomes a ring with no root, which poses and simulates nothing.
+        exclude = joint_prim.GetAttribute("physics:excludeFromArticulation")
+        if exclude and exclude.Get():
+            continue
         body0 = _joint_target(joint_prim.GetRelationship("physics:body0"))
         body1 = _joint_target(joint_prim.GetRelationship("physics:body1"))
         body0, body1 = owning_body(body0), owning_body(body1)

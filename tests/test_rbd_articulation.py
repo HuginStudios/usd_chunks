@@ -121,6 +121,23 @@ class TestTreeFromJoints:
 
         assert rbd.read_articulations(stage.GetPrimAtPath("/root")) == []
 
+    def test_a_loop_closed_by_an_excluded_joint_is_the_open_chain(self):
+        """UsdPhysics' excludeFromArticulation marks the joint that closes a loop (a four-bar's
+        fourth bar): it stays out of the tree, which is then the chain it closes."""
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(stage, "/root")
+        a, b, c = (_link(stage, f"/root/{n}") for n in "ABC")
+        _joint(stage, "/root/B/j1", "PhysicsRevoluteJoint", a, b)
+        _joint(stage, "/root/C/j2", "PhysicsRevoluteJoint", b, c)
+        closing = _joint(stage, "/root/A/j3", "PhysicsRevoluteJoint", c, a)
+        UsdPhysics.Joint(closing).CreateExcludeFromArticulationAttr(True)
+
+        roots = rbd.read_articulations(stage.GetPrimAtPath("/root"))
+
+        assert [r.name for r in roots] == ["A"]
+        middle = roots[0].children
+        assert [m.name for m in middle] == ["B"] and [c.name for c in middle[0].children] == ["C"]
+
 
 class TestJointFrames:
     def test_axis_is_rotated_into_the_child_frame(self):
