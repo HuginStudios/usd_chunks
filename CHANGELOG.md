@@ -10,6 +10,10 @@ This file starts with the first release; development before that is in the commi
 ## [Unreleased]
 
 ### Fixed
+- `scene.create.<chunk>(None, ...)` starts a chain, as leaving the input out does, instead of
+  failing with `'NoneType' object has no attribute 'get_dag_node'`.
+- A list param's rows set from a script (`rows=[{"min": (0, 1, 0)}]`) give a vector its values; they
+  were silently left at their defaults.
 
 - usdview's free camera follows a change to the stage's up axis, such as one a Stage Settings
   chunk makes. It kept tumbling around the axis it read when the file opened, so a scene

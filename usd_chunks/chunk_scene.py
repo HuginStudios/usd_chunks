@@ -1172,7 +1172,9 @@ class SceneSender(chunk_notice.ChunkNoticePropagator):
         # prim, which does not exist until the chunk is in the scene.
         values = {k: v for k, v in params.items() if not isinstance(v, ChunkParamBase)}
         wires = {k: v for k, v in params.items() if isinstance(v, ChunkParamBase)}
-        inputs = list(inputs)
+        # None is no input: `scene.create.cube(None, ...)` starts a chain as leaving the input out does,
+        # so a helper can pass its `last` along before there is one.
+        inputs = [i for i in inputs if i is not None]
         if not inputs and self._upstream and self._upstream[-1] is not None:
             inputs = [self._upstream[-1]]
         # Its first cook runs before it is wired, and finds above it nothing it reads: that
@@ -1908,14 +1910,34 @@ def _set_rows(target: ChunkBase, name: str, rows, items) -> None:
         if unknown:
             raise KeyError(f"{target.name} has no param {f'{name}.{i}.{unknown[0]}'!r}")
         for p in params:
+            parts = _vector_parts(p)
             if p.name in item:
                 value = item[p.name]
                 if isinstance(value, ChunkParamBase):
                     p.connect_value(value)
+                elif parts and isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+                    # A vector in a row is a group of its components: each takes its part of the value.
+                    value = list(value)
+                    if len(value) != len(parts):
+                        raise ValueError(f"{target.name}'s {name}.{i}.{p.name} takes {len(parts)} values, "
+                                         f"not {len(value)}")
+                    for part, v in zip(parts, value):
+                        part.value = v
                 else:
                     p.value = value
+            elif parts:
+                for part in parts:
+                    if getattr(part, "default_value", None) is not None:
+                        part.value = part.default_value
             elif getattr(p, "default_value", None) is not None:
                 p.value = p.default_value
+
+
+def _vector_parts(param) -> list:
+    """A row's vector param's components (its X, Y, Z), else []: a vector in a list row is a group whose
+    own value is None, so a tuple given for it has to go to them."""
+    getter = getattr(param, "get_my_params", None)
+    return list(getter()) if getter is not None and getattr(param, "value", None) is None else []
 
 
 def _warn_hidden(target: ChunkBase, names: Iterable[str]) -> None:
