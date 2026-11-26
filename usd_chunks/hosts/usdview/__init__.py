@@ -90,6 +90,28 @@ def _set_lens(free_cam, lens):
     free_cam.signalFrustumSettingsChanged.emit()
 
 
+def _set_free_camera_up(free_cam, is_z_up: bool) -> None:
+    """Make usdview's free camera tumble around the other up axis, kept where it is.
+
+    usdview gives a free camera its up axis when it builds one, which it does when a stage
+    opens, so an up axis changed later (a Stage Settings chunk) went unseen until the file
+    was opened again. The camera keeps its position, its focus point and its lens; its roll
+    is dropped, so it stands upright on the new axis the way a new camera would.
+    """
+    if getattr(free_cam, "_isZUp", is_z_up) == is_z_up:
+        return
+    free_cam._pushToCameraTransform()  # a tumble not yet drawn is in the angles only
+    # As FreeCamera.__init__ sets them: a rotation about X takes its Y-up maths to Z-up.
+    yz_up = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d.XAxis(), -90)) if is_z_up else Gf.Matrix4d(1.0)
+    free_cam._isZUp = is_z_up
+    free_cam._YZUpMatrix = yz_up
+    free_cam._YZUpInvMatrix = yz_up.GetInverse()
+    free_cam._pullFromCameraTransform()  # its angles, read again against the new axis
+    free_cam._rotPsi = 0.0
+    free_cam._cameraTransformDirty = True
+    free_cam.signalFrustumChanged.emit()
+
+
 class UsdviewScene(chunk_scene.SceneSender):
     """This class is responsible for sending some UsdView related notices. In other DCC's, this class should not be used
     TODO: Make this abstract and move implementation to a UsdView related location
@@ -101,6 +123,10 @@ class UsdviewScene(chunk_scene.SceneSender):
     #: (prim, path) of the camera the viewport looks through, as last seen valid
     #: (_track_viewed_camera). The path is kept apart: an expired prim can't give it.
     _viewed_camera: tuple | None = None
+    #: The ObjectsChanged listener on the open stage that watches its up axis (_listen_to_stage).
+    _stage_listener = None
+    #: A _follow_up_axis call is waiting on the event loop.
+    _up_axis_check_queued = False
 
     def __init__(self, usdviewAPI: UsdviewModule.UsdviewApi):
         self.usdviewAPI: UsdviewModule.UsdviewApi = usdviewAPI
@@ -148,6 +174,7 @@ class UsdviewScene(chunk_scene.SceneSender):
         super().__init__()
 
         self._watch_renderer_settings(self._get_stage_view())
+        self._listen_to_stage(self.get_stage())
 
         # A deleted chunk can take the camera the viewport is looking through with it.
         self._deleted_listener = chunk_notice.NoticeConnection(
@@ -619,8 +646,48 @@ class UsdviewScene(chunk_scene.SceneSender):
         if stage_view is not None:
             stage_view.switchToFreeCamera(False)
 
+    def _listen_to_stage(self, stage) -> None:
+        """Watch stage for a change to its up axis; stop watching the stage before it."""
+        if self._stage_listener is not None:
+            self._stage_listener.Revoke()
+        self._stage_listener = (
+            Tf.Notice.Register(Usd.Notice.ObjectsChanged, self._on_objects_changed, stage) if stage else None
+        )
+
+    def _on_objects_changed(self, notice, sender) -> None:
+        # The up axis is metadata on the pseudo-root: a change to it lands on "/" as info-only,
+        # and a layer swapped in under the stage resyncs "/".
+        # A cook can resync "/" many times over; one check waits at a time.
+        if self._up_axis_check_queued:
+            return
+        root = Sdf.Path.absoluteRootPath
+        if root in notice.GetChangedInfoOnlyPaths() or root in notice.GetResyncedPaths():
+            self._up_axis_check_queued = True
+            self.call_later(self._follow_up_axis)
+
+    def _follow_up_axis(self) -> None:
+        """Have the viewport follow the stage's up axis when it has changed since usdview read it.
+
+        usdview reads it once per opened stage (StageView._stageReplaced) into _stageIsZup,
+        which the free cameras it builds later and its default dome light also go by.
+        """
+        self._up_axis_check_queued = False
+        stage = self.get_stage()
+        view = self._get_stage_view()
+        if stage is None or view is None or not hasattr(view, "_stageIsZup"):
+            return
+        is_z_up = UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
+        if view._stageIsZup == is_z_up:
+            return
+        view._stageIsZup = is_z_up
+        free_cam = self._get_free_camera()
+        if free_cam is not None:
+            _set_free_camera_up(free_cam, is_z_up)
+        view.update()
+
     def _on_stage_replaced(self):
         stage = self.get_stage()
+        self._listen_to_stage(stage)
         self.autosave.close()
         if stage is None:
             self.notify_stage_replaced(None)
