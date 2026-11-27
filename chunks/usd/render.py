@@ -17,6 +17,7 @@ usd-core wheels ship neither, so rendering is unavailable there.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import logging
 import os
 import re
@@ -201,6 +202,49 @@ def _settings_product_names(stage, settings_path):
         if name:
             names.append(str(name))
     return names
+
+
+@contextlib.contextmanager
+def _product_names_at(stage, settings_path, frame_number):
+    """Each product whose productName asks for a frame (render.####.exr) named for this frame,
+    in the session layer, while the block runs.
+
+    FrameRecorder writes a product to its productName as it stands, read once at the
+    default time: render.####.exr arrived on disk under that name, every frame of a range
+    over the one before. Where the name has no frame in it there is nothing to do.
+    """
+    session = stage.GetSessionLayer()
+    pinned = []
+    prim = stage.GetPrimAtPath(Sdf.Path(settings_path)) if settings_path else None
+    targets = UsdRender.Settings(prim).GetProductsRel().GetForwardedTargets() if prim and prim.IsValid() else []
+    for target in targets:
+        product_prim = stage.GetPrimAtPath(target)
+        if not product_prim or not product_prim.IsValid():
+            continue
+        attr = UsdRender.Product(product_prim).GetProductNameAttr()
+        name = str(attr.Get() or "")
+        if not name or name == format_output_path(name, frame_number):
+            continue
+        spec = session.GetAttributeAtPath(attr.GetPath())
+        pinned.append((attr, spec.default if spec and spec.HasDefaultValue() else None))
+        with Usd.EditContext(stage, session):
+            attr.Set(chunk_utils.cwd_relative(format_output_path(name, frame_number)))
+    try:
+        yield
+    finally:
+        for attr, before in pinned:
+            if before is not None:
+                with Usd.EditContext(stage, session):
+                    attr.Set(before)
+            elif spec := session.GetAttributeAtPath(attr.GetPath()):
+                # Gone again, and the overs it needed with it: a session layer left holding
+                # empty specs a frame is noise in every later save of it.
+                owner = spec.owner
+                owner.RemoveProperty(spec)
+                while owner and owner.IsInert():
+                    parent = owner.nameParent
+                    del (parent.nameChildren if parent else session.rootPrims)[owner.name]
+                    owner = parent
 
 
 def _settings_var_count(stage, settings_path):
@@ -445,6 +489,11 @@ def _configure_recorder(recorder, node, use_gpu, settings_path="", pass_path="")
     # --disableCameraLight): a headlight that flattens a lit scene's final render.
     if hasattr(recorder, "SetCameraLightEnabled") and (light := node.get_param("camera_light")) is not None:
         recorder.SetCameraLightEnabled(bool(light.value))
+
+    # A dome light lights the scene but is not seen behind it unless asked (usdrecord's
+    # --enableDomeLightVisibility): a sky renders black where the camera sees it.
+    if hasattr(recorder, "SetDomeLightVisibility") and (dome := node.get_param("dome_visible")) is not None:
+        recorder.SetDomeLightVisibility(bool(dome.value))
 
     if purposes := _purposes(node, settings_path):
         if hasattr(recorder, "SetIncludedPurposes"):
@@ -928,9 +977,10 @@ def _render_hydra(node, output_image, _fresh=False):
             if output_image:
                 path = chunk_utils.cwd_relative(format_output_path(output_image, frame_number))
                 _ensure_parent_dir(path)
-            if not recorder.Record(stage, camera, time_code, path):
-                logger.error("Render: failed writing %s", path or "the render products")
-                return
+            with _product_names_at(stage, None if path else settings_path, frame_number):
+                if not recorder.Record(stage, camera, time_code, path):
+                    logger.error("Render: failed writing %s", path or "the render products")
+                    return
 
             # With no path of our own, what landed on disk is whatever the products
             # named -- report those, so Output still says where the images went.
@@ -1028,6 +1078,11 @@ def main():
         chunk.Checkbox(
             "camera_light", "Camera Light", default_value=True,
             tooltip="Light the scene from the camera too, as usdrecord does by default. Off for a lit scene's final render.",
+        ),
+        chunk.Checkbox(
+            "dome_visible", "Show Dome Light", default_value=False,
+            tooltip="Show a dome light's sky behind the scene, as usdrecord's --enableDomeLightVisibility. Off, it "
+                    "only lights the scene and the background stays black.",
         ),
         chunk.Checkbox("render_on_commit", "Render on Commit", default_value=True),
         chunk.LineEdit("render_command", "Render Command", default_value="usdrecord"),
