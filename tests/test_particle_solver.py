@@ -210,6 +210,44 @@ def test_instanced_spheres_carry_the_material(graph):
     assert UsdGeom.Imageable(stage.GetPrimAtPath("/ParticleSim/Particles")).ComputePurpose() == UsdGeom.Tokens.guide
 
 
+def test_a_grain_is_a_lumpy_closed_shape_about_the_size_asked():
+    points, counts, indices = ps._grain_mesh(np.random.default_rng(3), 0.5)
+    assert set(counts) == {3} and len(indices) == 3 * len(counts) == 3 * 80
+    radii = np.linalg.norm(points, axis=1)
+    assert 0.2 < radii.min() < radii.max() < 0.65
+    assert radii.max() - radii.min() > 0.1, "a grain should not be a ball"
+    edges = {}
+    for f in range(len(counts)):
+        tri = indices[3 * f: 3 * f + 3]
+        for a, b in zip(tri, tri[1:] + tri[:1]):
+            edges[(min(a, b), max(a, b))] = edges.get((min(a, b), max(a, b)), 0) + 1
+    assert set(edges.values()) == {2}, "closed: every edge between two faces"
+
+
+@needs_taichi
+def test_instanced_grains_vary_shape_size_and_shade(graph):
+    """Grains in place of balls: several shapes, each particle one of them at its own size and turn."""
+    stage, make = graph
+    _floor(stage, "/floor", 100.0, 0.0)
+    _box(stage, "/tank", (-10, -10, 20), (10, 10, 30))
+    solver, module = _solver(make, source_prim="/tank", collision_path="/floor", material="Sand",
+                             render_as=ps._AS_GRAINS)
+    _press_run(solver, module)
+
+    grains = UsdGeom.PointInstancer(stage.GetPrimAtPath("/ParticleSim/ParticleGrains"))
+    count = len(UsdGeom.Points(stage.GetPrimAtPath("/ParticleSim/Particles")).GetPointsAttr().Get(1))
+    protos = grains.GetPrototypesRel().GetTargets()
+    assert len(protos) == ps._GRAIN_SHAPES
+    assert len(grains.GetPositionsAttr().Get(1)) == count
+    assert len(set(grains.GetProtoIndicesAttr().Get())) == ps._GRAIN_SHAPES
+    scales = np.array(grains.GetScalesAttr().Get())
+    assert len(scales) == count and scales.std() > 0.05
+    assert len(grains.GetOrientationsAttr().Get()) == count
+    shades = {tuple(UsdGeom.Mesh(stage.GetPrimAtPath(p)).GetDisplayColorAttr().Get()[0]) for p in protos}
+    assert len(shades) == ps._GRAIN_SHAPES
+    assert UsdGeom.Imageable(stage.GetPrimAtPath("/ParticleSim/Particles")).ComputePurpose() == UsdGeom.Tokens.guide
+
+
 @needs_taichi
 def test_brush_points_become_blobs(graph):
     stage, make = graph
@@ -330,6 +368,71 @@ def test_an_rbd_bake_pushes_the_material_aside(graph):
     undisturbed = near_rock("/floor", "/Calm")
     assert undisturbed > 20
     assert near_rock("/floor\n/rocks", "/Splash") < undisturbed * 0.2, "the rock should have cleared a hole"
+
+
+def _column_height(stand_height):
+    """A 1.2 m column of the sand material in a 6 m domain, after 1.5 s: how tall it still stands, as a share."""
+    n_grid = 48
+    dx = 1.0 / n_grid
+    g = np.arange(0.0, 1.0, dx * 0.5) + dx * 0.25
+    x, y, z = np.meshgrid(g, g, g, indexing="ij")
+    pts = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+    floor = 4 * dx
+    column = pts[(np.abs(pts[:, 0] - 0.5) < 0.05) & (np.abs(pts[:, 1] - 0.5) < 0.05) & (pts[:, 2] > floor)
+                 & (pts[:, 2] < floor + 0.2)]
+    out = ps.simulate(column, (0, 0, 0), ps.SAND, n_grid=n_grid, sand_angle=35.0, gravity=(0.0, 0.0, -9.81 / 6),
+                      frame_count=36, fps=24.0, stand_height=stand_height / 6)
+    return (np.percentile(out["positions"][-1][:, 2], 98) - floor) / (np.percentile(column[:, 2], 98) - floor)
+
+
+@needs_taichi
+def test_dry_sand_slumps_and_soil_with_cohesion_stands():
+    """Stand Height is the tallest wall the soil holds: a 1.2 m column of dry sand pours into a cone, one that
+    stands 2 m keeps its height, and one that stands about half a metre keeps less than it had."""
+    dry, weak, firm = _column_height(0.0), _column_height(0.5), _column_height(2.0)
+    assert dry < 0.3, f"dry sand stood at {dry:.0%}"
+    assert firm > 0.85, f"soil standing 2 m kept only {firm:.0%} of a 1.2 m column"
+    assert dry < weak < firm
+
+
+def _cup(stage, path, lo, hi):
+    """An open-topped box: a floor and four walls, no lid."""
+    x0, y0, z0 = lo
+    x1, y1, z1 = hi
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.GetPointsAttr().Set([
+        (x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
+        (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1),
+    ])
+    mesh.GetFaceVertexCountsAttr().Set([4] * 5)
+    mesh.GetFaceVertexIndicesAttr().Set([0, 3, 2, 1, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7])
+    return mesh
+
+
+@needs_taichi
+def test_an_animated_mesh_carries_the_material_it_holds(graph):
+    """A cup lifted out with sand in it takes the sand along: an animated mesh collides by its
+    surface and moves the material with it, where a sphere round it would shove the sand out."""
+    stage, make = graph
+    _floor(stage, "/floor", 100.0, 0.0)
+    cup = _cup(stage, "/cup", (-6, -6, 0.2), (6, 6, 8))
+    _box(stage, "/sand", (-4.5, -4.5, 1.0), (4.5, 4.5, 4.5))
+    frames = 16
+    op = UsdGeom.Xformable(cup).AddTranslateOp()
+    for f in range(1, frames + 1):
+        op.Set(Gf.Vec3d(0, 0, 6.0 * max(0.0, f - 4) / (frames - 4)), f)
+    _box(stage, "/tank", (-20, -20, 0), (20, 20, 40))
+    UsdGeom.Imageable(stage.GetPrimAtPath("/tank")).MakeInvisible()
+
+    solver, module = _solver(make, source_prim="/sand", material="Sand", collision_path="/floor\n/cup",
+                             container_prim="/tank", frame_count=frames, grid_res=48)
+    _press_run(solver, module)
+    points = UsdGeom.Points(stage.GetPrimAtPath("/ParticleSim/Particles")).GetPointsAttr()
+    first, last = np.asarray(points.Get(1)), np.asarray(points.Get(frames))
+    lifted = np.median(last[:, 2]) - np.median(first[:, 2])
+    assert 4.5 < lifted < 7.0, f"the sand rose {lifted:.2f} with the cup, not the cup's 6"
+    inside = np.all(np.abs(last[:, :2]) < 6.5, axis=1).mean()
+    assert inside > 0.9, f"only {inside:.0%} of the sand is still in the cup"
 
 
 @needs_taichi
