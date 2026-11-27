@@ -46,6 +46,27 @@ def test_a_wedge_change_cooks_what_it_drives_once():
         assert place.get_param("tx").value == wedge.get_param("x").value
 
 
+def test_setting_a_whole_vector_cooks_once():
+    """Each component's change solved on its own: one vector set cooked everything below
+    length + 1 times. A handle drag cooked what was below it four times per mouse move."""
+    with Scene() as scene:
+        cube = scene.create.cube(prim_path="/box")
+        dup = scene.create.duplicate_prim(cube, source_prim="/box")
+        place = scene.create.transform(dup)
+
+        counts = collections.Counter()
+        restores = [_count_cooks("duplicate_prim", counts), _count_cooks("transform", counts)]
+        try:
+            dup.get_param("copy_translate").value = (1.0, 2.0, 3.0)
+        finally:
+            for restore in restores:
+                restore()
+
+        assert counts[dup.name] == 1, f"cooked {counts[dup.name]} times for one vector set"
+        assert counts[place.name] == 1, f"cooked {counts[place.name]} times below it"
+        assert tuple(dup.get_param("copy_translate").value) == (1.0, 2.0, 3.0)
+
+
 def test_deferred_work_runs_once_after_the_batch():
     """Asked for under one key any number of times, it runs once, after the solves."""
     runs = []
