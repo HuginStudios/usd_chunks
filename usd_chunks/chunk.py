@@ -82,6 +82,7 @@ from usd_chunks.chunk_core import (
     Predicate,
     ValueT,
     is_inst,
+    preview_cook as preview_cook,
 )
 
 from usd_chunks.chunk_registry import ChunkRegistry, ChunkLayerManager

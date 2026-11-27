@@ -164,6 +164,26 @@ Some loops are sequential by nature, like dart throwing where each sample depend
 or a simulation step. Vectorize across the independent elements *inside* each step instead,
 for example every particle in one step.
 
+## Cook a preview while a handle is dragged
+
+Some chunks stay slow after all of the above, because their work is inherently large: an IK
+bake solves every frame of a 110-frame shot. Below a dragged handle, a cook like that runs on
+every drag step, and the result trails the mouse by seconds. `chunk.preview_cook(node)`
+returns True while a handle is being dragged anywhere in the scene. Cook something cheaper
+then, and the framework cooks the chunk again, in full, when the drag ends:
+
+```python
+def execute(node):
+    frames = range(start, end + 1)
+    if chunk.preview_cook(node):
+        frames = range(start, end + 1, 10)  # every tenth frame; USD interpolates between
+    ...
+```
+
+The full cook on release gives the same result as a plain edit. A preview shouldn't
+overwrite anything the chunk keeps between cooks; IK Target keeps its last full solve and
+starts each preview frame from it.
+
 ## What doesn't help
 
 These were measured and rejected, so you don't have to try them again:

@@ -100,6 +100,62 @@ from usd_chunks.gizmo.types import (  # noqa: F401  (re-exported)
 #: throttle in these: the write it held back cooks before anyone hears the drag ended.
 GIZMO_START_HOOKS: list[Callable[[ChunkBase], None]] = []
 GIZMO_STOP_HOOKS: list[Callable[[ChunkBase], None]] = []
+#: The chunks with a drag open (start_gizmo to stop_gizmo), by id(): a weakref to each.
+_DRAGGING: dict[int, weakref.ref] = {}
+#: The chunks whose last cook was a preview (preview_cook said so), by id(): a weakref to
+#: each. Cooked again, in full, when the last drag ends.
+_PREVIEWED: dict[int, weakref.ref] = {}
+
+
+def _live(refs: dict) -> list:
+    """The chunks still alive in a weakref dict, the dead ones dropped from it."""
+    out = []
+    for key, ref in list(refs.items()):
+        chunk = ref()
+        if chunk is None or chunk.is_deleting():
+            refs.pop(key, None)
+        else:
+            out.append(chunk)
+    return out
+
+
+def preview_cook(node: ChunkBase) -> bool:
+    """Whether this cook may be a cheap preview: a handle is being dragged in node's scene.
+
+    Asked from a slow chunk's execute(node), downstream of what is dragged -- an IK bake
+    over a hundred frames behind a target's handle. True while the drag is on: the chunk
+    cooks a rougher result that keeps up with the mouse, and the framework cooks it again
+    in full when the last drag ends. False otherwise, and the cook is the real one.
+
+    Args:
+        node: The chunk cooking, as handed to execute(node).
+
+    Returns:
+        True when the chunk may cook a preview.
+    """
+    scene = node.get_scene()
+    dragging = scene is not None and any(c.get_scene() is scene for c in _live(_DRAGGING))
+    if dragging:
+        _PREVIEWED[id(node)] = weakref.ref(node)
+    else:
+        _PREVIEWED.pop(id(node), None)
+    return dragging
+
+
+def _cook_previewed() -> None:
+    """The drags have all ended: cook in full every chunk whose last cook was a preview.
+
+    In one batch, so a chain of them -- IK and a solver below it -- cooks once, top down.
+    """
+    if _live(_DRAGGING):
+        return
+    previewed = _live(_PREVIEWED)
+    _PREVIEWED.clear()
+    if not previewed:
+        return
+    with chunk_cook.batched_solve():
+        for chunk in previewed:
+            chunk.execute()
 
 _ATTRS_SUPPORT_CONVERTER = ATTRS_VERSION >= (24, 1)  # type: ignore
 _ATTRS_SUPPORT_INSPECT = ATTRS_VERSION >= (25, 4)  # type: ignore
@@ -3694,6 +3750,7 @@ class ChunkBase(ChunkGroupBase):
 
     def start_gizmo(self, notice=None, sender=None):
         """Send GIZMO_START; a callback for when a host starts a drag."""
+        _DRAGGING[id(self)] = weakref.ref(self)
         for hook in GIZMO_START_HOOKS:
             hook(self)
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_START)
@@ -3702,10 +3759,14 @@ class ChunkBase(ChunkGroupBase):
         """Send GIZMO_STOP; a callback for when a host ends a drag.
 
         The drag's last write cooks first (GIZMO_STOP_HOOKS), so the chunk holds where the
-        handle was let go by the time STOP goes out.
+        handle was let go by the time STOP goes out. Closed before that write, so it cooks
+        what is below in full; a chunk that previewed and was not reached by it cooks in full
+        after (preview_cook).
         """
+        _DRAGGING.pop(id(self), None)
         for hook in GIZMO_STOP_HOOKS:
             hook(self)
+        _cook_previewed()
         self.send_self(chunk_notice.ChunkNoticeAlias.GIZMO_STOP)
 
     def disable(self, notice=None, sender=None):
