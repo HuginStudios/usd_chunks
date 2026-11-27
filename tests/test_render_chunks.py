@@ -1619,6 +1619,28 @@ class TestUnpatchedUsdBuild:
         _mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
         assert node.get_param("camera_light").value is True
 
+    @pytest.mark.parametrize("on", [True, False])
+    def test_show_dome_light_reaches_the_recorder(self, monkeypatch, on):
+        """A dome's sky shows behind the scene only when asked, as usdrecord's --enableDomeLightVisibility;
+        off by default, so a render's background is as it was."""
+        scene, stage = _setup_stage()
+        make_recorder = importlib.import_module("chunks.usd.render")._make_recorder
+        mod, node = self._hydra_render(monkeypatch, scene, stage, "beauty.exr")
+        assert node.get_param("dome_visible").value is False
+        calls = []
+
+        class Recorder:
+            def __init__(self, *args):
+                pass
+
+            def __getattr__(self, name):
+                return lambda *a: calls.append((name, a))
+
+        monkeypatch.setattr(mod, "UsdAppUtils", types.SimpleNamespace(FrameRecorder=Recorder))
+        node.get_param("dome_visible").value = on
+        assert make_recorder(node) is not None
+        assert ("SetDomeLightVisibility", (on,)) in calls
+
 
 class _Recorder:
     """A FrameRecorder stand-in that notes the image width it was given."""

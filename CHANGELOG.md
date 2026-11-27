@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Render: render products named for a frame (`frame.####.exr`, `frame.{frame}.exr`) get one
+  file a frame. FrameRecorder writes a product to its name as it stands, so a frame range
+  wrote every frame over one file called `frame.####.exr` -- while Render's Output listed
+  `frame.0001.exr`, `frame.0002.exr`, ... as written.
 - usdview's free camera follows a change to the stage's up axis, such as one a Stage Settings
   chunk makes. It kept tumbling around the axis it read when the file opened, so a scene
   turned Z-up still orbited around Y until it was opened again. The camera keeps its place
@@ -44,6 +48,9 @@ This file starts with the first release; development before that is in the commi
   land on, or spun off it.
 ### Added
 
+- Render: **Show Dome Light** shows a dome light's sky behind the scene, as usdrecord's
+  `--enableDomeLightVisibility`. Off by default: the dome lights the scene and the background
+  stays black, as before.
 - Auto quick save in usdview, off until you tick **Chunks > Auto Quick Save**. Then an edited
   network is copied every 2 minutes into your own user folder (never beside the shot), one
   file per session named by date and time, and offered back (Recover or Discard) when you
