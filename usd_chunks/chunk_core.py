@@ -16,6 +16,7 @@ and send notices.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import inspect
 import logging
@@ -4195,7 +4196,12 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             for node_name, param_name in chunk_utils.parse_expression(val):
                 ref = self._resolve_expression_ref(node_name, param_name)
                 if ref is None:
-                    logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
+                    # As a scalar's: during a load the ref is often not made yet, and the
+                    # loader retries (_resolve_pending_expressions) and warns if it still fails.
+                    if chunk_notice._loading_stage is not None:
+                        logger.debug("Expression ref @%s.%s@ not resolvable yet (loading)", node_name, param_name)
+                    else:
+                        logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
                     continue
                 conn = chunk_notice.NoticeConnection(
                     method=self._on_ref_changed,
@@ -4241,15 +4247,22 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
         its inputs were back: a camera restored its clipping range, cooked with the default
         target, and wrote its lens onto /cameras/camera1. The load cooks once, after
         everything is restored.
+
+        Outside a load the children and the vector's own notice share one batched solve.
+        Each child's change solves on its own otherwise, so one vector set cooked everything
+        downstream length + 1 times -- a handle drag cooked what was below it four times per
+        mouse move.
         """
-        self._suppress_storage_write = True
-        try:
-            for i in range(self.length):
-                self[i] = val[i]
-        finally:
-            self._suppress_storage_write = False
-        if not chunk_notice._loading_stage:
-            self.get_attribute_sender("value").execute()
+        loading = chunk_notice._loading_stage
+        with contextlib.nullcontext() if loading else chunk_cook.batched_solve():
+            self._suppress_storage_write = True
+            try:
+                for i in range(self.length):
+                    self[i] = val[i]
+            finally:
+                self._suppress_storage_write = False
+            if not loading:
+                self.get_attribute_sender("value").execute()
 
     def _on_ref_changed(self, notice=None, sender=None):
         if self._resolving_ref:

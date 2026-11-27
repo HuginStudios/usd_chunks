@@ -187,7 +187,8 @@ class UsdviewScene(chunk_scene.SceneSender):
         )
 
     def get_current_frame(self) -> float:
-        return self.usdviewAPI.dataModel.currentFrame
+        # usdview keeps a Usd.TimeCode, which float() refuses.
+        return self.usdviewAPI.dataModel.currentFrame.GetValue()
 
     def get_end_frame(self) -> float:
         return self.usdviewAPI.dataModel.frameRangeEnd

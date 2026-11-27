@@ -11,6 +11,15 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- Setting a vector param (a script's `.value = (x, y, z)`, a translate handle's drag) cooks
+  what it drives once, not once per component plus once more.
+- Editing a MaterialX Shader's vector input (a float3 such as a multiply's `in2`) in a
+  reopened network stuck only partly: its first changed component went back to the saved
+  value, by script or in the UI. Vectors a chunk makes at load are now bound to their saved
+  value as the load restores them.
+- A vector param's wire that waits for a chunk further down the file no longer warns
+  while the file loads; it is retried, as a scalar's is, and warns if still missing.
+- In usdview, the current frame reached chunks as a `Usd.TimeCode` instead of a number.
 - usdview's free camera follows a change to the stage's up axis, such as one a Stage Settings
   chunk makes. It kept tumbling around the axis it read when the file opened, so a scene
   turned Z-up still orbited around Y until it was opened again. The camera keeps its place

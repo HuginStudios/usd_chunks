@@ -10017,6 +10017,14 @@ def _restore_dynamic_params(prim: Usd.Prim, chunk: core.ChunkBase) -> None:
         existing = getattr(param, "_param_attr_path", None)
         if existing and existing.startswith(prim_path):
             continue  # already wired to chunk storage from first _load_wire_inputs
+        # A vector the chunk made at load (a MaterialX Shader's float3 input) is bound to its
+        # storage too, here, with its saved value read back. Left unbound, its first edit
+        # bound it then -- and read the old saved value back over the edit: setting
+        # in2 = (400, 3, 3) on a reopened network left (160, 3, 3), its first changed
+        # component reverted.
+        if isinstance(param, core.ChunkVectorBase) and not existing:
+            param._connect_param_attr(attr)
+            continue
         # A scalar is bound the way a live edit binds it: to its chunk-prim storage --
         # `attr`, right here -- which _connect_param_attr reads the expression text or
         # value back from. Unbound, a later edit is never recorded (a lofted Stage

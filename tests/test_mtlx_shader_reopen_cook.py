@@ -61,3 +61,26 @@ def test_reopened_shaders_keep_their_inputs_and_wires(tmp_path):
         reopened = _inputs(scene.get_stage(), add_path)
 
     assert reopened == built
+
+
+def test_a_vector_input_set_after_reopening_sticks(tmp_path):
+    """A MaterialX Shader's vector inputs are made at load; the first edit to one bound it to
+    its storage then and read the old saved value back over the edit -- in2 = (400, 3, 3) on
+    a reopened network left (160, 3, 3). Now the load binds it, and the edit stays."""
+    first, second = str(tmp_path / "a.usda"), str(tmp_path / "b.usda")
+    with Scene() as scene:
+        mul = scene.add("mtlx_shader", nodedef="ND_multiply_vector3")
+        mul.get_param("in2").value = (1.0, 2.0, 3.0)
+        mul_path = mul.get_param("prim_path").value
+        scene.save(first)
+
+    with Scene.open(first) as scene:
+        mul = next(c for c in scene.get_chunks() if c.get_param("nodedef") is not None)
+        mul.get_param("in2").value = (7.0, 8.0, 9.0)
+        assert tuple(mul.get_param("in2").value) == pytest.approx((7.0, 8.0, 9.0))
+        assert tuple(_inputs(scene.get_stage(), mul_path)["in2"]) == pytest.approx((7.0, 8.0, 9.0)), "the shader too"
+        scene.save(second)
+
+    with Scene.open(second) as scene:
+        mul = next(c for c in scene.get_chunks() if c.get_param("nodedef") is not None)
+        assert tuple(mul.get_param("in2").value) == pytest.approx((7.0, 8.0, 9.0)), "and the file"
