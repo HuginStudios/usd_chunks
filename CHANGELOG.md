@@ -9,6 +9,13 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- `chunk.preview_cook(node)`: True while a handle is dragged in the scene, so a slow chunk
+  below it (an IK bake over every frame) can cook a cheaper preview that keeps up with the
+  mouse. The framework cooks it again, in full, when the drag ends. See "Cook a preview while
+  a handle is dragged" in `docs/fast-chunks.md`.
+
 ### Fixed
 
 - A text field in the Params tab, such as a ChunkGroup's Description, can be made taller:
