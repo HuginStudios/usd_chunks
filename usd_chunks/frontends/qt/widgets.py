@@ -970,6 +970,66 @@ class ChunkLineEditWidget(ChunkParamWidgetBase[chunk.LineEdit], QtWidgets.QWidge
         self.set_enabled(not self.param.has_state(ChunkFlags.State.DISABLED))
 
 
+class TextResizeGrip(QtWidgets.QWidget):
+    """A thin bar under a text field: drag it down to make the field taller, up to shrink it.
+
+    A text field opens at the height its param asks for (``rows``), which suits a short
+    note but hides most of a long one. The new height is the field's fixed height, so the
+    layouts around it grow or shrink with it.
+
+    Hidden in node bodies (LabeledWidget): a node keeps the size it was laid out at, so a
+    taller field would spill out of it.
+    """
+
+    HEIGHT = 7
+
+    def __init__(self, target: QtWidgets.QWidget, min_height: int, parent: QtWidgets.QWidget | None = None):
+        """Make a grip that resizes target.
+
+        Args:
+            target: The field whose height the grip sets.
+            min_height: The shortest the field can be dragged to, in pixels.
+            parent: The grip's parent widget.
+        """
+        super().__init__(parent)
+        self._target = target
+        self._min_height = min_height
+        self._press: tuple[float, int] | None = None  # (pointer y, field height) at the press
+        self.setFixedHeight(self.HEIGHT)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.setCursor(QtCore.Qt.CursorShape.SizeVerCursor)
+        self.setToolTip("Drag to make the field taller or shorter")
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        self._press = (event.globalPosition().y(), self._target.height())
+        event.accept()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._press is None:
+            return super().mouseMoveEvent(event)
+        y0, h0 = self._press
+        self._target.setFixedHeight(max(self._min_height, round(h0 + event.globalPosition().y() - y0)))
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._press is None:
+            return super().mouseReleaseEvent(event)
+        self._press = None
+        event.accept()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        # Three short lines in the middle: the usual sign for "drag me". The grey of the
+        # panel's hint text; the palette's own greys are lost on the dark fields.
+        painter = QtGui.QPainter(self)
+        painter.setPen(QtGui.QColor("#808080"))
+        cx, cy = self.width() // 2, self.height() // 2
+        for dy in (-2, 0, 2):
+            painter.drawLine(cx - 8, cy + dy, cx + 8, cy + dy)
+        painter.end()
+
+
 class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidget):
     # Past this many characters, or a line this long, the field shows a short read-only
     # preview instead of the text. Qt lays out whole lines: a 10 MB inline terrain, 48 lines
@@ -1006,14 +1066,17 @@ class ChunkTextEditWidget(ChunkParamWidgetBase[chunk.TextEdit], QtWidgets.QWidge
             font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
             self.text.setFont(font)
 
+        line_h = QtGui.QFontMetrics(self.text.font()).lineSpacing()
         if param.rows is not None:
-            line_h = QtGui.QFontMetrics(self.text.font()).lineSpacing()
             self.text.setFixedHeight(param.rows * line_h + 4)
+        # Drag the bar under the field to see more (or less) of the text.
+        self.grip = TextResizeGrip(self.text, min_height=line_h + 4, parent=self)
 
-        self.main_layout = QtWidgets.QHBoxLayout()
-
+        self.main_layout = QtWidgets.QVBoxLayout()
+        self.main_layout.setSpacing(0)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.addWidget(self.text)
+        self.main_layout.addWidget(self.grip)
         self.setLayout(self.main_layout)
         self.setup_chunk_widget()
 
@@ -1770,6 +1833,10 @@ class LabeledWidget(QtWidgets.QWidget):
         else:
             self.vlayout.addWidget(widget)
         self.setLayout(self.vlayout)
+        if (isinstance(widget, ChunkTextEditWidget) and isinstance(parent, ContainerWidget)
+                and parent._node_body_around() is not None):
+            # A node doesn't grow with its body, so a field dragged taller would spill out.
+            widget.grip.hide()
 
         # Built on first hover, not here. A Qt.ToolTip label is a top-level window, and
         # asking for one costs ~0.2ms even offscreen -- trivial per row, but a graph of
