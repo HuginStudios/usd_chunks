@@ -98,13 +98,23 @@ _COLOURS = {
 
 _AS_POINTS = "Points"
 _AS_SPHERES = "Instanced Spheres"
-_RENDER_MODES = [_AS_POINTS, _AS_SPHERES]
+_AS_GRAINS = "Instanced Grains"
+_RENDER_MODES = [_AS_POINTS, _AS_SPHERES, _AS_GRAINS]
+#: Instanced Grains: how many grain shapes, how much a grain's size and shade vary.
+_GRAIN_SHAPES, _GRAIN_SIZE_JITTER, _GRAIN_SHADES = 8, 0.3, (0.62, 1.12)
 
 _POISSON = 0.2
+#: Measured, not derived: with the cone's apex moved by Rankine's cohesion for a wall H high, a free
+#: column stood about H / 4.5 (Stand Height 3 m held 0.76 m of a 1.2 m column, 6 m all of it).
+_STAND_SCALE = 4.5
 _CFL = 0.4
 
 #: Grid cells of solid wall on every face of the domain.
 _BOUND = 3
+
+#: The most triangles moving meshes collide by their surface, all together; past it an animated
+#: mesh is a sphere round its bounds again. Every frame's corners are held while it simulates.
+_MOVING_TRIANGLES = 60_000
 
 #: How far from a collider's surface its normal is written onto the grid, in cells. Particles
 #: are stopped by the nearest grid nodes, so they come to rest roughly this far off the surface.
@@ -134,11 +144,12 @@ def _mpm_class():
         """
 
         def __init__(self, n_particles, n_grid, n_tracers, n_spheres, material, stiffness,
-                     friction, sand_angle, gravity):
+                     friction, sand_angle, gravity, n_tris=0, cohesion=0.0):
             self.n_particles = int(n_particles)
             self.n_grid = int(n_grid)
             self.n_tracers = int(n_tracers)
             self.n_spheres = int(n_spheres)
+            self.n_tris = int(n_tris)
             self.material = int(material)
             self.dx = 1.0 / n_grid
             self.inv_dx = float(n_grid)
@@ -149,6 +160,7 @@ def _mpm_class():
             self.la0 = self.E * _POISSON / ((1.0 + _POISSON) * (1.0 - 2.0 * _POISSON))
             sin_phi = math.sin(math.radians(sand_angle))
             self.alpha = math.sqrt(2.0 / 3.0) * 2.0 * sin_phi / (3.0 - sin_phi)
+            self.cohesion = float(cohesion)
             self.friction = float(friction)
             self.gx, self.gy, self.gz = (float(g) for g in gravity)
             self.lo = self.dx
@@ -172,6 +184,12 @@ def _mpm_class():
 
             self.sph = ti.Vector.field(4, ti.f32, max(self.n_spheres, 1))
             self.sph_v = ti.Vector.field(3, ti.f32, max(self.n_spheres, 1))
+
+            # Moving meshes: each triangle's corners at the start of the frame and their
+            # velocities, and per node the distance to the nearest of them.
+            self.tri_p = ti.Vector.field(3, ti.f32, (max(self.n_tris, 1), 3))
+            self.tri_v = ti.Vector.field(3, ti.f32, (max(self.n_tris, 1), 3))
+            self.dyn_d = ti.field(ti.f32, shape if self.n_tris else (1, 1, 1))
 
             t = max(self.n_tracers, 1)
             self.tx = ti.Vector.field(3, ti.f32, t)
@@ -210,19 +228,24 @@ def _mpm_class():
 
         @ti.func
         def _sand_projection(self, sigma, p):
-            """Drucker-Prager return mapping on the singular values (Klar et al. 2016)."""
+            """Drucker-Prager return mapping on the singular values (Klar et al. 2016), its cone's apex
+            moved into tension by the cohesion: soil holds together until it is stretched that far (a
+            volumetric log strain), then comes apart stress-free -- clods, not a pour. 0 is dry sand."""
             out = ti.Matrix.identity(ti.f32, 3)
             eps = ti.Vector([
                 ti.log(ti.max(ti.abs(sigma[0, 0]), 1e-4)),
                 ti.log(ti.max(ti.abs(sigma[1, 1]), 1e-4)),
                 ti.log(ti.max(ti.abs(sigma[2, 2]), 1e-4)),
             ])
-            tr = eps.sum() + self.Jp[p]
-            eps_hat = eps - tr / 3.0
+            volume = eps.sum() + self.Jp[p]
+            eps_hat = eps - volume / 3.0
+            tr = volume - self.cohesion
             eps_hat_norm = eps_hat.norm() + 1e-20
             if tr >= 0.0:
-                # Pulled apart: grains separate and carry no stress at all.
-                self.Jp[p] = tr
+                # Pulled apart past what holds it together: grains separate and carry no stress,
+                # and the volume they gained is kept (its share of the cohesion too, or a grain left
+                # apart would drift back into contact by the cohesion every step).
+                self.Jp[p] = volume
             else:
                 self.Jp[p] = 0.0
                 delta_gamma = eps_hat_norm + (3.0 * self.la0 + 2.0 * self.mu0) / (
@@ -251,6 +274,80 @@ def _mpm_class():
                                 self.dyn_on[i, j, k] = 1
                                 self.dyn_n[i, j, k] = d / ti.max(dist, 1e-6)
                                 self.dyn_v[i, j, k] = self.sph_v[s]
+
+        @ti.func
+        def _closest_on_triangle(self, p, a, b, c):
+            """The barycentric weights (on a, b, c) of the point of triangle abc nearest p."""
+            ab, ac, ap = b - a, c - a, p - a
+            d1, d2 = ab.dot(ap), ac.dot(ap)
+            bp = p - b
+            d3, d4 = ab.dot(bp), ac.dot(bp)
+            cp = p - c
+            d5, d6 = ab.dot(cp), ac.dot(cp)
+            va = d3 * d6 - d5 * d4
+            vb = d5 * d2 - d1 * d6
+            vc = d1 * d4 - d3 * d2
+            out = ti.Vector([0.0, 0.0, 0.0])
+            if d1 <= 0.0 and d2 <= 0.0:
+                out = ti.Vector([1.0, 0.0, 0.0])
+            elif d3 >= 0.0 and d4 <= d3:
+                out = ti.Vector([0.0, 1.0, 0.0])
+            elif d6 >= 0.0 and d5 <= d6:
+                out = ti.Vector([0.0, 0.0, 1.0])
+            elif vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0:
+                w = d1 / (d1 - d3)
+                out = ti.Vector([1.0 - w, w, 0.0])
+            elif vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0:
+                w = d2 / (d2 - d6)
+                out = ti.Vector([1.0 - w, 0.0, w])
+            elif va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0:
+                w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+                out = ti.Vector([0.0, 1.0 - w, w])
+            else:
+                denom = 1.0 / ti.max(va + vb + vc, 1e-20)
+                v_, w_ = vb * denom, vc * denom
+                out = ti.Vector([1.0 - v_ - w_, v_, w_])
+            return out
+
+        @ti.kernel
+        def raster_meshes(self, t: ti.f32):
+            """Stamp the moving meshes onto the grid at time t into the frame: every node within
+            the collider band of a triangle takes the direction from its nearest surface point
+            towards it, and that point's velocity -- so a bucket scoops and carries what is in it."""
+            band = _COLLIDER_BAND * self.dx
+            for cell in ti.grouped(self.dyn_d):
+                self.dyn_d[cell] = 1e9
+                if ti.static(self.n_spheres == 0):
+                    self.dyn_on[cell] = 0
+            # Twice over the triangles: the nearest distance per node first, then the nearest
+            # triangle writes its direction and velocity there.
+            for rnd in ti.static(range(2)):
+                for m in range(self.n_tris):
+                    a = self.tri_p[m, 0] + self.tri_v[m, 0] * t
+                    b = self.tri_p[m, 1] + self.tri_v[m, 1] * t
+                    c = self.tri_p[m, 2] + self.tri_v[m, 2] * t
+                    lo = ti.max(ti.cast(ti.floor((ti.min(a, b, c) - band) * self.inv_dx), ti.i32), 0)
+                    hi = ti.min(ti.cast(ti.ceil((ti.max(a, b, c) + band) * self.inv_dx), ti.i32),
+                                self.n_grid - 1)
+                    for i in range(lo[0], hi[0] + 1):
+                        for j in range(lo[1], hi[1] + 1):
+                            for k in range(lo[2], hi[2] + 1):
+                                node = ti.Vector([ti.cast(i, ti.f32), ti.cast(j, ti.f32),
+                                                  ti.cast(k, ti.f32)]) * self.dx
+                                w = self._closest_on_triangle(node, a, b, c)
+                                q = w[0] * a + w[1] * b + w[2] * c
+                                d = (node - q).norm()
+                                if d < band:
+                                    if ti.static(rnd == 0):
+                                        ti.atomic_min(self.dyn_d[i, j, k], d)
+                                    elif d <= self.dyn_d[i, j, k]:
+                                        n = (b - a).cross(c - a)
+                                        if d > 1e-6:
+                                            n = node - q
+                                        self.dyn_on[i, j, k] = 1
+                                        self.dyn_n[i, j, k] = n.normalized()
+                                        self.dyn_v[i, j, k] = (w[0] * self.tri_v[m, 0] + w[1] * self.tri_v[m, 1]
+                                                               + w[2] * self.tri_v[m, 2])
 
         @ti.kernel
         def substep(self, dt: ti.f32):
@@ -317,7 +414,7 @@ def _mpm_class():
                 if m > 0.0:
                     v = self.grid_v[cell] / m
                     v += dt * ti.Vector([self.gx, self.gy, self.gz])
-                    if ti.static(self.n_spheres > 0):
+                    if ti.static(self.n_spheres > 0 or self.n_tris > 0):
                         if self.dyn_on[cell] == 1:
                             sv = self.dyn_v[cell]
                             v = self._project(v - sv, self.dyn_n[cell], self.friction) + sv
@@ -435,16 +532,31 @@ def _auto_substeps(material, stiffness, gravity_n, init_speed_n, n_grid, fps):
     return max(1, int(math.ceil((1.0 / fps) / dt)))
 
 
+def _cohesion(stand_height, gravity, stiffness):
+    """The volumetric stretch soil holds before it parts, for cut walls `stand_height` high (domain units).
+
+    Rankine's critical height of a vertical cut in cohesive soil is 4c / gamma: a wall that tall
+    stands on its cohesion c and its weight gamma (density 1 here, so |g|). That c, as a stretch of a
+    material of this stiffness, is c over its bulk modulus -- times _STAND_SCALE, since shifting the
+    cone's apex buys less shear strength than a plain cohesion would.
+    """
+    if stand_height <= 0.0:
+        return 0.0
+    bulk = stiffness / (3.0 * (1.0 - 2.0 * _POISSON))
+    return float(np.linalg.norm(gravity)) * stand_height / 4.0 / bulk * _STAND_SCALE
+
+
 def simulate(particles, velocity, material, *, n_grid=64, stiffness=0.0, friction=0.4,
              sand_angle=30.0, gravity=(0.0, 0.0, -9.81), solid_normals=None,
              sphere_frames=None, tracers=None, frame_count=48, fps=24.0, substeps=0,
-             device="GPU", progress=None):
+             device="GPU", progress=None, mesh_frames=None, stand_height=0.0):
     """Run the simulation in the unit cube and return every frame.
 
     `particles` is (N, 3) in [0, 1]; `velocity` a single (3,) start velocity. `solid_normals`
     is the grid of static collider normals `_voxelize` builds. `sphere_frames` is one
-    (centres, radii, velocities) triple per frame for moving colliders. `tracers` are passive
-    points to carry along.
+    (centres, radii, velocities) triple per frame for moving colliders; `mesh_frames` one
+    (corners, velocities) pair per frame for moving meshes, both (T, 3, 3), the same T every
+    frame. `tracers` are passive points to carry along.
 
     Returns a dict: `positions` and `velocities` as (frames, N, 3), `tracer_positions`
     (frames, T, 3), `tracer_rotations` (frames, T, 4) as w-x-y-z world-space deltas, and the
@@ -464,13 +576,14 @@ def simulate(particles, velocity, material, *, n_grid=64, stiffness=0.0, frictio
     if substeps <= 0:
         substeps = _auto_substeps(material, stiffness, gravity, np.linalg.norm(velocity), n_grid, fps)
     dt = (1.0 / fps) / substeps
+    cohesion = _cohesion(stand_height, gravity, stiffness)
 
     arch = ti.gpu if device == "GPU" else ti.cpu
     ti.init(arch=arch, default_fp=ti.f32, log_level=ti.WARN, offline_cache=True)
     try:
         return _solve(particles, tracers, velocity, material, n_grid, stiffness, friction,
                       sand_angle, gravity, solid_normals, sphere_frames, frame_count, fps,
-                      substeps, dt, n_spheres, progress)
+                      substeps, dt, n_spheres, progress, mesh_frames, cohesion)
     finally:
         # Torn down on the thread that started it. Left for interpreter exit instead, a
         # runtime made on a worker thread aborts the whole process -- "Fatal Python error:
@@ -480,10 +593,11 @@ def simulate(particles, velocity, material, *, n_grid=64, stiffness=0.0, frictio
 
 def _solve(particles, tracers, velocity, material, n_grid, stiffness, friction, sand_angle,
            gravity, solid_normals, sphere_frames, frame_count, fps, substeps, dt, n_spheres,
-           progress):
+           progress, mesh_frames=None, cohesion=0.0):
     n, n_tracers = len(particles), len(tracers)
+    n_tris = len(mesh_frames[0][0]) if mesh_frames else 0
     sim = _mpm_class()(n, n_grid, n_tracers, n_spheres, _MATERIAL_IDS[material], stiffness,
-               friction, sand_angle, gravity)
+               friction, sand_angle, gravity, n_tris, cohesion if material == SAND else 0.0)
     if n:
         sim.x.from_numpy(particles)
         sim.v.from_numpy(np.broadcast_to(velocity, (n, 3)).copy())
@@ -524,10 +638,16 @@ def _solve(particles, tracers, velocity, material, n_grid, stiffness, friction, 
             sphere_vel[:count] = vels
             sim.sph.from_numpy(sphere_buf)
             sim.sph_v.from_numpy(sphere_vel)
+        if n_tris:
+            corners, corner_v = mesh_frames[frame]
+            sim.tri_p.from_numpy(np.ascontiguousarray(corners, dtype=np.float32))
+            sim.tri_v.from_numpy(np.ascontiguousarray(corner_v, dtype=np.float32))
 
         for step in range(substeps):
             if n_spheres:
                 sim.raster_spheres(step * dt)
+            if n_tris:
+                sim.raster_meshes(step * dt)
             sim.substep(dt)
             if n_tracers:
                 sim.advect_tracers(dt)
@@ -959,6 +1079,39 @@ def _sphere_track(prim, start_frame, frame_count):
     return track
 
 
+def _mesh_track(prims, start_frame, frame_count, fps):
+    """Moving meshes' world-space triangles at every frame and their corners' velocities, as
+    one (corners, velocities) pair of (T, 3, 3) arrays per frame -- what a bucket digging needs
+    and a sphere round it cannot give: the material meets the surface itself, and moves with
+    the point of it that it touches. Triangles with no area are left out (the same ones every
+    frame: the topology does not change). None when there are no triangles.
+    """
+    corners = []
+    for f in range(frame_count):
+        tc = Usd.TimeCode(start_frame + f)
+        tris = [_world_triangles(p, tc) for p in prims]
+        corners.append(np.stack([np.concatenate([t[k] for t in tris]) for k in range(3)], axis=1))
+    if not len(corners[0]):
+        return None
+    first = corners[0]
+    keep = np.linalg.norm(np.cross(first[:, 1] - first[:, 0], first[:, 2] - first[:, 0]), axis=1) > 1e-12
+    corners = [c[keep] for c in corners]
+    out = []
+    for f in range(frame_count):
+        later = corners[min(f + 1, frame_count - 1)]
+        out.append((corners[f], (later - corners[f]) * fps if f + 1 < frame_count else np.zeros_like(later)))
+    return out
+
+
+def _triangle_count(prim):
+    """Triangles in the meshes under prim, from their face counts."""
+    total = 0
+    for p in Usd.PrimRange(prim):
+        if p.IsA(UsdGeom.Mesh) and (counts := UsdGeom.Mesh(p).GetFaceVertexCountsAttr().Get()):
+            total += int(np.maximum(np.asarray(counts) - 2, 0).sum())
+    return total
+
+
 def _bounds_of(prim):
     rng = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]) \
         .ComputeWorldBound(prim).ComputeAlignedRange()
@@ -1052,6 +1205,78 @@ def _author_sphere_instancer(stage, path, positions, radius, colour, material_pa
                            default=Vt.Vec3fArray.FromNumpy(frames[-1]))
     sim_bake.write_samples(instancer.CreateExtentAttr(), (
         (start_frame + f, _extent(frames[f], radius)) for f in range(len(frames))
+    ))
+
+
+def _grain_mesh(rng, radius, subdivisions=1):
+    """A lumpy grain about `radius` across: an icosphere pushed in and out at random and squashed along
+    a random axis -- a clod or a pebble rather than a ball. (points, face vertex counts, indices)."""
+    t = (1.0 + 5 ** 0.5) / 2.0
+    verts = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t),
+             (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+    faces = [(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4), (11, 10, 2),
+             (10, 7, 6), (7, 1, 8), (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5), (2, 4, 11),
+             (6, 2, 10), (8, 6, 7), (9, 8, 1)]
+    verts = [np.asarray(v, dtype=np.float64) / np.linalg.norm(v) for v in verts]
+    for _ in range(subdivisions):
+        mid, out = {}, []
+
+        def middle(a, b):
+            key = (min(a, b), max(a, b))
+            if key not in mid:
+                m = verts[a] + verts[b]
+                verts.append(m / np.linalg.norm(m))
+                mid[key] = len(verts) - 1
+            return mid[key]
+        for a, b, c in faces:
+            ab, bc, ca = middle(a, b), middle(b, c), middle(c, a)
+            out += [(a, ab, ca), (b, bc, ab), (c, ca, bc), (ab, bc, ca)]
+        faces = out
+    points = np.array(verts) * rng.uniform(0.78, 1.18, (len(verts), 1))
+    axis = rng.normal(size=3)
+    axis /= np.linalg.norm(axis)
+    squash = rng.uniform(0.6, 0.95)
+    points = points - (1.0 - squash) * np.outer(points @ axis, axis)
+    return points * radius, [3] * len(faces), [i for f in faces for i in f]
+
+
+def _author_grain_instancer(stage, path, positions, radius, colour, material_path, start_frame, seed=0):
+    """The particles as grains: a few lumpy shapes in a few shades of the material's colour, each
+    particle one of them at its own size and turn, so the material reads as soil or gravel rather
+    than as balls. The shapes' shades are display colours; a Material, when named, is bound over them.
+    """
+    rng = np.random.default_rng(seed)
+    instancer = UsdGeom.PointInstancer.Define(stage, path)
+    targets = []
+    shades = np.linspace(*_GRAIN_SHADES, _GRAIN_SHAPES)
+    for k in range(_GRAIN_SHAPES):
+        points, counts, indices = _grain_mesh(rng, radius)
+        mesh = UsdGeom.Mesh.Define(stage, path.AppendChild("Prototypes").AppendChild(f"Grain{k}"))
+        mesh.CreatePointsAttr().Set(Vt.Vec3fArray.FromNumpy(points.astype(np.float32)))
+        mesh.CreateFaceVertexCountsAttr().Set(Vt.IntArray(counts))
+        mesh.CreateFaceVertexIndicesAttr().Set(Vt.IntArray(indices))
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        mesh.CreateExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*points.min(axis=0)), Gf.Vec3f(*points.max(axis=0))]))
+        tint = np.clip(np.asarray(colour) * shades[k] * rng.uniform(0.94, 1.06, 3), 0.0, 1.0)
+        UsdGeom.Primvar(mesh.CreateDisplayColorAttr()).SetInterpolation(UsdGeom.Tokens.constant)
+        mesh.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*map(float, tint))]))
+        _bind_material(stage, mesh.GetPrim(), material_path)
+        targets.append(mesh.GetPath())
+    count = positions.shape[1]
+    instancer.CreatePrototypesRel().SetTargets(targets)
+    instancer.CreateProtoIndicesAttr().Set(Vt.IntArray.FromNumpy(rng.integers(0, _GRAIN_SHAPES, count).astype(np.int32)))
+    size = rng.uniform(1.0 - _GRAIN_SIZE_JITTER, 1.0 + _GRAIN_SIZE_JITTER, count).astype(np.float32)
+    instancer.CreateScalesAttr().Set(Vt.Vec3fArray.FromNumpy(np.repeat(size[:, None], 3, axis=1)))
+    turns = rng.normal(size=(count, 4))
+    turns /= np.linalg.norm(turns, axis=1, keepdims=True)
+    instancer.CreateOrientationsAttr().Set(Vt.QuathArray([Gf.Quath(*map(float, q)) for q in turns]))
+    frames = np.ascontiguousarray(positions, dtype=np.float32)
+    sim_bake.write_samples(instancer.CreatePositionsAttr(),
+                           ((start_frame + f, Vt.Vec3fArray.FromNumpy(frames[f])) for f in range(len(frames))),
+                           default=Vt.Vec3fArray.FromNumpy(frames[-1]))
+    pad = radius * 1.2 * (1.0 + _GRAIN_SIZE_JITTER)
+    sim_bake.write_samples(instancer.CreateExtentAttr(), (
+        (start_frame + f, _extent(frames[f], pad)) for f in range(len(frames))
     ))
 
 
@@ -1215,6 +1440,19 @@ def _run(owner, notice, sender):
         v0, v1, v2 = (np.concatenate([t[k] for t in tris]) for k in range(3))
         solid = _voxelize(to_domain(v0), to_domain(v1), to_domain(v2), grid_res, rng)
 
+    # An animated mesh collides by its surface while the triangles fit; an instancer (the RBD
+    # Solver's bake) is a sphere per instance.
+    mesh_prims, budget = [], _MOVING_TRIANGLES
+    for prim in moving_prims:
+        count = 0 if prim.IsA(UsdGeom.PointInstancer) else _triangle_count(prim)
+        if 0 < count <= budget:
+            mesh_prims.append(prim)
+            budget -= count
+    moving_prims = [p for p in moving_prims if p not in mesh_prims]
+    mesh_frames = None
+    if mesh_prims and (track := _mesh_track(mesh_prims, start_frame, frame_count, fps)):
+        mesh_frames = [(to_domain(c), v / size) for c, v in track]
+
     sphere_frames = None
     if moving_prims:
         tracks = [_sphere_track(p, start_frame, frame_count) for p in moving_prims]
@@ -1250,9 +1488,11 @@ def _run(owner, notice, sender):
         stiffness=node.get_param("stiffness", is_f).value,
         friction=node.get_param("friction", is_f).value,
         sand_angle=node.get_param("sand_angle", is_f).value,
+        stand_height=node.get_param("stand_height", is_f).value / size,
         gravity=gravity_n,
         solid_normals=solid,
         sphere_frames=sphere_frames,
+        mesh_frames=mesh_frames,
         tracers=tracers,
         frame_count=frame_count,
         fps=fps,
@@ -1308,13 +1548,16 @@ def _run(owner, notice, sender):
 
             # The spheres or a driven instancer are what renders then; the cloud is a guide,
             # or V-Ray draws it as balls too.
-            as_spheres = node.get_param("render_as", is_s).value == _AS_SPHERES
-            if as_spheres or (drive_instances is not None and drive_instances.count):
+            render_as = node.get_param("render_as", is_s).value
+            if render_as in (_AS_SPHERES, _AS_GRAINS) or (drive_instances is not None and drive_instances.count):
                 cloud.CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
 
-            if as_spheres:
+            if render_as == _AS_SPHERES:
                 _author_sphere_instancer(stage, sim_path.AppendChild("ParticleSpheres"), positions,
                                          width * 0.5, colour, material_path, start_frame)
+            elif render_as == _AS_GRAINS:
+                _author_grain_instancer(stage, sim_path.AppendChild("ParticleGrains"), positions,
+                                        width * 0.5, colour, material_path, start_frame, seed)
 
             top = UsdGeom.Points.Define(stage, surface_path)
             top.CreatePointsAttr().Set(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(surface, dtype=np.float32)))
@@ -1597,6 +1840,12 @@ def main():
         "sand_angle", "Sand Friction Angle", min_value=5.0, max_value=60.0, default_value=30.0,
         tooltip="Sand only. The steepest slope a pile will hold, in degrees.",
     ))
+    mat.add_param(chunk.Spinbox(
+        "stand_height", "Stand Height (m)", default_value=0.0,
+        tooltip="Sand only: what holds it together, as the tallest wall it stands unsupported. 0 is dry sand, "
+                "which pours; damp soil stands about a metre -- a cut wall holds, a scoop comes up as a lump "
+                "and breaks into clods.",
+    ))
     mat.set_state(chunk.ChunkFlags.State.COLLAPSED)
     chunk_api.add_param(mat)
 
@@ -1615,7 +1864,9 @@ def main():
         tooltip="Points is a UsdGeom.Points cloud -- cheap, and what Storm draws fastest.\n"
         "Instanced Spheres also writes a PointInstancer of real spheres, which is the only "
         "one V-Ray renders: it draws a Points cloud as a single point. The Points cloud is then "
-        "guide purpose, as it is when the solver drives an instancer.",
+        "guide purpose, as it is when the solver drives an instancer.\n"
+        "Instanced Grains is the same with lumpy grains of a few shapes, sizes and shades in place "
+        "of identical spheres: soil, gravel, clods.",
     ))
     material = chunk.LineEdit(
         "material_prim", "Material", flags=_PF.LABELED | _PF.PRIM_SELECTION,

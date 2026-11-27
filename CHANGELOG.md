@@ -44,6 +44,11 @@ This file starts with the first release; development before that is in the commi
   land on, or spun off it.
 ### Added
 
+- Particle Solver: soil. Sand's **Stand Height** (m) is what holds it together, as the tallest
+  wall it stands unsupported: 0 is dry sand, as before; about a metre is damp soil, whose cut
+  walls stand and whose scoop comes up as a lump and breaks into clods. And a **Render As**
+  of **Instanced Grains**: each particle one of a few lumpy shapes, at its own size, turn and
+  shade, so the material reads as soil or gravel rather than as balls.
 - Auto quick save in usdview, off until you tick **Chunks > Auto Quick Save**. Then an edited
   network is copied every 2 minutes into your own user folder (never beside the shot), one
   file per session named by date and time, and offered back (Recover or Discard) when you
@@ -110,6 +115,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Changed
 
+- Particle Solver: an animated mesh collides by its own surface, moving with the part of it the
+  material touches, where it was one sphere round its bounds. An excavator's bucket now
+  scoops, carries and tips its load. An instancer (the RBD Solver's bake) is still a sphere an
+  instance, and a mesh past 60,000 triangles one sphere.
 - **Breaking:** URDF Import reads `<limit effort velocity>`: effort becomes the joint drive's
   `maxForce` (N m, or N on a prismatic joint, in the stage's units) and velocity PhysX's
   `physxJoint:maxJointVelocity` (degrees a second). RBD Solver applies the max force, so a
