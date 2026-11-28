@@ -9,6 +9,12 @@ This file starts with the first release; development before that is in the commi
 
 ## [Unreleased]
 
+### Added
+
+- MaterialX Shader has File Colour Space on a node that reads a texture file (image,
+  tiledimage): the colour space the file is read in, `srgb_texture` for a colour map or
+  `raw` for a normal or roughness map, written as the file input's colorSpace.
+
 ### Fixed
 
 - A text field in the Params tab, such as a ChunkGroup's Description, can be made taller:

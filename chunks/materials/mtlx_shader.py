@@ -14,7 +14,18 @@ _DEFAULT_SCOPE = "/materials"
 
 # Params the chunk always owns. Everything else on the chunk was lofted from the current
 # shader definition and gets torn down when the definition changes.
-_FIXED = ("nodedef", "signature", "prim_path", "bind_to")
+_FIXED = ("nodedef", "signature", "prim_path", "bind_to", "file_color_space")
+
+#: Colour spaces a texture file can be read in (MaterialX's names). Empty: the file's own default
+#: (the renderer's guess from the file). A colour map is srgb_texture, a normal, roughness or height
+#: map raw.
+FILE_COLOR_SPACES = ["", "srgb_texture", "raw", "lin_rec709", "acescg", "g22_rec709", "lin_adobergb",
+                     "adobergb", "srgb_displayp3", "lin_displayp3"]
+
+
+def _has_file_input(sdef) -> bool:
+    """Whether a shader definition reads a file (an asset-typed input, such as image's `file`)."""
+    return any(prop.sdf_type == "asset" for prop in sdef.inputs)
 
 # family -> {category: identifier}, built once from the registry. Lets the signature menu
 # list a family's sibling definitions without re-walking every shader on each rebuild.
@@ -411,6 +422,14 @@ def _apply_definition(owner, sdef) -> None:
         else:
             bind.set_state(ChunkFlags.State.HIDDEN)
 
+    # Only a node that reads a texture file has a colour space to say.
+    space = owner.get_param("file_color_space")
+    if space is not None:
+        if _has_file_input(sdef):
+            space.unset_state(ChunkFlags.State.HIDDEN)
+        else:
+            space.set_state(ChunkFlags.State.HIDDEN)
+
 
 def _rebuild(owner):
     """Retarget the chunk at whatever nodedef is currently set.
@@ -505,6 +524,17 @@ def execute(node):
         _author_shader(node, stage, sdef, prim_path, shader_path)
 
 
+def _author_color_space(node, attr) -> None:
+    """Say which colour space a texture file input is read in (its colorSpace metadata), from File
+    Colour Space; clear it when that is empty, so the file's own default applies."""
+    space_param = node.get_param("file_color_space")
+    space = (space_param.value if space_param is not None else "") or ""
+    if space:
+        attr.SetColorSpace(space)
+    elif attr.HasColorSpace():
+        attr.ClearColorSpace()
+
+
 def _author_shader(node, stage, sdef, prim_path, shader_path) -> None:
     """Define the shader (and, for a terminal, its Material and bindings) at `shader_path`.
 
@@ -532,6 +562,8 @@ def _author_shader(node, stage, sdef, prim_path, shader_path) -> None:
             inp.Set(param.value)
         except Exception:  # noqa: BLE001 - param value this input type cannot hold
             pass
+        if prop.sdf_type == "asset":
+            _author_color_space(node, inp.GetAttr())
 
         param.connect_usd_attr(inp.GetAttr())
         if prop.connectable:
@@ -598,8 +630,18 @@ def main():
         flags=ChunkFlags.ParamFlags.LABELED | ChunkFlags.ParamFlags.PRIM_SELECTION,
     )
     bind_to.set_state(ChunkFlags.State.HIDDEN)
+    file_color_space = chunk.Menu(
+        "file_color_space",
+        "File Colour Space",
+        menu_items=FILE_COLOR_SPACES,
+        default_value="",
+        flags=ChunkFlags.ParamFlags.LABELED,
+        tooltip="The colour space a texture file is read in. srgb_texture for a colour map; raw for\n"
+                "normal, roughness, height and other data maps. Empty: the file's own default.",
+    )
+    file_color_space.set_state(ChunkFlags.State.HIDDEN)
 
-    chunk_api.add_params([nodedef, signature, prim_path, bind_to])
+    chunk_api.add_params([nodedef, signature, prim_path, bind_to, file_color_space])
     chunk_api.add_callback(_nodedef_changed, sender=nodedef)
     chunk_api.add_callback(_signature_changed, sender=signature)
     chunk_api.add_callback(
@@ -666,5 +708,10 @@ def config():
         through outputs:mtlx:surface, and Bind To binds the material to the prims you name.
         Every other shader IS Path -- an intermediate node is wired to other shaders in the
         node graph, never bound, so it gets no Material wrapper.
+
+        A node that reads a texture file (image, tiledimage) has File Colour Space: the colour
+        space the file is read in (srgb_texture for a colour map, raw for a normal, roughness
+        or height map), written as the file input's colorSpace. Empty leaves the file's own
+        default.
         """,
     )
