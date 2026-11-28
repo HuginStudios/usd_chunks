@@ -7364,6 +7364,20 @@ def _reconcile_after_param_wire(chunk: core.ChunkBase) -> bool:
 core.param_wires_changed_hook = _reconcile_after_param_wire
 
 
+def _has_output_port(chunk: core.ChunkBase, node_name: str, port: str) -> bool:
+    """core.output_port_hook: whether the chunk prim beside chunk's, named node_name, has an
+    outputs:<port> attr -- where an @Node.port@ expression connects (see the expression
+    authoring in core, which picks outputs: over inputs: the same way)."""
+    prim = get_chunk_prim(chunk)
+    if prim is None:
+        return False
+    sibling = prim.GetParent().GetChild(node_name)
+    return bool(sibling and sibling.IsValid() and sibling.GetAttribute(f"outputs:{port}").IsValid())
+
+
+core.output_port_hook = _has_output_port
+
+
 _chunk_clipboard: list[str] = []
 
 

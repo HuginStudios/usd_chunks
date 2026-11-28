@@ -1587,6 +1587,19 @@ def warn_if_missing(node, path: str | Sdf.Path, what: str, param=None) -> bool:
     return True
 
 
+def _chunk_inputs_named(chunk_prim: Usd.Prim, param_name: str) -> list[Usd.Attribute]:
+    """The chunk prim's attrs a connection into param `param_name` can be on: inputs:<name>, where the
+    graph draws it, then inputs:<Group>:<name>, where a param inside a group keeps its value and where an
+    expression (`@Node.out@`, or a param following another chunk's) authors it."""
+    bare = chunk_prim.GetAttribute(f"inputs:{param_name}")
+    found = [bare] if bare and bare.IsValid() else []
+    suffix = f":{param_name}"
+    found += [a for a in chunk_prim.GetAttributes()
+              if a.GetName().startswith("inputs:") and a.GetName().endswith(suffix)
+              and a.GetName() != f"inputs:{param_name}"]
+    return found
+
+
 def wire_shader_input(
     stage: Usd.Stage,
     chunk_prim: Usd.Prim,
@@ -1597,7 +1610,8 @@ def wire_shader_input(
 ) -> bool:
     """Redirect a shader input to an upstream shader output when a chunk-level connection exists.
 
-    When chunk_prim.inputs:<param_name> is connected to an upstream chunk's output port,
+    When chunk_prim.inputs:<param_name> (or the grouped inputs:<Group>:<param_name>, where an
+    expression such as `@Node.out@` puts it) is connected to an upstream chunk's output port,
     that upstream chunk's execute() has already wired its outputs:<name> attr to the real
     shader output in the session layer. This function follows that two-hop chain and sets
     shader_attr directly to the upstream shader's output path.
@@ -1625,8 +1639,7 @@ def wire_shader_input(
     edit_layer = get_edit_layer(stage)
 
     if chunk_prim and chunk_prim.IsValid():
-        chunk_input = chunk_prim.GetAttribute(f"inputs:{param_name}")
-        if chunk_input and chunk_input.IsValid():
+        for chunk_input in _chunk_inputs_named(chunk_prim, param_name):
             for conn in chunk_input.GetConnections():
                 upstream_prim = stage.GetPrimAtPath(conn.GetPrimPath())
                 if not upstream_prim.IsValid():

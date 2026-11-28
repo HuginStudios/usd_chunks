@@ -11,6 +11,10 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- A script can wire one MaterialX node's output into another's input with an expression
+  naming the output: `base_color=f"@{cc.name}.out@"` puts a Color Correct between a
+  texture and a Standard Surface. It warned "Expression ref not found", since outputs are
+  ports and not params, and the surface kept its plain value.
 - A text field in the Params tab, such as a ChunkGroup's Description, can be made taller:
   drag the bar under it. It stayed at the few lines its param asked for, so a long
   description was read through a slot.

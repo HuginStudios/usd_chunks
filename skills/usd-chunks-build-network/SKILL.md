@@ -76,6 +76,11 @@ with Scene.new() as scene:
 - **Wires:** pass a chunk as an input to set run order. Pass a *param* as a value
   (`box.get_param("prim_path")`) to make one param follow another, the same as
   `connect_value`. Both are saved.
+- **Shader nodes** (`mtlx_shader`, `uv_texture`): wire one node's output into another's
+  input with an expression naming the output, as the graph's wire does:
+  `scene.create.standard_surface(cc, prim_path="/M/mat", base_color=f"@{cc.name}.out@")`
+  puts a `colorcorrect` between a texture and the surface. Outputs are ports, not params,
+  so `get_param("out")` is None: use the expression.
 - **Wire existing chunks** with `scene.connect(upstream, downstream)`. Into a Merge the
   branch wired last wins (slot 0); `scene.get_inputs(merge)` lists the branches, strongest
   first.
