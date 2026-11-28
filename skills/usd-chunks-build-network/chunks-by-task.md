@@ -4,6 +4,9 @@ Every chunk, grouped by the job it does, with when to pick it over its neighbour
 choose; `common-chunks.md` has the key params of the ones most networks use, and
 `usdchunks show <name>` has every param. A chunk that builds the object you need beats
 modelling it from boxes: look here before you model anything.
+The same goes for changing what chunks made: a material's colour, a label, an attribute. Use a chunk for it
+(`colorcorrect`, `semantics`, `property_editor`), not USD written by hand or edits to the exported file, which
+the network can't show, change or rebuild.
 `tests/test_skill_chunks_by_task.py` checks that every chunk is listed and every name exists.
 
 ## Make objects
@@ -57,6 +60,7 @@ modelling it from boxes: look here before you model anything.
 - `preview_surface`: a simple UsdPreviewSurface (colour, roughness, metal, opacity) bound to prims. The default for a plain material.
 - `set_display_color`: a flat viewport colour, no material.
 - `mtlx_shader`: a MaterialX shader (Standard Surface and others), every input from its definition.
+- MaterialX nodes, each its own entry (an `mtlx_shader` preset): `colorcorrect` to tint, grade, brighten or darken a colour (a texture's, or a library material's), `hsvadjust` to shift hue and saturation, `noise3d` and `fractal3d` for procedural patterns (grain, mottling, a two-tone weave), `image` for a texture file. Wire one node's output port into another's input in the graph, or from a script with an expression naming it: `base_color=f"@{cc.name}.out@"`. `usdchunks list tint` and the like find them by task.
 - `AMDMaterialXLibrary`: download a ready-made MaterialX material from AMD's GPUOpen library and bind it.
 - `mdl_to_mtlx`: give MDL (Omniverse) materials a MaterialX surface so other renderers shade them.
 - `bind_material`: bind a material that already exists to more prims.
@@ -100,7 +104,7 @@ modelling it from boxes: look here before you model anything.
 - `apply_schema`: apply a USD API schema (UsdPhysics, UsdLux ...) to prims.
 - `set_metadata` / `get_metadata`: write or read prim metadata (kind, custom data ...).
 - `get_property`: read an attribute's value as an output to wire on.
-- `semantics`: label prims with semantic classes, optionally rendered as masks (datasets).
+- `semantics`: label prims with semantic classes (UsdSemantics: what each thing is, its style or state), for layout, lookups and datasets; optionally rendered as masks.
 - `collection`: a named set of prims (`%Name`) that other chunks target in a prim field.
 - `mute_prim`: deactivate prims, reversibly (a bypass).
 - `prune_prim`: remove prims from the result for good; exports leave them out. Use it to drop a source after copying it.

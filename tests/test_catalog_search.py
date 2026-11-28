@@ -53,3 +53,26 @@ def test_the_name_counts_more_than_the_description() -> None:
 
 def test_cube_still_lists_mesh(registry) -> None:
     assert {"cube", "usd_cube", "mesh", "shape"} <= set(_names(registry, "cube"))
+
+
+@pytest.mark.parametrize("query, wanted", [
+    ("tint", "colorcorrect"), ("tint material", "colorcorrect"), ("brighten texture", "colorcorrect"),
+    ("colour correction", "colorcorrect"), ("color correction", "colorcorrect"), ("desaturate", "hsvadjust"),
+    ("weave", "noise3d"), ("semantic label", "semantics"),
+])
+def test_materialx_nodes_are_found_by_what_they_do(registry, query, wanted) -> None:
+    """A MaterialX node's definition carries no documentation, so its entry used to say only
+    'mtlx_shader with nodedef=...': "tint" found nothing about colour, and only its name found it."""
+    assert wanted in _names(registry, query)[:3]
+
+
+def test_a_materialx_entry_says_what_it_does_and_which_node_it_is(registry) -> None:
+    entry = chunk_catalog.find(registry, "colorcorrect")
+    assert entry.summary.startswith("Colour correction")
+    assert "nodedef='ND_colorcorrect_color3'" in entry.summary
+
+
+def test_british_and_american_spellings_find_each_other() -> None:
+    rows = [Entry("paint", "paint", "", "Sets a colour."), Entry("dye", "dye", "", "Sets a color.")]
+    assert {e.name for e in search(rows, {}, "color")} == {"paint", "dye"}
+    assert {e.name for e in search(rows, {}, "colour")} == {"paint", "dye"}
