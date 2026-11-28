@@ -113,6 +113,18 @@ logger = logging.getLogger(__name__)
 #: dependency left behind keeps the old source above the chunk, so its cook still sees it.
 param_wires_changed_hook: Callable[[Any], None] | None = None
 
+#: Called as hook(chunk, node_name, port): whether the chunk beside `chunk` named node_name has an
+#: output port `port` (an outputs:<port> attr, e.g. a shader node's `out`) with no param behind it.
+#: Set by chunk_stage. An @Node.out@ expression naming such a port wires a shader output into a
+#: shader input; it has no value to follow, so it isn't a dangling ref.
+output_port_hook: Callable[[Any, str, str], bool] | None = None
+
+
+def _names_output_port(param: Any, node_name: str, port: str) -> bool:
+    """Whether an expression ref that resolved to no param names another chunk's output port."""
+    chunk = param.get_chunk()
+    return bool(chunk is not None and output_port_hook is not None and output_port_hook(chunk, node_name, port))
+
 ValueT = TypeVar("ValueT")
 ParamT = TypeVar("ParamT", bound="ChunkParamBase")
 GroupT = TypeVar("GroupT", bound="ChunkContainerBase")
@@ -2794,7 +2806,7 @@ class ChunkParamBase(Generic[ValueT], ChunkCommon, ChunkUsdAttributeSupport):
                 # then, so warning here would only ever be a false alarm.
                 if chunk_notice._loading_stage is not None:
                     logger.debug("Expression ref @%s.%s@ not resolvable yet (loading)", node_name, param_name)
-                else:
+                elif not _names_output_port(self, node_name, param_name):
                     logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
                 continue
             conn = chunk_notice.NoticeConnection(
@@ -4195,7 +4207,8 @@ class ChunkVectorBase(ChunkContainerBase, ChunkUsdAttributeSupport):
             for node_name, param_name in chunk_utils.parse_expression(val):
                 ref = self._resolve_expression_ref(node_name, param_name)
                 if ref is None:
-                    logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
+                    if not _names_output_port(self, node_name, param_name):
+                        logger.warning("Expression ref @%s.%s@ not found", node_name, param_name)
                     continue
                 conn = chunk_notice.NoticeConnection(
                     method=self._on_ref_changed,
