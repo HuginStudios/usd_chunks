@@ -33,6 +33,9 @@ class Entry:
     category: str
     summary: str
     presets: dict[str, Any] | None = None
+    #: What a menu entry is for, in task words, when its module's description doesn't say (a
+    #: MaterialX node: its definition carries no documentation). Searched like a description.
+    about: str = ""
 
 
 @dataclass
@@ -55,6 +58,42 @@ def _category(config) -> str:
     return str(getattr(category, "value", category) or "")
 
 
+#: What the common MaterialX nodes do, by node family (the nodedef's name without ND_ and its type),
+#: in the words someone looking for them uses. Their definitions carry no documentation, so without
+#: this "tint" or "brighten" found nothing and the only way in was knowing the node's name.
+MTLX_TASKS = {
+    "colorcorrect": "Colour correction: hue, saturation, gamma, lift, gain, contrast and exposure. Tint, grade, "
+                    "brighten or darken a texture or a library material's colour.",
+    "hsvadjust": "Shift a colour's hue, saturation and value: tint, desaturate, brighten or darken.",
+    "saturate": "Raise or lower a colour's saturation.",
+    "multiply": "Multiply two values: tint a texture by a colour, scale a value.",
+    "mix": "Blend two inputs by an amount or a mask: layer two colours or textures, a weave of two tones.",
+    "noise2d": "Procedural noise pattern in UV space: break up a colour, vary roughness.",
+    "noise3d": "Procedural noise pattern in 3D: break up a colour, vary roughness, a weave or grain.",
+    "fractal3d": "Layered (fractal) noise in 3D: grain, dirt, mottling, wear.",
+    "cellnoise3d": "Cell noise in 3D: a random value per cell, for flecks or tiles that vary.",
+    "worleynoise3d": "Worley (cellular) noise in 3D: cells, stones, scales, cracks.",
+    "image": "Read an image texture file.",
+    "tiledimage": "Read an image texture file, repeated (tiled) across UVs.",
+    "ramplr": "A colour gradient left to right across UVs.",
+    "ramptb": "A colour gradient top to bottom across UVs.",
+    "remap": "Remap a value from one range to another.",
+    "smoothstep": "A soft step between two values: soften a mask's edge.",
+    "position": "The point's position in object or world space: feed a 3D pattern (noise) so it stays on the "
+                "surface.",
+    "normal": "The surface normal in object or world space: shade by which way a face points.",
+    "texcoord": "The mesh's UV coordinates (texture coordinates), to drive or offset a texture.",
+}
+
+
+def mtlx_task(nodedef: str) -> str:
+    """What a MaterialX node is for (MTLX_TASKS), from its nodedef's name: ND_colorcorrect_color3."""
+    name = str(nodedef or "")
+    name = name[3:] if name.startswith("ND_") else name
+    family = max((f for f in MTLX_TASKS if name == f or name.startswith(f + "_")), key=len, default="")
+    return MTLX_TASKS.get(family, "")
+
+
 def _summary(description: str) -> str:
     lines = chunk_registry.clean_description(description or "").splitlines()
     return lines[0].strip() if lines else ""
@@ -66,8 +105,9 @@ def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Ent
     A query is task words ("scatter rocks", "fence"): see `search`.
 
     Named as scene.create resolves them: a module by its file name first, then a menu entry
-    by its label. A label two entries share names neither, so it is left out, and so is a
-    private module (`_name`), which scene.create refuses to make.
+    by its label. A label two entries share names neither, so each of those is listed under its
+    module's name with its presets (`mtlx_shader` with nodedef='ND_mix_color3'), which is how a
+    script makes it. A private module (`_name`), which scene.create refuses to make, is left out.
     """
     found: dict[str, Entry] = {}
     variants: dict[str, list[Entry]] = {}
@@ -80,12 +120,22 @@ def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Ent
             found[module] = Entry(module, module, _category(config), _summary(config.description))
         else:
             summary = f"{module} with " + ", ".join(f"{k}={v!r}" for k, v in item.presets.items())
+            about = mtlx_task(item.presets.get("nodedef", "")) if "nodedef" in item.presets else ""
+            if about:
+                summary = f"{about} ({summary})"
             name = script_name(item.label)
-            variants.setdefault(name, []).append(Entry(name, module, _category(config), summary, item.presets))
+            variants.setdefault(name, []).append(Entry(name, module, _category(config), summary, item.presets,
+                                                       about))
+    shared: list[Entry] = []
     for name, same in variants.items():
         if name not in found and len(same) == 1:
             found[name] = same[0]
-    rows = sorted(found.values(), key=lambda e: e.name)
+        else:
+            # A label two entries share (MaterialX's colour mix and its shading-layer mix are both
+            # "mix") names neither in scene.create, but each is still made by its module with its
+            # presets: list it so, rather than leave Mix and Multiply unfindable.
+            shared += [Entry(e.module, e.module, e.category, e.summary, e.presets, e.about) for e in same]
+    rows = sorted([*found.values(), *shared], key=lambda e: e.name)
     if not query.split():
         return rows
     descriptions = {m.module_name.split(".")[-1]: m.config.description or "" for m in registry.get_chunk_modules()}
@@ -96,9 +146,15 @@ def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Ent
 _NAME, _SUMMARY, _DESCRIPTION = 6.0, 3.0, 1.0
 
 
+#: Spellings that mean the same word: a query in either finds a text in either.
+_SAME_WORD = {"colour": "color", "colours": "colors", "grey": "gray", "greys": "grays"}
+
+
 def _words(text: str) -> str:
-    """text lowered, underscores as spaces, so "usd_cube" holds the word "cube"."""
-    return " " + re.sub(r"[_\W]+", " ", text.lower()) + " "
+    """text lowered, underscores as spaces, so "usd_cube" holds the word "cube"; British spellings
+    as American ("colour" as "color"), so either finds either."""
+    words = re.sub(r"[_\W]+", " ", text.lower()).split()
+    return " " + " ".join(_SAME_WORD.get(w, w) for w in words) + " "
 
 
 def _word_score(word: str, name: str, summary: str, description: str) -> float:
@@ -131,7 +187,7 @@ def search(rows: list[Entry], descriptions: dict[str, str], query: str) -> list[
         if e.presets is None:
             summary, description = _words(e.summary), _words(descriptions.get(e.module, ""))
         else:
-            summary, description = _words(e.summary), ""
+            summary, description = _words(e.summary), _words(e.about)
         per_word = [_word_score(w, name, summary, description) for w in words]
         if any(per_word):
             scored.append((all(per_word), sum(per_word), e))

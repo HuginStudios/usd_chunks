@@ -11,6 +11,13 @@ This file starts with the first release; development before that is in the commi
 
 ### Fixed
 
+- `usdchunks list` (and anything searching the chunk catalog) finds MaterialX nodes by what
+  they do: "tint", "brighten texture" or "colour correction" find Color Correct, "desaturate"
+  HSV Adjust. Their definitions carry no documentation, so only a node's own name found it.
+  Entries whose label is shared (MaterialX's Mix and Multiply, which are also shading-layer and
+  Math Ops entries) are listed under their module with their presets instead of left out, and
+  "hide part of an asset" or "set an attribute" find Mute Prim and Property Editor.
+  "colour" and "color" (and "grey" and "gray") now find each other.
 - A text field in the Params tab, such as a ChunkGroup's Description, can be made taller:
   drag the bar under it. It stayed at the few lines its param asked for, so a long
   description was read through a slot.
