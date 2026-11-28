@@ -571,7 +571,7 @@ def config():
         category=chunk.StandardCategory.PROPERTIES,
         icon="tag",
         description="""
-        Property Editor -- pick prims and override their attributes.
+        Property Editor -- pick prims and set or override their attributes: any value, a shader's input, visibility.
 
         Parameters:
           - Prim: the prims to edit (viewport picking, globs, and a variant selection in

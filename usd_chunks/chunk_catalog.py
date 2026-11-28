@@ -79,6 +79,10 @@ MTLX_TASKS = {
     "ramptb": "A colour gradient top to bottom across UVs.",
     "remap": "Remap a value from one range to another.",
     "smoothstep": "A soft step between two values: soften a mask's edge.",
+    "position": "The point's position in object or world space: feed a 3D pattern (noise) so it stays on the "
+                "surface.",
+    "normal": "The surface normal in object or world space: shade by which way a face points.",
+    "texcoord": "The mesh's UV coordinates (texture coordinates), to drive or offset a texture.",
 }
 
 
@@ -101,8 +105,9 @@ def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Ent
     A query is task words ("scatter rocks", "fence"): see `search`.
 
     Named as scene.create resolves them: a module by its file name first, then a menu entry
-    by its label. A label two entries share names neither, so it is left out, and so is a
-    private module (`_name`), which scene.create refuses to make.
+    by its label. A label two entries share names neither, so each of those is listed under its
+    module's name with its presets (`mtlx_shader` with nodedef='ND_mix_color3'), which is how a
+    script makes it. A private module (`_name`), which scene.create refuses to make, is left out.
     """
     found: dict[str, Entry] = {}
     variants: dict[str, list[Entry]] = {}
@@ -121,10 +126,16 @@ def entries(registry: chunk_registry.ChunkRegistry, query: str = "") -> list[Ent
             name = script_name(item.label)
             variants.setdefault(name, []).append(Entry(name, module, _category(config), summary, item.presets,
                                                        about))
+    shared: list[Entry] = []
     for name, same in variants.items():
         if name not in found and len(same) == 1:
             found[name] = same[0]
-    rows = sorted(found.values(), key=lambda e: e.name)
+        else:
+            # A label two entries share (MaterialX's colour mix and its shading-layer mix are both
+            # "mix") names neither in scene.create, but each is still made by its module with its
+            # presets: list it so, rather than leave Mix and Multiply unfindable.
+            shared += [Entry(e.module, e.module, e.category, e.summary, e.presets, e.about) for e in same]
+    rows = sorted([*found.values(), *shared], key=lambda e: e.name)
     if not query.split():
         return rows
     descriptions = {m.module_name.split(".")[-1]: m.config.description or "" for m in registry.get_chunk_modules()}

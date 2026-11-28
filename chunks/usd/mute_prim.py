@@ -68,7 +68,7 @@ def config():
         category=chunk.StandardCategory.USD,
         icon="eye",
         description="""
-        Mute Prim — deactivates (bypasses) prims on the stage via SetActive(false).
+        Mute Prim — deactivates (bypasses) prims on the stage via SetActive(false): hide or drop part of an asset without editing it.
 
         Parameters:
           - Prims: select prim(s) to mute. Supports glob patterns (*, **, ?),

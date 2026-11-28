@@ -76,3 +76,28 @@ def test_british_and_american_spellings_find_each_other() -> None:
     rows = [Entry("paint", "paint", "", "Sets a colour."), Entry("dye", "dye", "", "Sets a color.")]
     assert {e.name for e in search(rows, {}, "color")} == {"paint", "dye"}
     assert {e.name for e in search(rows, {}, "colour")} == {"paint", "dye"}
+
+
+def test_an_entry_whose_label_is_shared_is_listed_under_its_module(registry) -> None:
+    """MaterialX's colour mix and its shading-layer mix are both "mix", so neither is a name
+    scene.create knows; they used to be left out, and Mix and Multiply couldn't be found at all."""
+    mixes = [e for e in chunk_catalog.entries(registry) if e.presets and e.presets.get("nodedef") == "ND_mix_color3"]
+    assert [(e.name, e.module) for e in mixes] == [("mtlx_shader", "mtlx_shader")]
+    assert "nodedef='ND_mix_color3'" in mixes[0].summary
+
+
+@pytest.mark.parametrize("query, nodedef", [
+    ("mix two colours", "ND_mix_color3"), ("multiply colour", "ND_multiply_color3"),
+    ("position in object space", "ND_position_vector3"),
+])
+def test_shared_and_input_nodes_are_found_by_task(registry, query, nodedef) -> None:
+    found = [e.presets.get("nodedef") for e in chunk_catalog.entries(registry, query)[:3] if e.presets]
+    assert nodedef in found
+
+
+@pytest.mark.parametrize("query, wanted", [
+    ("hide part of an asset", "mute_prim"), ("set an attribute", "property_editor"),
+    ("change an input on a shader", "property_editor"),
+])
+def test_task_words_find_the_usd_editing_chunks(registry, query, wanted) -> None:
+    assert wanted in _names(registry, query)[:3]
